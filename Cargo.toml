@@ -1,0 +1,17 @@
+[package]
+name = "task-runner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# actix = "0.13"
+actix-web = "4"
+tokio-pg-mapper = "0.2.0"
+tokio-pg-mapper-derive = "0.2.0"
+tokio-postgres = "0.7.6"
+confik = "0.11"
+deadpool-postgres = { version = "0.12", features = ["serde"] }
+serde = "1.0.219"
+derive_more = "2.0.1"
+dotenvy = "0.15.7"
+# derive_more = { features = ["display", "error", "from"] }
