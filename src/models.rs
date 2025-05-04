@@ -1,15 +1,36 @@
+use crate::schema::action;
 use crate::schema::task;
+use diesel::sql_types::Uuid;
 use serde::{Deserialize, Serialize};
 
-#[derive(Queryable, Selectable, Serialize)]
+#[derive(Identifiable, Queryable, Selectable, Serialize, Debug)]
 #[diesel(table_name = crate::schema::task)]
-// #[diesel(check_for_backend(diesel::pg::Pg))]
+#[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Task {
     pub id: uuid::Uuid,
     pub name: String,
     pub kind: String,
     pub status: String,
     pub timeout: i32,
+}
+
+#[derive(Serialize, Debug)]
+pub struct FullTask {
+    pub task: Task,
+    pub actions: Vec<Action>,
+}
+
+#[derive(Identifiable, Queryable, Associations, Selectable, PartialEq, Debug, Serialize)]
+#[diesel(
+    table_name = crate::schema::action, 
+    belongs_to(Task), 
+    check_for_backend(diesel::pg::Pg))
+]
+pub struct Action {
+    pub id: uuid::Uuid,
+    pub kind: String,
+    pub task_id: uuid::Uuid,
+    // TODO: add params
 }
 
 /// New user details.

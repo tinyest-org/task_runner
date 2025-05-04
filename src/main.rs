@@ -6,8 +6,11 @@
 #[macro_use]
 extern crate diesel;
 
+use crate::schema::action;
+use crate::schema::task;
 use actix_web::{App, HttpResponse, HttpServer, Responder, error, get, middleware, post, web};
 use diesel::{prelude::*, r2d2};
+use models::Action;
 use uuid::Uuid;
 
 mod actions;
@@ -27,9 +30,8 @@ async fn get_user(
     pool: web::Data<DbPool>,
     task_id: web::Path<Uuid>,
 ) -> actix_web::Result<impl Responder> {
-
     // use web::block to offload blocking Diesel queries without blocking server thread
-    let user = web::block(move || {
+    let task = web::block(move || {
         // note that obtaining a connection from the pool is also potentially blocking
         let mut conn = pool.get()?;
 
@@ -39,10 +41,9 @@ async fn get_user(
     // map diesel query errors to a 500 error response
     .map_err(error::ErrorInternalServerError)?;
 
-    Ok(match user {
+    Ok(match task {
         // user was found; return 200 response with JSON formatted user object
-        Some(user) => HttpResponse::Ok().json(user),
-
+        Some(t) => HttpResponse::Ok().json(t),
         // user was not found; return 404 response with error message
         None => HttpResponse::NotFound().body(format!("No user found with UID")),
     })
@@ -108,8 +109,6 @@ fn initialize_db_pool() -> DbPool {
         .build(manager)
         .expect("database URL should be valid path to SQLite DB file")
 }
-
-
 
 // If you need to have libpq first in your PATH, run:
 //   echo 'export PATH="/opt/homebrew/opt/libpq/bin:$PATH"' >> /Users/plawn/.zshrc

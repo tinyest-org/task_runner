@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 use uuid::Uuid;
 
-use crate::models::{self, Task};
+use crate::models::{self, Action, FullTask, Task};
 
 type DbError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -9,15 +9,24 @@ type DbError = Box<dyn std::error::Error + Send + Sync>;
 pub fn find_user_task_by_id(
     conn: &mut PgConnection,
     task_id: Uuid,
-) -> Result<Option<models::Task>, DbError> {
+) -> Result<Option<models::FullTask>, DbError> {
     use crate::schema::task::dsl::*;
 
-    let user = task
+    let t = task
         .filter(id.eq(task_id))
         .first::<models::Task>(conn)
         .optional()?;
-
-    Ok(user)
+    match t {
+        None => Ok(None),
+        Some(base_task) => {
+            let actions = Action::belonging_to(&base_task).load::<Action>(conn)?;
+            let res = FullTask {
+                task: base_task,
+                actions: actions,
+            };
+            Ok(Some(res))
+        }
+    }
 }
 
 /// Run query using Diesel to insert a new database row and return the result.
