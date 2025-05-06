@@ -45,7 +45,7 @@ async fn get_task(
 /// Extracts:
 /// - the database pool handle from application data
 /// - a JSON form containing new user info from the request body
-#[post("/user")]
+#[post("/task")]
 async fn add_task(
     pool: web::Data<DbPool>,
     form: web::Json<dtos::NewTaskDto>,

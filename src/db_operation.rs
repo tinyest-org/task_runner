@@ -61,6 +61,7 @@ pub fn insert_new_task(
             .map(|a| NewAction {
                 task_id: new_task.id,
                 kind: a.kind.clone(),
+                params: a.params.clone(),
             })
             .collect::<Vec<_>>();
         let actions = diesel::insert_into(action)

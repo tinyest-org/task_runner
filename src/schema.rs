@@ -14,6 +14,7 @@ diesel::table! {
         id -> Uuid,
         task_id -> Uuid,
         kind -> ActionKind,
+        params -> Jsonb,
     }
 }
 

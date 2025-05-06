@@ -33,7 +33,7 @@ pub struct Action {
     pub id: uuid::Uuid,
     pub task_id: uuid::Uuid,
     pub kind: ActionKindEnum,
-    // pub params: serde_json::Value,
+    pub params: serde_json::Value,
     // TODO: add params
 }
 
@@ -56,7 +56,7 @@ pub struct NewTask {
 pub struct NewAction {
     pub task_id: uuid::Uuid,
     pub kind: ActionKindEnum,
-    // pub params: serde_json::Value,
+    pub params: serde_json::Value,
     // TODO: add params
 }
 
