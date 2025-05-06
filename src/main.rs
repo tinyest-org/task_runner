@@ -3,19 +3,10 @@
 //! Diesel v2 is not an async library, so we have to execute queries in `web::block` closures which
 //! offload blocking code (like Diesel's) to a thread-pool in order to not block the server.
 
-#[macro_use]
-extern crate diesel;
-
-use crate::schema::action;
-use crate::schema::task;
 use actix_web::{App, HttpResponse, HttpServer, Responder, error, get, middleware, post, web};
 use diesel::{prelude::*, r2d2};
-use models::Action;
+use task_runner::{db_operation, dtos};
 use uuid::Uuid;
-
-mod actions;
-mod models;
-mod schema;
 
 /// Short-hand for the database pool type to use throughout the app.
 type DbPool = r2d2::Pool<r2d2::ConnectionManager<PgConnection>>;
@@ -26,7 +17,7 @@ type DbPool = r2d2::Pool<r2d2::ConnectionManager<PgConnection>>;
 /// - the database pool handle from application data
 /// - a user UID from the request path
 #[get("/task/{task_id}")]
-async fn get_user(
+async fn get_task(
     pool: web::Data<DbPool>,
     task_id: web::Path<Uuid>,
 ) -> actix_web::Result<impl Responder> {
@@ -35,7 +26,7 @@ async fn get_user(
         // note that obtaining a connection from the pool is also potentially blocking
         let mut conn = pool.get()?;
 
-        actions::find_user_task_by_id(&mut conn, *task_id)
+        db_operation::find_user_task_by_id(&mut conn, *task_id)
     })
     .await?
     // map diesel query errors to a 500 error response
@@ -45,7 +36,7 @@ async fn get_user(
         // user was found; return 200 response with JSON formatted user object
         Some(t) => HttpResponse::Ok().json(t),
         // user was not found; return 404 response with error message
-        None => HttpResponse::NotFound().body(format!("No user found with UID")),
+        None => HttpResponse::NotFound().body(format!("No task found with UID")),
     })
 }
 
@@ -55,16 +46,16 @@ async fn get_user(
 /// - the database pool handle from application data
 /// - a JSON form containing new user info from the request body
 #[post("/user")]
-async fn add_user(
+async fn add_task(
     pool: web::Data<DbPool>,
-    form: web::Json<models::NewTask>,
+    form: web::Json<dtos::NewTaskDto>,
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
     let user = web::block(move || {
         // note that obtaining a connection from the pool is also potentially blocking
         let mut conn = pool.get()?;
 
-        actions::insert_new_user(&mut conn, form.0)
+        db_operation::insert_new_task(&mut conn, form.0)
     })
     .await?
     // map diesel query errors to a 500 error response
@@ -91,8 +82,8 @@ async fn main() -> std::io::Result<()> {
             // add request logger middleware
             .wrap(middleware::Logger::default())
             // add route handlers
-            .service(get_user)
-            .service(add_user)
+            .service(get_task)
+            .service(add_task)
     })
     .bind(("127.0.0.1", 8080))?
     .run()

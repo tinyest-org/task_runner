@@ -1,7 +1,7 @@
-use crate::schema::action;
-use crate::schema::task;
-use diesel::sql_types::Uuid;
+// use crate::actions::ActionKindEnum;
+use diesel::{prelude::*, sql_types::Text};
 use serde::{Deserialize, Serialize};
+
 
 #[derive(Identifiable, Queryable, Selectable, Serialize, Debug)]
 #[diesel(table_name = crate::schema::task)]
@@ -12,6 +12,9 @@ pub struct Task {
     pub kind: String,
     pub status: String,
     pub timeout: i32,
+    // failures -> int as counter
+    // succeses -> int as counter
+    // metadata as JSONB
 }
 
 #[derive(Serialize, Debug)]
@@ -28,8 +31,9 @@ pub struct FullTask {
 ]
 pub struct Action {
     pub id: uuid::Uuid,
-    pub kind: String,
     pub task_id: uuid::Uuid,
+    pub kind: ActionKindEnum,
+    // pub params: serde_json::Value,
     // TODO: add params
 }
 
@@ -43,15 +47,32 @@ pub struct NewTask {
     pub timeout: i32,
 }
 
-impl NewTask {
-    /// Constructs new user details from name.
-    #[cfg(test)] // only needed in tests
-    pub fn new(name: impl Into<String>, kind: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            kind: kind.into(),
-            timeout: 60,
-            status: "waiting".to_owned(),
-        }
-    }
+#[derive(Queryable, Associations, Selectable, PartialEq, Debug, Serialize, Insertable)]
+#[diesel(
+    table_name = crate::schema::action, 
+    belongs_to(Task), 
+    check_for_backend(diesel::pg::Pg))
+]
+pub struct NewAction {
+    pub task_id: uuid::Uuid,
+    pub kind: ActionKindEnum,
+    // pub params: serde_json::Value,
+    // TODO: add params
+}
+
+#[derive(Debug,PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone)]
+#[db_enum(existing_type_path = "crate::schema::sql_types::ActionKind")]
+pub enum ActionKindEnum {
+    Webhook
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub enum HttpVerb {
+    Get, Post, Delete, Put, Patch
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WebhookParamas {
+    url: String,
+    verb: HttpVerb,
 }
