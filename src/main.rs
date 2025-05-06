@@ -3,13 +3,64 @@
 //! Diesel v2 is not an async library, so we have to execute queries in `web::block` closures which
 //! offload blocking code (like Diesel's) to a thread-pool in order to not block the server.
 
-use actix_web::{App, HttpResponse, HttpServer, Responder, error, get, middleware, post, web};
+use actix_web::{
+    App, HttpResponse, HttpServer, Responder, error, get, middleware, patch, post, web,
+};
 use diesel::{prelude::*, r2d2};
-use task_runner::{db_operation, dtos};
+use task_runner::{
+    db_operation,
+    dtos::{self, TaskDto},
+};
 use uuid::Uuid;
 
 /// Short-hand for the database pool type to use throughout the app.
 type DbPool = r2d2::Pool<r2d2::ConnectionManager<PgConnection>>;
+
+#[get("/task")]
+async fn list_task(
+    pool: web::Data<DbPool>,
+    pagination: web::Query<dtos::PaginationDto>, // pagination
+    filter: web::Query<dtos::FilterDto>,         // filter
+) -> actix_web::Result<impl Responder> {
+    // handle pagination
+    // handle filter -> pending, running
+    // -> return basicTaskDto
+    // TODO: Implement the logic for listing tasks
+    let tasks: Vec<TaskDto> = vec![];
+    Ok(HttpResponse::Ok().json(tasks))
+}
+
+// update task metadata
+// update counters
+// update last_updated
+#[patch("/task/{task_id}")]
+async fn update_task(
+    pool: web::Data<DbPool>,
+    task_id: web::Path<Uuid>,
+    form: web::Json<dtos::NewTaskDto>,
+) -> actix_web::Result<impl Responder> {
+    // use web::block to offload blocking Diesel queries without blocking server thread
+    let task = web::block(move || {
+        // note that obtaining a connection from the pool is also potentially blocking
+        let mut conn = pool.get()?;
+
+        db_operation::find_user_task_by_id(&mut conn, *task_id)
+    })
+    .await?
+    // map diesel query errors to a 500 error response
+    .map_err(error::ErrorInternalServerError)?;
+    if task.is_none() {
+        return Ok(HttpResponse::NotFound().body(format!("No task found with UID")));
+    }
+    // should enqueue the task update
+    // should do real implem
+    // -> push to redis queue
+    // we need to update the last_updated field
+    // if success has value -> incrument success
+    // if failure has value -> increment failure
+    // if metadata has value -> update metadata
+    return Ok(HttpResponse::NotFound().body(format!("No task found with UID")));
+}
 
 /// Finds user by UID.
 ///
@@ -84,6 +135,8 @@ async fn main() -> std::io::Result<()> {
             // add route handlers
             .service(get_task)
             .service(add_task)
+            .service(list_task)
+            .service(update_task)
     })
     .bind(("127.0.0.1", 8080))?
     .run()

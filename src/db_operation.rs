@@ -3,8 +3,8 @@ use diesel::prelude::*;
 use uuid::Uuid;
 
 use crate::{
-    dtos,
-    models::{self, Action, FullTask, NewAction, Task},
+    dtos::{self, TaskDto},
+    models::{self, Action, NewAction, Task},
 };
 
 type DbError = Box<dyn std::error::Error + Send + Sync>;
@@ -13,7 +13,7 @@ type DbError = Box<dyn std::error::Error + Send + Sync>;
 pub fn find_user_task_by_id(
     conn: &mut PgConnection,
     task_id: Uuid,
-) -> Result<Option<models::FullTask>, DbError> {
+) -> Result<Option<dtos::TaskDto>, DbError> {
     use crate::schema::task::dsl::*;
 
     let t = task
@@ -24,11 +24,21 @@ pub fn find_user_task_by_id(
         None => Ok(None),
         Some(base_task) => {
             let actions = Action::belonging_to(&base_task).load::<Action>(conn)?;
-            let res = FullTask {
-                task: base_task,
-                actions,
+            let dto = dtos::TaskDto {
+                id: base_task.id,
+                name: base_task.name,
+                kind: base_task.kind,
+                status: base_task.status,
+                timeout: base_task.timeout,
+                actions: actions
+                    .iter()
+                    .map(|a| dtos::ActionDto {
+                        kind: a.kind.clone(),
+                        params: a.params.clone(),
+                    })
+                    .collect(),
             };
-            Ok(Some(res))
+            Ok(Some(dto))
         }
     }
 }
@@ -37,7 +47,7 @@ pub fn find_user_task_by_id(
 pub fn insert_new_task(
     conn: &mut PgConnection,
     dto: dtos::NewTaskDto, // prevent collision with `name` column imported inside the function
-) -> Result<FullTask, DbError> {
+) -> Result<TaskDto, DbError> {
     // It is common when using Diesel with Actix Web to import schema-related
     // modules inside a function's scope (rather than the normal module's scope)
     // to prevent import collisions and namespace pollution.
@@ -72,9 +82,19 @@ pub fn insert_new_task(
     } else {
         vec![]
     };
-    let r = FullTask {
-        task: new_task,
-        actions,
+    let dto = TaskDto {
+        id: new_task.id,
+        name: new_task.name,
+        kind: new_task.kind,
+        status: new_task.status,
+        timeout: new_task.timeout,
+        actions: actions
+            .iter()
+            .map(|a| dtos::ActionDto {
+                kind: a.kind.clone(),
+                params: a.params.clone(),
+            })
+            .collect(),
     };
-    Ok(r)
+    Ok(dto) // Changed from Ok(r) to Ok(dto)
 }

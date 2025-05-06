@@ -1,5 +1,5 @@
 // use crate::actions::ActionKindEnum;
-use diesel::{prelude::*, sql_types::Text};
+use diesel::{prelude::*, sql_types::{Text, Timestamp}};
 use serde::{Deserialize, Serialize};
 
 
@@ -12,15 +12,10 @@ pub struct Task {
     pub kind: String,
     pub status: String,
     pub timeout: i32,
-    // failures -> int as counter
-    // succeses -> int as counter
-    // metadata as JSONB
-}
-
-#[derive(Serialize, Debug)]
-pub struct FullTask {
-    pub task: Task,
-    pub actions: Vec<Action>,
+    pub last_updated: chrono::NaiveDateTime,
+    pub success: i32,
+    pub failures: i32,
+    pub metadata: serde_json::Value,
 }
 
 #[derive(Identifiable, Queryable, Associations, Selectable, PartialEq, Debug, Serialize)]
@@ -34,7 +29,8 @@ pub struct Action {
     pub task_id: uuid::Uuid,
     pub kind: ActionKindEnum,
     pub params: serde_json::Value,
-    // TODO: add params
+    pub trigger: TriggerKind,
+    pub success: Option<bool>,
 }
 
 /// New user details.
@@ -64,6 +60,12 @@ pub struct NewAction {
 #[db_enum(existing_type_path = "crate::schema::sql_types::ActionKind")]
 pub enum ActionKindEnum {
     Webhook
+}
+
+#[derive(Debug,PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone)]
+#[db_enum(existing_type_path = "crate::schema::sql_types::TriggerKind")]
+pub enum TriggerKind {
+    Start, End
 }
 
 #[derive(Debug, Deserialize, Serialize)]

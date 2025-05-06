@@ -5,6 +5,10 @@ CREATE TABLE "task"(
 	"name" TEXT NOT NULL,
 	"kind" TEXT NOT NULL,
 	"status" TEXT NOT NULL,
-	"timeout" INT4 NOT NULL
+	"timeout" INT4 NOT NULL,
+	"last_updated" TIMESTAMP not null default now(),
+	success INT4  NOT NULL default 0,
+	failures INT4  NOT NULL default 0,
+	metadata  jsonb not null default '{}'::jsonb
 );
 
