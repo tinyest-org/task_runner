@@ -11,6 +11,12 @@ pub struct NewTaskDto {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct BasicTaskDto {
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateTaskDto {
     pub metadata: Option<serde_json::Value>,
     pub status: Option<String>,
@@ -36,8 +42,8 @@ pub struct TaskDto {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PaginationDto {
-    pub page: i64,
-    pub page_size: i64,
+    pub page: Option<i64>,
+    pub page_size: Option<i64>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FilterDto {

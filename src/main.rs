@@ -26,7 +26,16 @@ async fn list_task(
     // handle filter -> pending, running
     // -> return basicTaskDto
     // TODO: Implement the logic for listing tasks
-    let tasks: Vec<TaskDto> = vec![];
+    let tasks = web::block(move || {
+        // note that obtaining a connection from the pool is also potentially blocking
+        let mut conn = pool.get()?;
+
+        db_operation::list_task_filtered_paged(&mut conn, pagination.0, filter.0)
+    })
+    .await?
+    // map diesel query errors to a 500 error response
+    .map_err(error::ErrorInternalServerError)?;
+
     Ok(HttpResponse::Ok().json(tasks))
 }
 

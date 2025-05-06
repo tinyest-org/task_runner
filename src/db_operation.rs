@@ -48,6 +48,29 @@ pub fn find_user_task_by_id(
     }
 }
 
+pub fn list_task_filtered_paged(
+    conn: &mut PgConnection,
+    pagination: dtos::PaginationDto,
+    filter: dtos::FilterDto,
+) -> Result<Vec<dtos::BasicTaskDto>, DbError> {
+    use crate::schema::task::dsl::*;
+    use crate::schema::action::dsl::*;
+    // use diesel to find the required data
+    let page_size = 50;
+    let result = task.offset(pagination.page.unwrap_or(0) * page_size)
+        .limit(page_size)
+        .load::<models::Task>(conn)?;
+
+    let tasks: Vec<dtos::BasicTaskDto> = result.into_iter()
+        .map(|base_task| dtos::BasicTaskDto {
+            name: base_task.name,
+            kind: base_task.kind,
+        })
+        .collect();
+    
+    Ok(tasks)
+}
+
 /// Run query using Diesel to insert a new database row and return the result.
 pub fn insert_new_task(
     conn: &mut PgConnection,
@@ -78,6 +101,7 @@ pub fn insert_new_task(
                 task_id: new_task.id,
                 kind: a.kind.clone(),
                 params: a.params.clone(),
+                trigger: models::TriggerKind::End,
             })
             .collect::<Vec<_>>();
         let actions = diesel::insert_into(action)

@@ -53,6 +53,7 @@ pub struct NewAction {
     pub task_id: uuid::Uuid,
     pub kind: ActionKindEnum,
     pub params: serde_json::Value,
+    pub trigger: TriggerKind,
     // TODO: add params
 }
 
