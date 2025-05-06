@@ -9,6 +9,25 @@ use crate::{
 
 type DbError = Box<dyn std::error::Error + Send + Sync>;
 
+impl TaskDto {
+    pub fn new(base_task: Task, actions: Vec<Action>) -> Self {
+        Self {
+            id: base_task.id,
+            name: base_task.name,
+            kind: base_task.kind,
+            status: base_task.status,
+            timeout: base_task.timeout,
+            actions: actions
+                .iter()
+                .map(|a| dtos::ActionDto {
+                    kind: a.kind.clone(),
+                    params: a.params.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Run query using Diesel to find user by uid and return it.
 pub fn find_user_task_by_id(
     conn: &mut PgConnection,
@@ -24,21 +43,7 @@ pub fn find_user_task_by_id(
         None => Ok(None),
         Some(base_task) => {
             let actions = Action::belonging_to(&base_task).load::<Action>(conn)?;
-            let dto = dtos::TaskDto {
-                id: base_task.id,
-                name: base_task.name,
-                kind: base_task.kind,
-                status: base_task.status,
-                timeout: base_task.timeout,
-                actions: actions
-                    .iter()
-                    .map(|a| dtos::ActionDto {
-                        kind: a.kind.clone(),
-                        params: a.params.clone(),
-                    })
-                    .collect(),
-            };
-            Ok(Some(dto))
+            Ok(Some(TaskDto::new(base_task, actions)))
         }
     }
 }
@@ -56,6 +61,7 @@ pub fn insert_new_task(
     let new_task = models::NewTask {
         name: dto.name,
         kind: dto.kind,
+        // TODO: could be an enum
         status: "waiting".to_owned(),
         timeout: dto.timeout.unwrap_or(60),
     };
@@ -82,19 +88,5 @@ pub fn insert_new_task(
     } else {
         vec![]
     };
-    let dto = TaskDto {
-        id: new_task.id,
-        name: new_task.name,
-        kind: new_task.kind,
-        status: new_task.status,
-        timeout: new_task.timeout,
-        actions: actions
-            .iter()
-            .map(|a| dtos::ActionDto {
-                kind: a.kind.clone(),
-                params: a.params.clone(),
-            })
-            .collect(),
-    };
-    Ok(dto) // Changed from Ok(r) to Ok(dto)
+    Ok(TaskDto::new(new_task, actions)) // Changed from Ok(r) to Ok(dto)
 }

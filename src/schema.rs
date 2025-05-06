@@ -39,6 +39,8 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(action -> task (task_id));
+
 diesel::allow_tables_to_appear_in_same_query!(
     action,
     task,

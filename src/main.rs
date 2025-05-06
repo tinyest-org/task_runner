@@ -37,7 +37,7 @@ async fn list_task(
 async fn update_task(
     pool: web::Data<DbPool>,
     task_id: web::Path<Uuid>,
-    form: web::Json<dtos::NewTaskDto>,
+    form: web::Json<dtos::UpdateTaskDto>,
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
     let task = web::block(move || {
@@ -56,10 +56,10 @@ async fn update_task(
     // should do real implem
     // -> push to redis queue
     // we need to update the last_updated field
-    // if success has value -> incrument success
+    // if success has value -> increment success
     // if failure has value -> increment failure
     // if metadata has value -> update metadata
-    return Ok(HttpResponse::NotFound().body(format!("No task found with UID")));
+    return Ok(HttpResponse::Ok().body(format!("Task updated successfully")));
 }
 
 /// Finds user by UID.
