@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::models::{ActionKindEnum, StatusKind};
+use crate::{models::{ActionKindEnum, StatusKind}, rule::Rules};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewTaskDto {
@@ -8,6 +8,8 @@ pub struct NewTaskDto {
     pub kind: String,
     pub timeout: Option<i32>,
     pub actions: Option<Vec<ActionDto>>,
+    pub metadata: Option<serde_json::Value>,
+    pub rules: Option<Rules>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,7 +42,10 @@ pub struct TaskDto {
     pub kind: String,
     pub status: StatusKind,
     pub timeout: i32,
+    pub rules: Rules,
+    pub metadata: serde_json::Value,
     pub actions: Vec<ActionDto>,
+    pub created_at: chrono::NaiveDateTime,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

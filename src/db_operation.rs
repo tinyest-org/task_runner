@@ -19,6 +19,9 @@ impl TaskDto {
             kind: base_task.kind,
             status: base_task.status,
             timeout: base_task.timeout,
+            rules: base_task.start_condition,
+            metadata: base_task.metadata,
+            created_at: base_task.created_at,
             actions: actions
                 .iter()
                 .map(|a| dtos::ActionDto {
@@ -110,8 +113,10 @@ pub fn insert_new_task(
         // TODO: could be an enum
         status: models::StatusKind::Pending,
         timeout: dto.timeout.unwrap_or(60),
-        metadata: serde_json::json!({}),
-        start_condition: Rules { rules: vec![] },
+        metadata: dto.metadata.unwrap_or(serde_json::Value::Null),
+        start_condition: dto.rules.unwrap_or(Rules {
+            conditions: vec![],
+        }),
     };
 
     let new_task = diesel::insert_into(task)
@@ -126,7 +131,7 @@ pub fn insert_new_task(
                 task_id: new_task.id,
                 kind: a.kind.clone(),
                 params: a.params.clone(),
-                trigger: models::TriggerKind::End,
+                trigger: models::TriggerKind::End, // placeholder
             })
             .collect::<Vec<_>>();
 
