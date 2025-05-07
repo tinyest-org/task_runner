@@ -54,10 +54,14 @@ pub fn list_task_filtered_paged(
     filter: dtos::FilterDto,
 ) -> Result<Vec<dtos::BasicTaskDto>, DbError> {
     use crate::schema::task::dsl::*;
-    use crate::schema::action::dsl::*;
     // use diesel to find the required data
     let page_size = 50;
     let result = task.offset(pagination.page.unwrap_or(0) * page_size)
+        .filter(
+            name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
+                .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string()))))
+                .and(status.like(format!("%{}%", filter.status.unwrap_or("".to_string()))))
+        )
         .limit(page_size)
         .load::<models::Task>(conn)?;
 
