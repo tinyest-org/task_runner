@@ -8,14 +8,16 @@ use serde::{Deserialize, Serialize};
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Task {
     pub id: uuid::Uuid,
-    pub name: String,
+    pub name: Option<String>,
     pub kind: String,
-    pub status: String,
+    pub status: StatusKind,
+    pub created_at: chrono::NaiveDateTime,
     pub timeout: i32,
     pub last_updated: chrono::NaiveDateTime,
     pub success: i32,
     pub failures: i32,
     pub metadata: serde_json::Value,
+    pub ended_at: Option<chrono::NaiveDateTime>,
 }
 
 #[derive(Identifiable, Queryable, Associations, Selectable, PartialEq, Debug, Serialize)]
@@ -39,7 +41,7 @@ pub struct Action {
 pub struct NewTask {
     pub name: String,
     pub kind: String,
-    pub status: String,
+    pub status: StatusKind,
     pub timeout: i32,
 }
 
@@ -67,6 +69,12 @@ pub enum ActionKindEnum {
 #[db_enum(existing_type_path = "crate::schema::sql_types::TriggerKind")]
 pub enum TriggerKind {
     Start, End
+}
+
+#[derive(Debug,PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone)]
+#[db_enum(existing_type_path = "crate::schema::sql_types::StatusKind")]
+pub enum StatusKind {
+    Pending, Running, Failure, Success
 }
 
 #[derive(Debug, Deserialize, Serialize)]

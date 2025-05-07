@@ -13,7 +13,7 @@ impl TaskDto {
     pub fn new(base_task: Task, actions: Vec<Action>) -> Self {
         Self {
             id: base_task.id,
-            name: base_task.name,
+            name: base_task.name.unwrap_or("".to_string()),
             kind: base_task.kind,
             status: base_task.status,
             timeout: base_task.timeout,
@@ -56,22 +56,38 @@ pub fn list_task_filtered_paged(
     use crate::schema::task::dsl::*;
     // use diesel to find the required data
     let page_size = 50;
-    let result = task.offset(pagination.page.unwrap_or(0) * page_size)
-        .filter(
-            name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
-                .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string()))))
-                .and(status.like(format!("%{}%", filter.status.unwrap_or("".to_string()))))
-        )
-        .limit(page_size)
-        .load::<models::Task>(conn)?;
+    let result = if let Some(dto_status) = filter.status {
+        task.offset(pagination.page.unwrap_or(0) * page_size)
+            .filter(
+                name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
+                    .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string()))))
+                    .and(status.eq(dto_status)),
+            )
+            .limit(page_size)
+            .order(created_at.desc())
+            .load::<models::Task>(conn)?
+    } else {
+        task.offset(pagination.page.unwrap_or(0) * page_size)
+            .filter(
+                name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
+                    .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string())))),
+            )
+            .limit(page_size)
+            .order(created_at.desc())
+            .load::<models::Task>(conn)?
+    };
 
-    let tasks: Vec<dtos::BasicTaskDto> = result.into_iter()
+    let tasks: Vec<dtos::BasicTaskDto> = result
+        .into_iter()
         .map(|base_task| dtos::BasicTaskDto {
-            name: base_task.name,
+            name: base_task.name.unwrap_or_else(|| "".to_string()),
             kind: base_task.kind,
+            status: base_task.status,
+            created_at: base_task.created_at,
+            ended_at: base_task.ended_at,
         })
         .collect();
-    
+
     Ok(tasks)
 }
 
@@ -89,7 +105,7 @@ pub fn insert_new_task(
         name: dto.name,
         kind: dto.kind,
         // TODO: could be an enum
-        status: "waiting".to_owned(),
+        status: models::StatusKind::Pending,
         timeout: dto.timeout.unwrap_or(60),
     };
 

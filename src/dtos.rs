@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::models::ActionKindEnum;
+use crate::models::{ActionKindEnum, StatusKind};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewTaskDto {
@@ -14,6 +14,9 @@ pub struct NewTaskDto {
 pub struct BasicTaskDto {
     pub name: String,
     pub kind: String,
+    pub status: StatusKind,
+    pub created_at: chrono::NaiveDateTime,
+    pub ended_at: Option<chrono::NaiveDateTime>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -35,7 +38,7 @@ pub struct TaskDto {
     pub id: uuid::Uuid,
     pub name: String,
     pub kind: String,
-    pub status: String,
+    pub status: StatusKind,
     pub timeout: i32,
     pub actions: Vec<ActionDto>,
 }
@@ -49,6 +52,6 @@ pub struct PaginationDto {
 pub struct FilterDto {
     pub name: Option<String>,
     pub kind: Option<String>,
-    pub status: Option<String>,
+    pub status: Option<StatusKind>,
     pub timeout: Option<i32>,
 }
