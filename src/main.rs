@@ -59,7 +59,7 @@ async fn update_task(
     // map diesel query errors to a 500 error response
     .map_err(error::ErrorInternalServerError)?;
     if task.is_none() {
-        return Ok(HttpResponse::NotFound().body(format!("No task found with UID")));
+        return Ok(HttpResponse::NotFound().body("No task found with UID".to_string()));
     }
     // should enqueue the task update
     // should do real implem
@@ -68,7 +68,7 @@ async fn update_task(
     // if success has value -> increment success
     // if failure has value -> increment failure
     // if metadata has value -> update metadata
-    return Ok(HttpResponse::Ok().body(format!("Task updated successfully")));
+    Ok(HttpResponse::Ok().body("Task updated successfully".to_string()))
 }
 
 /// Finds user by UID.
@@ -96,7 +96,7 @@ async fn get_task(
         // user was found; return 200 response with JSON formatted user object
         Some(t) => HttpResponse::Ok().json(t),
         // user was not found; return 404 response with error message
-        None => HttpResponse::NotFound().body(format!("No task found with UID")),
+        None => HttpResponse::NotFound().body("No task found with UID".to_string()),
     })
 }
 

@@ -82,7 +82,7 @@ pub fn list_task_filtered_paged(
     let tasks: Vec<dtos::BasicTaskDto> = result
         .into_iter()
         .map(|base_task| dtos::BasicTaskDto {
-            name: base_task.name.unwrap_or_else(|| "".to_string()),
+            name: base_task.name.unwrap_or_default(),
             kind: base_task.kind,
             status: base_task.status,
             created_at: base_task.created_at,
@@ -126,11 +126,11 @@ pub fn insert_new_task(
                 trigger: models::TriggerKind::End,
             })
             .collect::<Vec<_>>();
-        let actions = diesel::insert_into(action)
+        
+        diesel::insert_into(action)
             .values(items)
             .returning(Action::as_returning())
-            .get_results(conn)?;
-        actions
+            .get_results(conn)?
     } else {
         vec![]
     };

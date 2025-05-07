@@ -1,5 +1,5 @@
 // use crate::actions::ActionKindEnum;
-use diesel::{prelude::*, sql_types::{Text, Timestamp}};
+use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
 
