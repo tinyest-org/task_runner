@@ -14,6 +14,7 @@ CREATE TABLE "task"(
 	success INT4  NOT NULL default 0,
 	failures INT4  NOT NULL default 0,
 	metadata  jsonb not null default '{}'::jsonb,
-	"ended_at" TIMESTAMP
+	"ended_at" TIMESTAMP,
+	"start_condition" jsonb not null
 );
 

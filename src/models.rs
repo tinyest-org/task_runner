@@ -2,6 +2,8 @@
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::rule::{Matcher, Rule, Rules};
+
 
 #[derive(Identifiable, Queryable, Selectable, Serialize, Debug)]
 #[diesel(table_name = crate::schema::task)]
@@ -18,6 +20,7 @@ pub struct Task {
     pub failures: i32,
     pub metadata: serde_json::Value,
     pub ended_at: Option<chrono::NaiveDateTime>,
+    pub start_condition: Rules,
 }
 
 #[derive(Identifiable, Queryable, Associations, Selectable, PartialEq, Debug, Serialize)]
@@ -43,6 +46,8 @@ pub struct NewTask {
     pub kind: String,
     pub status: StatusKind,
     pub timeout: i32,
+    pub metadata: serde_json::Value,
+    pub start_condition: Rules,
 }
 
 #[derive(Queryable, Associations, Selectable, PartialEq, Debug, Serialize, Insertable)]

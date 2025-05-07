@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::{
     dtos::{self, TaskDto},
     models::{self, Action, NewAction, Task},
+    rule::{self, Rule, Rules},
 };
 
 type DbError = Box<dyn std::error::Error + Send + Sync>;
@@ -109,6 +110,8 @@ pub fn insert_new_task(
         // TODO: could be an enum
         status: models::StatusKind::Pending,
         timeout: dto.timeout.unwrap_or(60),
+        metadata: serde_json::json!({}),
+        start_condition: Rules { rules: vec![] },
     };
 
     let new_task = diesel::insert_into(task)
@@ -126,7 +129,7 @@ pub fn insert_new_task(
                 trigger: models::TriggerKind::End,
             })
             .collect::<Vec<_>>();
-        
+
         diesel::insert_into(action)
             .values(items)
             .returning(Action::as_returning())

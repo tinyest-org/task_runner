@@ -45,6 +45,7 @@ diesel::table! {
         failures -> Int4,
         metadata -> Jsonb,
         ended_at -> Nullable<Timestamp>,
+        start_condition -> Jsonb,
     }
 }
 
