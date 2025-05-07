@@ -9,7 +9,7 @@ use actix_web::{
 use diesel::{prelude::*, r2d2};
 use task_runner::{
     db_operation,
-    dtos::{self, TaskDto},
+    dtos::{self},
 };
 use uuid::Uuid;
 
@@ -53,7 +53,7 @@ async fn update_task(
         // note that obtaining a connection from the pool is also potentially blocking
         let mut conn = pool.get()?;
 
-        db_operation::find_user_task_by_id(&mut conn, *task_id)
+        db_operation::find_detailed_task_by_id(&mut conn, *task_id)
     })
     .await?
     // map diesel query errors to a 500 error response
@@ -86,7 +86,7 @@ async fn get_task(
         // note that obtaining a connection from the pool is also potentially blocking
         let mut conn = pool.get()?;
 
-        db_operation::find_user_task_by_id(&mut conn, *task_id)
+        db_operation::find_detailed_task_by_id(&mut conn, *task_id)
     })
     .await?
     // map diesel query errors to a 500 error response
@@ -141,7 +141,6 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(pool.clone()))
             // add request logger middleware
             .wrap(middleware::Logger::default())
-            // add route handlers
             .service(get_task)
             .service(add_task)
             .service(list_task)
@@ -162,10 +161,3 @@ fn initialize_db_pool() -> DbPool {
         .build(manager)
         .expect("database URL should be valid path to SQLite DB file")
 }
-
-// If you need to have libpq first in your PATH, run:
-//   echo 'export PATH="/opt/homebrew/opt/libpq/bin:$PATH"' >> /Users/plawn/.zshrc
-
-// For compilers to find libpq you may need to set:
-//   export LDFLAGS="-L/opt/homebrew/opt/libpq/lib"
-//   export CPPFLAGS="-I/opt/homebrew/opt/libpq/include"

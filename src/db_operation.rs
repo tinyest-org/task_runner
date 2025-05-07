@@ -9,6 +9,7 @@ use crate::{
 
 type DbError = Box<dyn std::error::Error + Send + Sync>;
 
+/// TaskDto is a data transfer object that represents a task with its actions.
 impl TaskDto {
     pub fn new(base_task: Task, actions: Vec<Action>) -> Self {
         Self {
@@ -29,7 +30,7 @@ impl TaskDto {
 }
 
 /// Run query using Diesel to find user by uid and return it.
-pub fn find_user_task_by_id(
+pub fn find_detailed_task_by_id(
     conn: &mut PgConnection,
     task_id: Uuid,
 ) -> Result<Option<dtos::TaskDto>, DbError> {
@@ -56,8 +57,9 @@ pub fn list_task_filtered_paged(
     use crate::schema::task::dsl::*;
     // use diesel to find the required data
     let page_size = 50;
+    let offset = pagination.page.unwrap_or(0) * page_size;
     let result = if let Some(dto_status) = filter.status {
-        task.offset(pagination.page.unwrap_or(0) * page_size)
+        task.offset(offset)
             .filter(
                 name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
                     .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string()))))
@@ -67,7 +69,7 @@ pub fn list_task_filtered_paged(
             .order(created_at.desc())
             .load::<models::Task>(conn)?
     } else {
-        task.offset(pagination.page.unwrap_or(0) * page_size)
+        task.offset(offset)
             .filter(
                 name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
                     .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string())))),
@@ -91,7 +93,7 @@ pub fn list_task_filtered_paged(
     Ok(tasks)
 }
 
-/// Run query using Diesel to insert a new database row and return the result.
+/// Insert a new task into the database.
 pub fn insert_new_task(
     conn: &mut PgConnection,
     dto: dtos::NewTaskDto, // prevent collision with `name` column imported inside the function
