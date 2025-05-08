@@ -1,3 +1,4 @@
+use chrono::Utc;
 use diesel::prelude::*;
 
 use uuid::Uuid;
@@ -31,6 +32,36 @@ impl TaskDto {
                 .collect(),
         }
     }
+}
+
+/// Update all tasks with status running and last_updated older than timeout to failed and update the ended_at field
+/// to the current time.
+pub fn ensure_pending_tasks_timeout(conn: &mut PgConnection) -> Result<usize, DbError> {
+    use crate::schema::task::dsl::*;
+    use diesel::dsl::now;
+    use diesel::prelude::*;
+
+    let updated = diesel::update(
+        task.filter(
+            status
+                .eq(models::StatusKind::Running)
+                .and(last_updated.lt(diesel::dsl::sql("now() - (interval '1 second' * timeout)"))),
+        ),
+    )
+    // .and(last_updated.lt(now - chrono::Duration::seconds(timeout)))))
+    .set((status.eq(models::StatusKind::Failure), ended_at.eq(now)))
+    .execute(conn)?;
+    Ok(updated)
+}
+
+pub fn list_all_pending(conn: &mut PgConnection) -> Result<Vec<Task>, DbError> {
+    use crate::schema::task::dsl::*;
+    use diesel::prelude::*;
+
+    let tasks = task
+        .filter(status.eq(models::StatusKind::Pending))
+        .get_results::<Task>(conn)?;
+    Ok(tasks)
 }
 
 /// Run query using Diesel to find user by uid and return it.
@@ -98,25 +129,17 @@ pub fn list_task_filtered_paged(
 }
 
 /// Insert a new task into the database.
-pub fn insert_new_task(
-    conn: &mut PgConnection,
-    dto: dtos::NewTaskDto, // prevent collision with `name` column imported inside the function
-) -> Result<TaskDto, DbError> {
-    // It is common when using Diesel with Actix Web to import schema-related
-    // modules inside a function's scope (rather than the normal module's scope)
-    // to prevent import collisions and namespace pollution.
+pub fn insert_new_task(conn: &mut PgConnection, dto: dtos::NewTaskDto) -> Result<TaskDto, DbError> {
     use crate::schema::action::dsl::action;
     use crate::schema::task::dsl::task;
+    
     let new_task = models::NewTask {
         name: dto.name,
         kind: dto.kind,
-        // TODO: could be an enum
         status: models::StatusKind::Pending,
         timeout: dto.timeout.unwrap_or(60),
         metadata: dto.metadata.unwrap_or(serde_json::Value::Null),
-        start_condition: dto.rules.unwrap_or(Rules {
-            conditions: vec![],
-        }),
+        start_condition: dto.rules.unwrap_or(Rules { conditions: vec![] }),
     };
 
     let new_task = diesel::insert_into(task)

@@ -6,9 +6,10 @@ const req = await fetch("http://localhost:8080/task", {
     body: JSON.stringify({
         "name": "cluster",
         "kind": "cluster",
+        "timeout": 4,
         "rules": {
             // condition to before starting the task
-            "conditions": [ 
+            "conditions": [
                 {
                     type: "Concurency",
                     max_concurency: 1,
@@ -22,12 +23,23 @@ const req = await fetch("http://localhost:8080/task", {
                 },
             ],
         },
+        "metadata": {
+            "projectId": 1251,
+        },
         "actions": [
             {
+                // add trigger
                 "name": "Call main api",
                 "kind": "Webhook",
                 "params": {
-                    "projectId": 1251,
+                    "url": "http://localhost:9090/task",
+                    "verb": "Post",
+                    "body": {
+                        "values_in_body": [1, 4],
+                    },
+                    "headers": {
+                        "content-type": "application/json"
+                    },
                 },
             },
         ],

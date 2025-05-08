@@ -40,6 +40,7 @@ diesel::table! {
         status -> StatusKind,
         created_at -> Timestamp,
         timeout -> Int4,
+        started_at -> Nullable<Timestamp>,
         last_updated -> Timestamp,
         success -> Int4,
         failures -> Int4,

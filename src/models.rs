@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 // use crate::actions::ActionKindEnum;
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -15,6 +17,7 @@ pub struct Task {
     pub status: StatusKind,
     pub created_at: chrono::NaiveDateTime,
     pub timeout: i32,
+    pub started_at: Option<chrono::NaiveDateTime>,
     pub last_updated: chrono::NaiveDateTime,
     pub success: i32,
     pub failures: i32,
@@ -37,6 +40,7 @@ pub struct Action {
     pub trigger: TriggerKind,
     pub success: Option<bool>,
 }
+
 
 /// New user details.
 #[derive(Debug, Clone, Serialize, Deserialize, Insertable)]
@@ -64,6 +68,18 @@ pub struct NewAction {
     // TODO: add params
 }
 
+impl NewAction {
+    pub fn new(task_id: uuid::Uuid, kind: ActionKindEnum, params: serde_json::Value, trigger: TriggerKind) -> Self {
+        // should validate the params against the kind
+        Self {
+            task_id,
+            kind,
+            params,
+            trigger,
+        }
+    }
+}
+
 #[derive(Debug,PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone)]
 #[db_enum(existing_type_path = "crate::schema::sql_types::ActionKind")]
 pub enum ActionKindEnum {
@@ -82,13 +98,3 @@ pub enum StatusKind {
     Pending, Running, Failure, Success
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub enum HttpVerb {
-    Get, Post, Delete, Put, Patch
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WebhookParamas {
-    url: String,
-    verb: HttpVerb,
-}

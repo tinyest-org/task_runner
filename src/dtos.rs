@@ -24,7 +24,7 @@ pub struct BasicTaskDto {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateTaskDto {
     pub metadata: Option<serde_json::Value>,
-    pub status: Option<String>,
+    pub status: Option<StatusKind>,
     pub new_success: Option<i32>,
     pub new_failures: Option<i32>,
 }

@@ -3,18 +3,17 @@
 //! Diesel v2 is not an async library, so we have to execute queries in `web::block` closures which
 //! offload blocking code (like Diesel's) to a thread-pool in order to not block the server.
 
+use std::thread;
+
 use actix_web::{
-    App, HttpResponse, HttpServer, Responder, error, get, middleware, patch, post, web,
+    App, HttpResponse, HttpServer, Responder, error, get, middleware, patch, post, rt, web,
 };
 use diesel::{prelude::*, r2d2};
 use task_runner::{
-    db_operation,
+    DbPool, db_operation,
     dtos::{self},
 };
 use uuid::Uuid;
-
-/// Short-hand for the database pool type to use throughout the app.
-type DbPool = r2d2::Pool<r2d2::ConnectionManager<PgConnection>>;
 
 #[get("/task")]
 async fn list_task(
@@ -49,18 +48,19 @@ async fn update_task(
     form: web::Json<dtos::UpdateTaskDto>,
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
-    let task = web::block(move || {
-        // note that obtaining a connection from the pool is also potentially blocking
-        let mut conn = pool.get()?;
+    log::info!("Update task: {:?}", &form.status);
+    // let task = web::block(move || {
+    //     // note that obtaining a connection from the pool is also potentially blocking
+    //     let mut conn = pool.get()?;
 
-        db_operation::find_detailed_task_by_id(&mut conn, *task_id)
-    })
-    .await?
-    // map diesel query errors to a 500 error response
-    .map_err(error::ErrorInternalServerError)?;
-    if task.is_none() {
-        return Ok(HttpResponse::NotFound().body("No task found with UID".to_string()));
-    }
+    //     db_operation::find_detailed_task_by_id(&mut conn, *task_id)
+    // })
+    // .await?
+    // // map diesel query errors to a 500 error response
+    // .map_err(error::ErrorInternalServerError)?;
+    // if task.is_none() {
+    //     return Ok(HttpResponse::NotFound().body("No task found with UID".to_string()));
+    // }
     // should enqueue the task update
     // should do real implem
     // -> push to redis queue
@@ -134,6 +134,17 @@ async fn main() -> std::io::Result<()> {
     let pool = initialize_db_pool();
 
     log::info!("starting HTTP server at http://localhost:8080");
+
+    let p = pool.clone();
+    thread::spawn(move || {
+        // start timeout worker
+        task_runner::workers::start_loop(p);
+    });
+    let p2 = pool.clone();
+    thread::spawn(move || {
+        // start timeout worker
+        task_runner::workers::timeout_loop(p2);
+    });
 
     HttpServer::new(move || {
         App::new()

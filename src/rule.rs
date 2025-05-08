@@ -22,7 +22,7 @@ use crate::models::StatusKind;
 ///},
 ///},
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type")] // -> this way the "type" field will be used to determine the type of the rule
 pub enum Rule {
     None, // we start immediately
     Concurency(ConcurencyRule),
