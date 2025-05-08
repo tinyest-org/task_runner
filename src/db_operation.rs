@@ -25,6 +25,11 @@ impl TaskDto {
             rules: base_task.start_condition,
             metadata: base_task.metadata,
             created_at: base_task.created_at,
+            success: base_task.success,
+            failures: base_task.failures,
+            ended_at: base_task.ended_at,
+            last_updated: base_task.last_updated,
+            started_at: base_task.started_at,
             actions: actions
                 .iter()
                 .map(|a| dtos::ActionDto {
@@ -66,22 +71,26 @@ pub fn update_task(
     conn: &mut PgConnection,
     task_id: Uuid,
     dto: dtos::UpdateTaskDto,
-) -> Result<(), DbError> {
+) -> Result<usize, DbError> {
     use {crate::schema::task::dsl::*, diesel::prelude::*};
-
-    let mut query = diesel::update(task.filter(id.eq(task_id))).set((
-        success.eq(success + dto.new_success.unwrap_or(0)),
-        failures.eq(failures + dto.new_failures.unwrap_or(0)),
-        dto.metadata.map(|m| metadata.eq(m)),
-        dto.status.map(|m| status.eq(m)),
-    ));
-
-    Ok(())
-
-    // updated_task.last_updated = Utc::now().naive_utc();
-
-    // let actions = Action::belonging_to(&updated_task).load::<Action>(conn)?;
-    // Ok(TaskDto::new(updated_task, actions))
+    log::info!("Update task: {:?}", &dto);
+    let s = dto.status.clone();
+    let res =
+        diesel::update(task.filter(id.eq(task_id).and(status.ne(models::StatusKind::Failure))))
+            .set((
+                last_updated.eq(diesel::dsl::now),
+                success.eq(success + dto.new_success.unwrap_or(0)),
+                failures.eq(failures + dto.new_failures.unwrap_or(0)),
+                // if success or failure then update ended_at
+                s.filter(|e| {
+                    *e == models::StatusKind::Success || *e == models::StatusKind::Failure
+                })
+                .map(|_| ended_at.eq(diesel::dsl::now)),
+                dto.metadata.map(|m| metadata.eq(m)),
+                dto.status.map(|m| status.eq(m)),
+            ))
+            .execute(conn)?;
+    Ok(res)
 }
 
 /// Run query using Diesel to find user by uid and return it.

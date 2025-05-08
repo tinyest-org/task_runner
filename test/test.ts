@@ -6,7 +6,7 @@ const req = await fetch("http://localhost:8080/task", {
     body: JSON.stringify({
         "name": "cluster",
         "kind": "cluster",
-        "timeout": 4,
+        "timeout": 6,
         "rules": {
             // condition to before starting the task
             "conditions": [
@@ -36,9 +36,10 @@ const req = await fetch("http://localhost:8080/task", {
                     "verb": "Post",
                     "body": {
                         "values_in_body": [1, 4],
+                        "wait_for": 2,
                     },
                     "headers": {
-                        "content-type": "application/json"
+                        "content-type": "application/json",
                     },
                 },
             },

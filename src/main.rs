@@ -38,9 +38,6 @@ async fn list_task(
     Ok(HttpResponse::Ok().json(tasks))
 }
 
-// update task metadata
-// update counters
-// update last_updated
 #[patch("/task/{task_id}")]
 async fn update_task(
     pool: web::Data<DbPool>,
@@ -52,23 +49,17 @@ async fn update_task(
     let task = web::block(move || {
         // note that obtaining a connection from the pool is also potentially blocking
         let mut conn = pool.get()?;
-
-        db_operation::find_detailed_task_by_id(&mut conn, *task_id)
+        db_operation::update_task(&mut conn, *task_id, form.0)
+        // db_operation::find_detailed_task_by_id(&mut conn, *task_id)
     })
     .await?
-    // map diesel query errors to a 500 error response
     .map_err(error::ErrorInternalServerError)?;
-    // if task.is_none() {
-    //     return Ok(HttpResponse::NotFound().body("No task found with UID".to_string()));
-    // }
-    // should enqueue the task update
-    // should do real implem
-    // -> push to redis queue
-    // we need to update the last_updated field
-    // if success has value -> increment success
-    // if failure has value -> increment failure
-    // if metadata has value -> update metadata
-    Ok(HttpResponse::Ok().body("Task updated successfully".to_string()))
+    if task == 1 {
+        Ok(HttpResponse::Ok().body("Task updated successfully".to_string()))
+    } else {
+        // not found
+        Ok(HttpResponse::NotFound().body("Task not found".to_string()))
+    }
 }
 
 /// Finds user by UID.

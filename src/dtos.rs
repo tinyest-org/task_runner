@@ -46,6 +46,11 @@ pub struct TaskDto {
     pub metadata: serde_json::Value,
     pub actions: Vec<ActionDto>,
     pub created_at: chrono::NaiveDateTime,
+    pub started_at: Option<chrono::NaiveDateTime>,
+    pub ended_at: Option<chrono::NaiveDateTime>,
+    pub last_updated: chrono::NaiveDateTime,
+    pub success: i32,
+    pub failures: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
