@@ -1,5 +1,5 @@
 use chrono::Utc;
-use diesel::prelude::*;
+use diesel::{pg::sql_types, prelude::*};
 
 use uuid::Uuid;
 
@@ -40,15 +40,14 @@ pub fn ensure_pending_tasks_timeout(conn: &mut PgConnection) -> Result<usize, Db
     use crate::schema::task::dsl::*;
     use diesel::dsl::now;
     use diesel::prelude::*;
-
+    use diesel::pg::data_types::PgInterval;
     let updated = diesel::update(
         task.filter(
             status
                 .eq(models::StatusKind::Running)
-                .and(last_updated.lt(diesel::dsl::sql("now() - (interval '1 second' * timeout)"))),
+                .and(last_updated.lt(now.into_sql::<sql_types::Timestamptz>() - (timeout * PgInterval::from_microseconds(1_000_000).into_sql()))),
         ),
     )
-    // .and(last_updated.lt(now - chrono::Duration::seconds(timeout)))))
     .set((status.eq(models::StatusKind::Failure), ended_at.eq(now)))
     .execute(conn)?;
     Ok(updated)
@@ -62,6 +61,29 @@ pub fn list_all_pending(conn: &mut PgConnection) -> Result<Vec<Task>, DbError> {
         .filter(status.eq(models::StatusKind::Pending))
         .get_results::<Task>(conn)?;
     Ok(tasks)
+}
+
+pub fn update_task(
+    conn: &mut PgConnection,
+    task_id: Uuid,
+    dto: dtos::UpdateTaskDto,
+) -> Result<(), DbError> {
+    use crate::schema::task::dsl::*;
+    use diesel::prelude::*;
+
+    let mut query = diesel::update(task.filter(id.eq(task_id))).set((
+        success.eq(success + dto.new_success.unwrap_or(0)),
+        failures.eq(failures + dto.new_failures.unwrap_or(0)),
+        dto.metadata.map(|m| metadata.eq(m)),
+        dto.status.map(|m| status.eq(m)),
+    ));
+
+    Ok(())
+
+    // updated_task.last_updated = Utc::now().naive_utc();
+
+    // let actions = Action::belonging_to(&updated_task).load::<Action>(conn)?;
+    // Ok(TaskDto::new(updated_task, actions))
 }
 
 /// Run query using Diesel to find user by uid and return it.
@@ -132,7 +154,7 @@ pub fn list_task_filtered_paged(
 pub fn insert_new_task(conn: &mut PgConnection, dto: dtos::NewTaskDto) -> Result<TaskDto, DbError> {
     use crate::schema::action::dsl::action;
     use crate::schema::task::dsl::task;
-    
+
     let new_task = models::NewTask {
         name: dto.name,
         kind: dto.kind,

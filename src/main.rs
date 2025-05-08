@@ -49,15 +49,15 @@ async fn update_task(
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
     log::info!("Update task: {:?}", &form.status);
-    // let task = web::block(move || {
-    //     // note that obtaining a connection from the pool is also potentially blocking
-    //     let mut conn = pool.get()?;
+    let task = web::block(move || {
+        // note that obtaining a connection from the pool is also potentially blocking
+        let mut conn = pool.get()?;
 
-    //     db_operation::find_detailed_task_by_id(&mut conn, *task_id)
-    // })
-    // .await?
-    // // map diesel query errors to a 500 error response
-    // .map_err(error::ErrorInternalServerError)?;
+        db_operation::find_detailed_task_by_id(&mut conn, *task_id)
+    })
+    .await?
+    // map diesel query errors to a 500 error response
+    .map_err(error::ErrorInternalServerError)?;
     // if task.is_none() {
     //     return Ok(HttpResponse::NotFound().body("No task found with UID".to_string()));
     // }

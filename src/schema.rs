@@ -38,14 +38,14 @@ diesel::table! {
         name -> Nullable<Text>,
         kind -> Text,
         status -> StatusKind,
-        created_at -> Timestamp,
+        created_at -> Timestamptz,
         timeout -> Int4,
-        started_at -> Nullable<Timestamp>,
-        last_updated -> Timestamp,
+        started_at -> Nullable<Timestamptz>,
+        last_updated -> Timestamptz,
         success -> Int4,
         failures -> Int4,
         metadata -> Jsonb,
-        ended_at -> Nullable<Timestamp>,
+        ended_at -> Nullable<Timestamptz>,
         start_condition -> Jsonb,
     }
 }

@@ -24,6 +24,8 @@ pub fn timeout_loop(pool: DbPool) {
                         // use logger instead of println
                         if count > 0 {  
                             log::warn!("Timeout worker: {} tasks failed", count);    
+                        } else {
+                            log::debug!("Timeout worker: no tasks failed");
                         }
                     }
                     Err(e) => {
@@ -55,7 +57,7 @@ pub fn start_loop(pool: DbPool) {
             match res {
                 Ok(tasks) => {
                     // use logger instead of println
-                    log::info!("Start worker: found {} tasks", tasks.len());
+                    log::debug!("Start worker: found {} tasks", tasks.len());
                     for t in tasks {
                         if evaluate_rule(&t) {
                             // start the task
@@ -63,7 +65,7 @@ pub fn start_loop(pool: DbPool) {
                             match res {
                                 Ok(_) => {
                                     // use logger instead of println
-                                    log::info!("Start worker: task {} started", t.id);
+                                    log::debug!("Start worker: task {} started", t.id);
                                     // update the task status to running
                                     use crate::schema::task::dsl::*;
                                     use diesel::dsl::now;
@@ -81,7 +83,7 @@ pub fn start_loop(pool: DbPool) {
                             }
                         } else {
                             // use logger instead of println
-                            log::info!("Start worker: task {} not started", t.id);
+                            log::warn!("Start worker: task {} not started", t.id);
                         }
                     }
                 }
@@ -114,7 +116,7 @@ fn start_task(task: &Task, conn: &mut PgConnection) -> Result<(), diesel::result
             Ok(_) => {
                 // update the action status to success
                 // update the action ended_at timestamp
-                log::info!("Action {} executed successfully", action.id);
+                log::debug!("Action {} executed successfully", action.id);
             }
             Err(e) => {
                 // update the action status to failure

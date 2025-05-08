@@ -8,14 +8,14 @@ CREATE TABLE "task"(
 	"name" TEXT,
 	"kind" TEXT NOT NULL,
 	"status" status_kind NOT NULL,
-	"created_at"TIMESTAMP not null default now(),
+	"created_at"TIMESTAMPTZ not null default now(),
 	"timeout" INT4 NOT NULL,
-	"started_at" TIMESTAMP,
-	"last_updated" TIMESTAMP not null default now(),
+	"started_at" TIMESTAMPTZ,
+	"last_updated" TIMESTAMPTZ not null default now(),
 	success INT4  NOT NULL default 0,
 	failures INT4  NOT NULL default 0,
 	metadata  jsonb not null default '{}'::jsonb,
-	"ended_at" TIMESTAMP,
+	"ended_at" TIMESTAMPTZ,
 	"start_condition" jsonb not null
 );
 
