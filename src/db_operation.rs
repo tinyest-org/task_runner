@@ -1,5 +1,7 @@
-use chrono::Utc;
-use diesel::{pg::sql_types, prelude::*};
+use {
+    chrono::Utc,
+    diesel::{prelude::*, sql_types},
+};
 
 use uuid::Uuid;
 
@@ -34,28 +36,25 @@ impl TaskDto {
     }
 }
 
-/// Update all tasks with status running and last_updated older than timeout to failed and update the ended_at field
-/// to the current time.
+/// Update all tasks with status running and last_updated older than timeout to failed and update
+/// the ended_at field to the current time.
 pub fn ensure_pending_tasks_timeout(conn: &mut PgConnection) -> Result<usize, DbError> {
-    use crate::schema::task::dsl::*;
-    use diesel::dsl::now;
-    use diesel::prelude::*;
-    use diesel::pg::data_types::PgInterval;
-    let updated = diesel::update(
-        task.filter(
-            status
-                .eq(models::StatusKind::Running)
-                .and(last_updated.lt(now.into_sql::<sql_types::Timestamptz>() - (timeout * PgInterval::from_microseconds(1_000_000).into_sql()))),
-        ),
-    )
+    use {
+        crate::schema::task::dsl::*,
+        diesel::{dsl::now, pg::data_types::PgInterval, prelude::*},
+    };
+    let updated = diesel::update(task.filter(status.eq(models::StatusKind::Running).and(
+        last_updated.lt(now.into_sql::<sql_types::Timestamptz>()
+            - (PgInterval::from_microseconds(1_000_000).into_sql::<sql_types::Interval>()
+                * timeout)),
+    )))
     .set((status.eq(models::StatusKind::Failure), ended_at.eq(now)))
     .execute(conn)?;
     Ok(updated)
 }
 
 pub fn list_all_pending(conn: &mut PgConnection) -> Result<Vec<Task>, DbError> {
-    use crate::schema::task::dsl::*;
-    use diesel::prelude::*;
+    use {crate::schema::task::dsl::*, diesel::prelude::*};
 
     let tasks = task
         .filter(status.eq(models::StatusKind::Pending))
@@ -68,8 +67,7 @@ pub fn update_task(
     task_id: Uuid,
     dto: dtos::UpdateTaskDto,
 ) -> Result<(), DbError> {
-    use crate::schema::task::dsl::*;
-    use diesel::prelude::*;
+    use {crate::schema::task::dsl::*, diesel::prelude::*};
 
     let mut query = diesel::update(task.filter(id.eq(task_id))).set((
         success.eq(success + dto.new_success.unwrap_or(0)),
@@ -152,8 +150,7 @@ pub fn list_task_filtered_paged(
 
 /// Insert a new task into the database.
 pub fn insert_new_task(conn: &mut PgConnection, dto: dtos::NewTaskDto) -> Result<TaskDto, DbError> {
-    use crate::schema::action::dsl::action;
-    use crate::schema::task::dsl::task;
+    use crate::schema::{action::dsl::action, task::dsl::task};
 
     let new_task = models::NewTask {
         name: dto.name,
