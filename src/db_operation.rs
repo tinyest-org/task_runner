@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::{
     dtos::{self, TaskDto},
     models::{self, Action, NewAction, Task},
-    rule::{Rules},
+    rule::Rules,
 };
 
 type DbError = Box<dyn std::error::Error + Send + Sync>;
@@ -72,7 +72,9 @@ pub fn update_task(
     use {crate::schema::task::dsl::*, diesel::prelude::*};
     log::debug!("Update task: {:?}", &dto);
     let s = dto.status.clone();
-    let is_end = dto.status.clone()
+    let is_end = dto
+        .status
+        .clone()
         .map(|e| e == models::StatusKind::Success || e == models::StatusKind::Failure)
         .unwrap_or(false);
     let res =

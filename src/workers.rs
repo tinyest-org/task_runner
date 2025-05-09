@@ -97,7 +97,7 @@ pub fn start_loop(pool: DbPool) {
     }
 }
 
-fn evaluate_rule(task: &Task) -> bool {
+fn evaluate_rule(_task: &Task) -> bool {
     // evaluate the rule
     // if the rule is satisfied, return true
     // else return false

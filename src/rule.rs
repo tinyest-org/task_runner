@@ -54,7 +54,7 @@ impl ToSql<Jsonb, Pg> for Rules {
         // <serde_json::Value as FromSql<Jsonb, Pg>>::to_sql(
         // we should be able to use jsonb implementation but the borrow checker
         // doesn't like it
-        out.write(&[1])?; // JSONB version
+        out.write_all(&[1])?; // JSONB version
         out.write_all(&serde_json::to_vec(&self)?)?;
         Ok(IsNull::No)
     }

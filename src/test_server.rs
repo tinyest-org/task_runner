@@ -58,6 +58,9 @@ async fn do_task(
             log::error!("Failed to send request: {}", e);
             error::ErrorInternalServerError("Failed to send request")
         });
+        if let Err(err) = result {
+            log::error!("Error occurred: {:?}", err);
+        }
     });
     Ok(HttpResponse::Ok())
 }
