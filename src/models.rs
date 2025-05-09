@@ -1,10 +1,9 @@
-use std::collections::HashMap;
 
 // use crate::actions::ActionKindEnum;
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::rule::{Matcher, Rule, Rules};
+use crate::rule::Rules;
 
 
 #[derive(Identifiable, Queryable, Selectable, Serialize, Debug)]

@@ -1,14 +1,11 @@
-use {
-    chrono::Utc,
-    diesel::{prelude::*, sql_types},
-};
+use diesel::{prelude::*, sql_types};
 
 use uuid::Uuid;
 
 use crate::{
     dtos::{self, TaskDto},
     models::{self, Action, NewAction, Task},
-    rule::{self, Rule, Rules},
+    rule::{Rules},
 };
 
 type DbError = Box<dyn std::error::Error + Send + Sync>;

@@ -1,9 +1,8 @@
-use std::{sync::Arc, thread, vec};
+use std::{sync::Arc, thread};
 
-use actix_web::{rt, web};
 use diesel::{BelongingToDsl, PgConnection, RunQueryDsl};
 
-use crate::{db_operation, models::{self, Action, Task}, schema::action, DbPool};
+use crate::{db_operation, models::{self, Action, Task}, DbPool};
 
 pub fn timeout_loop(pool: DbPool) {
     let p = Arc::from(pool);
@@ -111,7 +110,7 @@ fn start_task(task: &Task, conn: &mut PgConnection) -> Result<(), diesel::result
     // update the task started_at timestamp
     let actions = Action::belonging_to(&task).load::<Action>(conn)?;
     for action in actions {
-        let res = action.execute(&task);
+        let res = action.execute(task);
         match res {
             Ok(_) => {
                 // update the action status to success

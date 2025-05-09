@@ -6,7 +6,7 @@
 use std::thread;
 
 use actix_web::{
-    App, HttpResponse, HttpServer, Responder, error, get, middleware, patch, post, rt, web,
+    App, HttpResponse, HttpServer, Responder, error, get, middleware, patch, post, web,
 };
 use diesel::{prelude::*, r2d2};
 use task_runner::{
