@@ -73,14 +73,17 @@ pub fn update_task(
     dto: dtos::UpdateTaskDto,
 ) -> Result<usize, DbError> {
     use {crate::schema::task::dsl::*, diesel::prelude::*};
-    log::info!("Update task: {:?}", &dto);
+    log::debug!("Update task: {:?}", &dto);
     let s = dto.status.clone();
+    let is_end = dto.status.clone()
+        .map(|e| e == models::StatusKind::Success || e == models::StatusKind::Failure)
+        .unwrap_or(false);
     let res =
         diesel::update(task.filter(id.eq(task_id).and(status.ne(models::StatusKind::Failure))))
             .set((
                 last_updated.eq(diesel::dsl::now),
-                success.eq(success + dto.new_success.unwrap_or(0)),
-                failures.eq(failures + dto.new_failures.unwrap_or(0)),
+                dto.new_success.map(|e| failures.eq(success + e)),
+                dto.new_failures.map(|e| success.eq(failures + e)),
                 // if success or failure then update ended_at
                 s.filter(|e| {
                     *e == models::StatusKind::Success || *e == models::StatusKind::Failure
@@ -90,6 +93,9 @@ pub fn update_task(
                 dto.status.map(|m| status.eq(m)),
             ))
             .execute(conn)?;
+    if is_end {
+        // TODO: execute on end action triggers
+    }
     Ok(res)
 }
 
