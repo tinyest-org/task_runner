@@ -1,8 +1,12 @@
 use std::{sync::Arc, thread};
 
 use diesel::{BelongingToDsl, PgConnection, RunQueryDsl};
+use serde_json::json;
 
-use crate::{db_operation, models::{self, Action, Task}, DbPool};
+use crate::{
+    DbPool, db_operation,
+    models::{self, Action, Task},
+};
 
 pub fn timeout_loop(pool: DbPool) {
     let p = Arc::from(pool);
@@ -13,29 +17,32 @@ pub fn timeout_loop(pool: DbPool) {
         // and update the ended_at timestamp
         let pp = p.clone();
 
-            // note that obtaining a connection from the pool is also potentially blocking
-            let conn = pp.get();
+        // note that obtaining a connection from the pool is also potentially blocking
+        let conn = pp.get();
 
-            if let Ok(mut conn) = conn {
-                let res = db_operation::ensure_pending_tasks_timeout(&mut conn);
-                match res {
-                    Ok(count) => {
-                        // use logger instead of println
-                        if count > 0 {  
-                            log::warn!("Timeout worker: {} tasks failed", count);    
-                        } else {
-                            log::debug!("Timeout worker: no tasks failed");
-                        }
-                    }
-                    Err(e) => {
-                        // use logger instead of println
-                        log::error!("Timeout worker: error updating tasks: {:?}", e);
+        if let Ok(mut conn) = conn {
+            let res = db_operation::ensure_pending_tasks_timeout(&mut conn);
+            match res {
+                Ok(failed) => {
+                    // use logger instead of println
+                    if failed.len() > 0 {
+                        log::warn!(
+                            "Timeout worker: {} tasks failed, {:?}",
+                            &failed.len(),
+                            &failed.iter().map(|e| e.id).collect::<Vec<_>>()
+                        );
+                    } else {
+                        log::debug!("Timeout worker: no tasks failed");
                     }
                 }
+                Err(e) => {
+                    // use logger instead of println
+                    log::error!("Timeout worker: error updating tasks: {:?}", e);
+                }
             }
+        }
 
-
-            thread::sleep(std::time::Duration::from_secs(1));
+        thread::sleep(std::time::Duration::from_secs(1));
     }
 }
 
@@ -58,7 +65,7 @@ pub fn start_loop(pool: DbPool) {
                     // use logger instead of println
                     log::debug!("Start worker: found {} tasks", tasks.len());
                     for t in tasks {
-                        if evaluate_rule(&t) {
+                        if evaluate_rule(&t, &mut conn) {
                             // start the task
                             let res = start_task(&t, &mut conn);
                             match res {
@@ -70,18 +77,23 @@ pub fn start_loop(pool: DbPool) {
                                     use diesel::dsl::now;
                                     use diesel::prelude::*;
                                     diesel::update(task.filter(id.eq(t.id)))
-                                        .set((status.eq(models::StatusKind::Running), started_at.eq(now)))
+                                        .set((
+                                            status.eq(models::StatusKind::Running),
+                                            started_at.eq(now),
+                                            last_updated.eq(now),
+                                        ))
                                         .execute(&mut conn)
                                         .expect("Failed to update task status");
-
                                 }
                                 Err(e) => {
-                                    // use logger instead of println
-                                    log::error!("Start worker: error starting task {}: {:?}", t.id, e);
+                                    log::error!(
+                                        "Start worker: error starting task {}: {:?}",
+                                        t.id,
+                                        e
+                                    );
                                 }
                             }
                         } else {
-                            // use logger instead of println
                             log::warn!("Start worker: task {} not started", t.id);
                         }
                     }
@@ -97,11 +109,41 @@ pub fn start_loop(pool: DbPool) {
     }
 }
 
-fn evaluate_rule(_task: &Task) -> bool {
-    // evaluate the rule
-    // if the rule is satisfied, return true
-    // else return false
-    true
+fn evaluate_rule(_task: &Task, conn: &mut PgConnection) -> bool {
+    // TODO: only support basic rule for now
+    if _task.start_condition.conditions.len() == 1 {
+        let cond = _task.start_condition.conditions.get(0).unwrap();
+        return match cond {
+            crate::rule::Rule::None => true,
+            crate::rule::Rule::Concurency(concurency_rule) => {
+                use crate::schema::task::dsl::*;
+                use diesel::PgJsonbExpressionMethods;
+                use diesel::prelude::*;
+                let m1 = concurency_rule.matcher.clone();
+                let mut m = json!({});
+                m1.fields.iter().for_each(|e| {
+                    let k = _task.metadata.get(e);
+                    match k {
+                        Some(v) => {
+                            m[e] = v.clone();
+                        }
+                        None => unreachable!("None should't be there"),
+                    }
+                });
+                let l = task
+                    .filter(
+                        kind.eq(m1.kind)
+                            .and(status.eq(m1.status))
+                            .and(metadata.contains(m)),
+                    )
+                    .load::<Task>(conn)
+                    .expect("failed to count for execution");
+                log::info!("count: {}", &l.len());
+                l.len() < concurency_rule.max_concurency.try_into().unwrap()
+            }
+        };
+    }
+    return false;
 }
 
 fn start_task(task: &Task, conn: &mut PgConnection) -> Result<(), diesel::result::Error> {

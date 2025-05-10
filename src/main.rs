@@ -45,7 +45,7 @@ async fn update_task(
     form: web::Json<dtos::UpdateTaskDto>,
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
-    log::info!("Update task: {:?}", &form.status);
+    log::debug!("Update task: {:?}", &form.status);
     let task = web::block(move || {
         // note that obtaining a connection from the pool is also potentially blocking
         let mut conn = pool.get()?;

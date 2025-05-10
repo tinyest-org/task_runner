@@ -19,6 +19,11 @@ diesel-derive-enum = { version = "3.0.0-beta.1", features = ["postgres"] }
 chrono = {version = "0.4.41", features = ["serde"]}
 actix = {version = "0.13.5", features = []}
 
+[profile.release]
+strip = true  # Automatically strip symbols from the binary.
+lto = true
+codegen-units = 1
+
 [[bin]]
 name = "server"
 path = "src/main.rs"

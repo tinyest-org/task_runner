@@ -40,18 +40,24 @@ impl TaskDto {
 
 /// Update all tasks with status running and last_updated older than timeout to failed and update
 /// the ended_at field to the current time.
-pub fn ensure_pending_tasks_timeout(conn: &mut PgConnection) -> Result<usize, DbError> {
+pub fn ensure_pending_tasks_timeout(conn: &mut PgConnection) -> Result<Vec<Task>, DbError> {
     use {
         crate::schema::task::dsl::*,
         diesel::{dsl::now, pg::data_types::PgInterval, prelude::*},
     };
-    let updated = diesel::update(task.filter(status.eq(models::StatusKind::Running).and(
-        last_updated.lt(now.into_sql::<sql_types::Timestamptz>()
-            - (PgInterval::from_microseconds(1_000_000).into_sql::<sql_types::Interval>()
-                * timeout)),
-    )))
+    let updated = diesel::update(
+        task.filter(
+            status
+                .eq(models::StatusKind::Running)
+                .and(started_at.is_not_null())
+                .and(last_updated.lt(now.into_sql::<sql_types::Timestamptz>()
+                    - (PgInterval::from_microseconds(1_000_000).into_sql::<sql_types::Interval>()
+                        * timeout))),
+        ),
+    )
     .set((status.eq(models::StatusKind::Failure), ended_at.eq(now)))
-    .execute(conn)?;
+    .returning(Task::as_returning())
+    .get_results::<Task>(conn)?;
     Ok(updated)
 }
 

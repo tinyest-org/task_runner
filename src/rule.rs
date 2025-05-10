@@ -36,8 +36,8 @@ pub struct Rules {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize)]
 pub struct ConcurencyRule {
-    max_concurency: i32,
-    matcher: Matcher,
+    pub max_concurency: i32,
+    pub matcher: Matcher,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize)]

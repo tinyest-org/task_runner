@@ -37,6 +37,8 @@ pub fn get_http_client() -> reqwest::blocking::Client {
 }
 
 impl Action  {
+    //  should be provided with server context excutor
+    // -> provide return url
     pub fn execute(&self, task: &Task) -> Result<bool, String> {
         match self.kind {
             ActionKindEnum::Webhook => {

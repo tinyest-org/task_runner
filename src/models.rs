@@ -1,4 +1,5 @@
 
+use chrono::Utc;
 // use crate::actions::ActionKindEnum;
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ pub struct Task {
     pub name: Option<String>,
     pub kind: String,
     pub status: StatusKind,
-    pub created_at: chrono::NaiveDateTime,
+    pub created_at: chrono::DateTime<Utc>,
     pub timeout: i32,
     pub started_at: Option<chrono::NaiveDateTime>,
     pub last_updated: chrono::NaiveDateTime,

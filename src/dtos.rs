@@ -1,3 +1,4 @@
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::{models::{ActionKindEnum, StatusKind}, rule::Rules};
@@ -17,7 +18,7 @@ pub struct BasicTaskDto {
     pub name: String,
     pub kind: String,
     pub status: StatusKind,
-    pub created_at: chrono::NaiveDateTime,
+    pub created_at: chrono::DateTime<Utc>,
     pub ended_at: Option<chrono::NaiveDateTime>,
 }
 
@@ -45,7 +46,7 @@ pub struct TaskDto {
     pub rules: Rules,
     pub metadata: serde_json::Value,
     pub actions: Vec<ActionDto>,
-    pub created_at: chrono::NaiveDateTime,
+    pub created_at: chrono::DateTime<Utc>,
     pub started_at: Option<chrono::NaiveDateTime>,
     pub ended_at: Option<chrono::NaiveDateTime>,
     pub last_updated: chrono::NaiveDateTime,
