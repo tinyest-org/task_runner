@@ -17,6 +17,10 @@ async function createOne(projectId: number) {
                         matcher: {
                             status: "Running",
                             kind: "cluster",
+                            // if field `projectId` is present then we match 
+                            // Running && cluster && projectId == metadata.projectId
+                            // else just
+                            // Running && cluster
                             fields: [
                                 // "projectId",
                             ],
