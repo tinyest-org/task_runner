@@ -1,7 +1,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::{models::{ActionKindEnum, StatusKind}, rule::Rules};
+use crate::{models::{ActionKindEnum, StatusKind, TriggerKind}, rule::Rules};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewTaskDto {
@@ -33,6 +33,7 @@ pub struct UpdateTaskDto {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ActionDto {
     pub kind: ActionKindEnum,
+    pub trigger: TriggerKind,
     pub params: serde_json::Value,
 }
 

@@ -6,9 +6,10 @@ use crate::{
     dtos::{self, TaskDto},
     models::{self, Action, NewAction, Task},
     rule::Rules,
+    workers::end_task,
 };
 
-type DbError = Box<dyn std::error::Error + Send + Sync>;
+pub type DbError = Box<dyn std::error::Error + Send + Sync>;
 
 /// TaskDto is a data transfer object that represents a task with its actions.
 impl TaskDto {
@@ -32,6 +33,7 @@ impl TaskDto {
                 .map(|a| dtos::ActionDto {
                     kind: a.kind.clone(),
                     params: a.params.clone(),
+                    trigger: a.trigger.clone(),
                 })
                 .collect(),
         }
@@ -100,6 +102,10 @@ pub fn update_task(
             .execute(conn)?;
     if is_end {
         // TODO: execute on end action triggers
+        match end_task(&task_id, conn) {
+            Ok(_) => log::debug!("task {} end actions are successfull", &task_id),
+            Err(_) => log::error!("task {} end actions failed", &task_id),
+        }
     }
     Ok(res)
 }
@@ -193,7 +199,7 @@ pub fn insert_new_task(conn: &mut PgConnection, dto: dtos::NewTaskDto) -> Result
                 task_id: new_task.id,
                 kind: a.kind.clone(),
                 params: a.params.clone(),
-                trigger: models::TriggerKind::End, // placeholder
+                trigger: a.trigger.clone(),
             })
             .collect::<Vec<_>>();
 

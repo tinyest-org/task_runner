@@ -4,8 +4,7 @@ use diesel::{BelongingToDsl, PgConnection, RunQueryDsl};
 use serde_json::json;
 
 use crate::{
-    DbPool, db_operation,
-    models::{self, Action, Task},
+    db_operation::{self, DbError}, models::{self, Action, Task, TriggerKind}, DbPool
 };
 
 pub fn timeout_loop(pool: DbPool) {
@@ -147,12 +146,32 @@ fn evaluate_rule(_task: &Task, conn: &mut PgConnection) -> bool {
 }
 
 fn start_task(task: &Task, conn: &mut PgConnection) -> Result<(), diesel::result::Error> {
-    // execuute actions where trigger is start
-    // update the task status to running
-    // update the task started_at timestamp
     let actions = Action::belonging_to(&task).load::<Action>(conn)?;
-    for action in actions {
+    // TODO: should be in the query directly
+    for action in actions.iter().filter(|e| e.trigger == TriggerKind::Start) {
         let res = action.execute(task);
+        match res {
+            Ok(_) => {
+                // update the action status to success
+                // update the action ended_at timestamp
+                log::debug!("Action {} executed successfully", action.id);
+            }
+            Err(e) => {
+                // update the action status to failure
+                // update the action ended_at timestamp
+                log::error!("Action {} failed: {}", action.id, e);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn end_task(task_id: &uuid::Uuid, conn: &mut PgConnection)-> Result<(), DbError>  {
+    use {crate::schema::task::dsl::*, diesel::prelude::*};
+    let t = task.filter(id.eq(task_id)).first::<Task>(conn)?;
+    let actions = Action::belonging_to(&t).load::<Action>(conn)?;
+    for action in actions.iter().filter(|e| e.trigger == TriggerKind::End) {
+        let res = action.execute(&t);
         match res {
             Ok(_) => {
                 // update the action status to success
