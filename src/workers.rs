@@ -4,7 +4,9 @@ use diesel::{BelongingToDsl, PgConnection, RunQueryDsl};
 use serde_json::json;
 
 use crate::{
-    db_operation::{self, DbError}, models::{self, Action, Task, TriggerKind}, DbPool
+    DbPool,
+    db_operation::{self, DbError},
+    models::{self, Action, Task, TriggerKind},
 };
 
 pub fn timeout_loop(pool: DbPool) {
@@ -64,7 +66,7 @@ pub fn start_loop(pool: DbPool) {
                     // use logger instead of println
                     log::debug!("Start worker: found {} tasks", tasks.len());
                     for t in tasks {
-                        if evaluate_rule(&t, &mut conn) {
+                        if evaluate_rules(&t, &mut conn) {
                             // start the task
                             let res = start_task(&t, &mut conn);
                             match res {
@@ -108,41 +110,40 @@ pub fn start_loop(pool: DbPool) {
     }
 }
 
-fn evaluate_rule(_task: &Task, conn: &mut PgConnection) -> bool {
-    // TODO: only support basic rule for now
-    if _task.start_condition.conditions.len() == 1 {
-        let cond = _task.start_condition.conditions.get(0).unwrap();
-        return match cond {
-            crate::rule::Rule::None => true,
-            crate::rule::Rule::Concurency(concurency_rule) => {
-                use crate::schema::task::dsl::*;
-                use diesel::PgJsonbExpressionMethods;
-                use diesel::prelude::*;
-                let m1 = concurency_rule.matcher.clone();
-                let mut m = json!({});
-                m1.fields.iter().for_each(|e| {
-                    let k = _task.metadata.get(e);
-                    match k {
-                        Some(v) => {
-                            m[e] = v.clone();
-                        }
-                        None => unreachable!("None should't be there"),
-                    }
-                });
-                let l = task
-                    .filter(
-                        kind.eq(m1.kind)
-                            .and(status.eq(m1.status))
-                            .and(metadata.contains(m)),
-                    )
-                    .load::<Task>(conn)
-                    .expect("failed to count for execution");
-                log::info!("count: {}", &l.len());
-                l.len() < concurency_rule.max_concurency.try_into().unwrap()
-            }
-        };
+fn evaluate_rules(_task: &Task, conn: &mut PgConnection) -> bool {
+    let conditions = &_task.start_condition.conditions;
+    if conditions.len() == 0 {
+        return true;
     }
-    return false;
+    return conditions.iter().all(|cond| match cond {
+        crate::rule::Rule::None => true,
+        crate::rule::Rule::Concurency(concurency_rule) => {
+            use crate::schema::task::dsl::*;
+            use diesel::PgJsonbExpressionMethods;
+            use diesel::prelude::*;
+            let m1 = concurency_rule.matcher.clone();
+            let mut m = json!({});
+            m1.fields.iter().for_each(|e| {
+                let k = _task.metadata.get(e);
+                match k {
+                    Some(v) => {
+                        m[e] = v.clone();
+                    }
+                    None => unreachable!("None should't be there"),
+                }
+            });
+            let l = task
+                .filter(
+                    kind.eq(m1.kind)
+                        .and(status.eq(m1.status))
+                        .and(metadata.contains(m)),
+                )
+                .load::<Task>(conn)
+                .expect("failed to count for execution");
+            log::info!("count: {}", &l.len());
+            l.len() < concurency_rule.max_concurency.try_into().unwrap()
+        }
+    });
 }
 
 fn start_task(task: &Task, conn: &mut PgConnection) -> Result<(), diesel::result::Error> {
@@ -166,7 +167,7 @@ fn start_task(task: &Task, conn: &mut PgConnection) -> Result<(), diesel::result
     Ok(())
 }
 
-pub fn end_task(task_id: &uuid::Uuid, conn: &mut PgConnection)-> Result<(), DbError>  {
+pub fn end_task(task_id: &uuid::Uuid, conn: &mut PgConnection) -> Result<(), DbError> {
     use {crate::schema::task::dsl::*, diesel::prelude::*};
     let t = task.filter(id.eq(task_id)).first::<Task>(conn)?;
     let actions = Action::belonging_to(&t).load::<Action>(conn)?;

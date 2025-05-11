@@ -17,13 +17,22 @@ async function createOne(projectId: number) {
                         matcher: {
                             status: "Running",
                             kind: "cluster",
-                            // if field `projectId` is present then we match 
+                            // if field `projectId` is present then we match
                             // Running && cluster && projectId == metadata.projectId
                             // else just
                             // Running && cluster
                             fields: [
-                                // "projectId",
+                                "projectId",
                             ],
+                        },
+                    },
+                    {
+                        type: "Concurency",
+                        max_concurency: 4,
+                        matcher: {
+                            status: "Running",
+                            kind: "cluster",
+                            fields: [],
                         },
                     },
                 ],
@@ -34,6 +43,7 @@ async function createOne(projectId: number) {
             "actions": [
                 {
                     // add trigger
+                    "trigger": "Start",
                     "name": "Call main api", // could be removed
                     "kind": "Webhook",
                     "params": {
@@ -51,20 +61,18 @@ async function createOne(projectId: number) {
             ],
         }),
     });
-    
+
     const text = await req.text();
     console.log(text);
     const js = JSON.parse(text);
     console.log(js);
     console.log(js.actions);
     console.log(js.rules);
-    
 }
-
 
 async function main() {
     await createOne(1251);
-    await createOne(1253);    
+    await createOne(1253);
 }
 
 main();
