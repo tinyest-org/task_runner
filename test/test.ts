@@ -13,7 +13,7 @@ async function createOne(projectId: number) {
                 "conditions": [
                     {
                         type: "Concurency",
-                        max_concurency: 1,
+                        max_concurency: 1, // 1 "cluster" at a given time on a given project
                         matcher: {
                             status: "Running",
                             kind: "cluster",
@@ -28,7 +28,7 @@ async function createOne(projectId: number) {
                     },
                     {
                         type: "Concurency",
-                        max_concurency: 4,
+                        max_concurency: 4, // 4 "cluster" at a given time
                         matcher: {
                             status: "Running",
                             kind: "cluster",
@@ -42,15 +42,14 @@ async function createOne(projectId: number) {
             },
             "actions": [
                 {
-                    // add trigger
-                    "trigger": "Start",
+                    "trigger": "Start", // action executed on start
                     "name": "Call main api", // could be removed
                     "kind": "Webhook",
                     "params": {
                         "url": "http://localhost:9090/task",
                         "verb": "Post",
                         "body": {
-                            "values_in_body": [1, 4],
+                            "projectId": projectId, // could use a ref to the metadata ?
                             "wait_for": 2,
                         },
                         "headers": {
