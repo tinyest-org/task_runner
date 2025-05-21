@@ -17,12 +17,12 @@ pub struct Task {
     pub status: StatusKind,
     pub created_at: chrono::DateTime<Utc>,
     pub timeout: i32,
-    pub started_at: Option<chrono::NaiveDateTime>,
-    pub last_updated: chrono::NaiveDateTime,
+    pub started_at: Option<chrono::DateTime<Utc>>,
+    pub last_updated: chrono::DateTime<Utc>,
     pub success: i32,
     pub failures: i32,
     pub metadata: serde_json::Value,
-    pub ended_at: Option<chrono::NaiveDateTime>,
+    pub ended_at: Option<chrono::DateTime<Utc>>,
     pub start_condition: Rules,
 }
 
@@ -92,7 +92,7 @@ pub enum TriggerKind {
     Start, End
 }
 
-#[derive(Debug,PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone)]
+#[derive(Debug,PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, Hash, Eq)]
 #[db_enum(existing_type_path = "crate::schema::sql_types::StatusKind")]
 pub enum StatusKind {
     Pending, Running, Failure, Success

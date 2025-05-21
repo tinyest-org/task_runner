@@ -1,4 +1,4 @@
-use std::{sync::Arc, thread};
+use std::{collections::HashSet, sync::Arc, thread};
 
 use diesel::{BelongingToDsl, PgConnection, RunQueryDsl};
 use serde_json::json;
@@ -7,6 +7,7 @@ use crate::{
     DbPool,
     db_operation::{self, DbError},
     models::{self, Action, Task, TriggerKind},
+    rule::{ConcurencyRule, Rule},
 };
 
 pub fn timeout_loop(pool: DbPool) {
@@ -47,6 +48,12 @@ pub fn timeout_loop(pool: DbPool) {
     }
 }
 
+/// In order to cache results and avoid too many db calls
+pub struct EvaluationContext {
+    ko: HashSet<Rule>,
+    ok: HashSet<Rule>,
+}
+
 pub fn start_loop(pool: DbPool) {
     let p = Arc::from(pool);
     loop {
@@ -63,10 +70,14 @@ pub fn start_loop(pool: DbPool) {
             let res = db_operation::list_all_pending(&mut conn);
             match res {
                 Ok(tasks) => {
+                    let mut ctx = EvaluationContext {
+                        ok: HashSet::new(),
+                        ko: HashSet::new(),
+                    };
                     // use logger instead of println
                     log::debug!("Start worker: found {} tasks", tasks.len());
                     for t in tasks {
-                        if evaluate_rules(&t, &mut conn) {
+                        if evaluate_rules(&t, &mut conn, &mut ctx) {
                             // start the task
                             let res = start_task(&t, &mut conn);
                             match res {
@@ -110,38 +121,64 @@ pub fn start_loop(pool: DbPool) {
     }
 }
 
-fn evaluate_rules(_task: &Task, conn: &mut PgConnection) -> bool {
+// add lifetime
+
+enum Pre<'a> {
+    True,
+    False,
+    Cond(&'a Rule),
+}
+
+fn evaluate_rules(_task: &Task, conn: &mut PgConnection, ctx: &mut EvaluationContext) -> bool {
     let conditions = &_task.start_condition.conditions;
     if conditions.len() == 0 {
         return true;
     }
-    return conditions.iter().all(|cond| match cond {
-        crate::rule::Rule::None => true,
-        crate::rule::Rule::Concurency(concurency_rule) => {
-            use crate::schema::task::dsl::*;
-            use diesel::PgJsonbExpressionMethods;
-            use diesel::prelude::*;
-            let m1 = concurency_rule.matcher.clone();
-            let mut m = json!({});
-            m1.fields.iter().for_each(|e| {
-                let k = _task.metadata.get(e);
-                match k {
-                    Some(v) => {
-                        m[e] = v.clone();
+    let ok = &mut ctx.ok;
+    let ko = &mut ctx.ko;
+    return conditions.iter().all(|cond| {
+        if ok.contains(cond) {
+            return true;
+        }
+        if ko.contains(cond) {
+            return false;
+        }
+        match cond {
+            crate::rule::Rule::None => true,
+            crate::rule::Rule::Concurency(concurency_rule) => {
+                // cache partial result
+                use crate::schema::task::dsl::*;
+                use diesel::PgJsonbExpressionMethods;
+                use diesel::prelude::*;
+                let m1 = concurency_rule.matcher.clone();
+                let mut m = json!({});
+                m1.fields.iter().for_each(|e| {
+                    let k = _task.metadata.get(e);
+                    match k {
+                        Some(v) => {
+                            m[e] = v.clone();
+                        }
+                        None => unreachable!("None should't be there"),
                     }
-                    None => unreachable!("None should't be there"),
+                });
+                let l = task
+                    .filter(
+                        kind.eq(m1.kind)
+                            .and(status.eq(m1.status))
+                            .and(metadata.contains(m)),
+                    )
+                    .load::<Task>(conn)
+                    .expect("failed to count for execution");
+                log::info!("count: {}", &l.len());
+                let res = l.len() < concurency_rule.max_concurency.try_into().unwrap();
+                // should use an id instead
+                if res {
+                    ok.insert(cond.clone());
+                } else {
+                    ko.insert(cond.clone());
                 }
-            });
-            let l = task
-                .filter(
-                    kind.eq(m1.kind)
-                        .and(status.eq(m1.status))
-                        .and(metadata.contains(m)),
-                )
-                .load::<Task>(conn)
-                .expect("failed to count for execution");
-            log::info!("count: {}", &l.len());
-            l.len() < concurency_rule.max_concurency.try_into().unwrap()
+                res
+            }
         }
     });
 }

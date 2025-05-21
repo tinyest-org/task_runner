@@ -21,7 +21,8 @@ use crate::models::StatusKind;
 ///    ],
 ///},
 ///},
-#[derive(Debug, Clone, Serialize, PartialEq, Deserialize)]
+/// ```
+#[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq)]
 #[serde(tag = "type")] // -> this way the "type" field will be used to determine the type of the rule
 pub enum Rule {
     None, // we start immediately
@@ -34,13 +35,13 @@ pub struct Rules {
     pub conditions: Vec<Rule>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq)]
 pub struct ConcurencyRule {
     pub max_concurency: i32,
     pub matcher: Matcher,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq)]
 pub struct Matcher {
     pub status: StatusKind,  // we want to match on status
     pub kind: String,        // we want to match on kind

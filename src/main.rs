@@ -46,7 +46,7 @@ async fn update_task(
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
     log::debug!("Update task: {:?}", &form.status);
-    let task = web::block(move || {
+    let count = web::block(move || {
         // note that obtaining a connection from the pool is also potentially blocking
         let mut conn = pool.get()?;
         db_operation::update_task(&mut conn, *task_id, form.0)
@@ -54,12 +54,10 @@ async fn update_task(
     })
     .await?
     .map_err(error::ErrorInternalServerError)?;
-    if task == 1 {
-        Ok(HttpResponse::Ok().body("Task updated successfully".to_string()))
-    } else {
-        // not found
-        Ok(HttpResponse::NotFound().body("Task not found".to_string()))
-    }
+    Ok(match count {
+        1 => HttpResponse::Ok().body("Task updated successfully".to_string()),
+        _ => HttpResponse::NotFound().body("Task not found".to_string()),
+    })
 }
 
 /// Finds user by UID.

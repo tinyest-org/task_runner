@@ -1,7 +1,10 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::{models::{ActionKindEnum, StatusKind, TriggerKind}, rule::Rules};
+use crate::{
+    models::{ActionKindEnum, StatusKind, TriggerKind},
+    rule::Rules,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewTaskDto {
@@ -19,7 +22,7 @@ pub struct BasicTaskDto {
     pub kind: String,
     pub status: StatusKind,
     pub created_at: chrono::DateTime<Utc>,
-    pub ended_at: Option<chrono::NaiveDateTime>,
+    pub ended_at: Option<chrono::DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,9 +51,9 @@ pub struct TaskDto {
     pub metadata: serde_json::Value,
     pub actions: Vec<ActionDto>,
     pub created_at: chrono::DateTime<Utc>,
-    pub started_at: Option<chrono::NaiveDateTime>,
-    pub ended_at: Option<chrono::NaiveDateTime>,
-    pub last_updated: chrono::NaiveDateTime,
+    pub started_at: Option<chrono::DateTime<Utc>>,
+    pub ended_at: Option<chrono::DateTime<Utc>>,
+    pub last_updated: chrono::DateTime<Utc>,
     pub success: i32,
     pub failures: i32,
 }
