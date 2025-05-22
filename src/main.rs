@@ -139,8 +139,8 @@ fn initialize_db_pool() -> DbPool {
     use diesel_async::pooled_connection::deadpool::Pool;
     let conn_spec = std::env::var("DATABASE_URL").expect("DATABASE_URL should be set");
     let config = AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(conn_spec);
-    let pool = Pool::builder(config)
+    
+    Pool::builder(config)
         .build()
-        .expect("failed to connect to db");
-    pool
+        .expect("failed to connect to db")
 }

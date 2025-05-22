@@ -30,7 +30,7 @@ pub async fn timeout_loop(pool: DbPool) {
             match res {
                 Ok(failed) => {
                     // use logger instead of println
-                    if failed.len() > 0 {
+                    if !failed.is_empty() {
                         log::warn!(
                             "Timeout worker: {} tasks failed, {:?}",
                             &failed.len(),
@@ -124,7 +124,7 @@ pub async fn start_loop(pool: DbPool) {
 
 async fn evaluate_rules(_task: &Task, conn: &mut Conn, ctx: &mut EvaluationContext) -> bool {
     let conditions = &_task.start_condition.conditions;
-    if conditions.len() == 0 {
+    if conditions.is_empty() {
         return true;
     }
     let ok = &mut ctx.ok;
@@ -174,7 +174,7 @@ async fn evaluate_rules(_task: &Task, conn: &mut Conn, ctx: &mut EvaluationConte
             }
         }
     }
-    return true;
+    true
 }
 
 async fn start_task(task: &Task, conn: &mut Conn) -> Result<(), diesel::result::Error> {

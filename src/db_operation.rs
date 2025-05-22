@@ -7,7 +7,6 @@ use crate::{
 };
 use diesel::prelude::*;
 use diesel::sql_types;
-use diesel_async::AsyncConnection;
 use diesel_async::RunQueryDsl;
 use uuid::Uuid;
 pub type DbError = Box<dyn std::error::Error + Send + Sync>;
@@ -124,16 +123,14 @@ pub async fn find_detailed_task_by_id(
     let t = task
         .filter(id.eq(task_id))
         .first::<models::Task>(conn)
-        .await?;
-    // match t {
-    //     None => Ok(None),
-    //     Some(base_task) => {
-    //         let actions = Action::belonging_to(&base_task).load::<Action>(conn)?;
-    //         Ok(Some(TaskDto::new(base_task, actions)))
-    //     }
-    // }
-    // TODO: fix
-    Ok(None)
+        .await;
+    match t {
+        Err(_) => Ok(None),
+        Ok(base_task) => {
+            let actions = Action::belonging_to(&base_task).load::<Action>(conn).await?;
+            Ok(Some(TaskDto::new(base_task, actions)))
+        }
+    }
 }
 
 pub async fn list_task_filtered_paged(
