@@ -42,7 +42,7 @@ impl TaskDto {
 
 /// Update all tasks with status running and last_updated older than timeout to failed and update
 /// the ended_at field to the current time.
-pub async fn ensure_pending_tasks_timeout(conn: &mut Conn) -> Result<Vec<Task>, DbError> {
+pub async fn ensure_pending_tasks_timeout<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task>, DbError> {
     use {
         crate::schema::task::dsl::*,
         diesel::{dsl::now, pg::data_types::PgInterval},
@@ -64,7 +64,7 @@ pub async fn ensure_pending_tasks_timeout(conn: &mut Conn) -> Result<Vec<Task>, 
     Ok(updated)
 }
 
-pub async fn list_all_pending(conn: &mut Conn) -> Result<Vec<Task>, DbError> {
+pub async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task>, DbError> {
     use crate::schema::task::dsl::*;
     let tasks = task
         .filter(status.eq(models::StatusKind::Pending))
@@ -72,8 +72,8 @@ pub async fn list_all_pending(conn: &mut Conn) -> Result<Vec<Task>, DbError> {
         .await?;
     Ok(tasks)
 }
-pub async fn update_task(
-    conn: &mut Conn,
+pub async fn update_task<'a>(
+    conn: &mut Conn<'a>,
     task_id: Uuid,
     dto: dtos::UpdateTaskDto,
 ) -> Result<usize, DbError> {
@@ -114,8 +114,8 @@ pub async fn update_task(
 }
 
 /// Run query using Diesel to find user by uid and return it.
-pub async fn find_detailed_task_by_id(
-    conn: &mut Conn,
+pub async fn find_detailed_task_by_id<'a>(
+    conn: &mut Conn<'a>,
     task_id: Uuid,
 ) -> Result<Option<dtos::TaskDto>, DbError> {
     use crate::schema::task::dsl::*;
@@ -127,14 +127,16 @@ pub async fn find_detailed_task_by_id(
     match t {
         Err(_) => Ok(None),
         Ok(base_task) => {
-            let actions = Action::belonging_to(&base_task).load::<Action>(conn).await?;
+            let actions = Action::belonging_to(&base_task)
+                .load::<Action>(conn)
+                .await?;
             Ok(Some(TaskDto::new(base_task, actions)))
         }
     }
 }
 
-pub async fn list_task_filtered_paged(
-    conn: &mut Conn,
+pub async fn list_task_filtered_paged<'a>(
+    conn: &mut Conn<'a>,
     pagination: dtos::PaginationDto,
     filter: dtos::FilterDto,
 ) -> Result<Vec<dtos::BasicTaskDto>, DbError> {
@@ -180,7 +182,10 @@ pub async fn list_task_filtered_paged(
 }
 
 /// Insert a new task into the database.
-pub async fn insert_new_task(conn: &mut Conn, dto: dtos::NewTaskDto) -> Result<TaskDto, DbError> {
+pub async fn insert_new_task<'a>(
+    conn: &mut Conn<'a>,
+    dto: dtos::NewTaskDto,
+) -> Result<TaskDto, DbError> {
     use crate::schema::{action::dsl::action, task::dsl::task};
 
     let new_task = models::NewTask {

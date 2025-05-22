@@ -58,12 +58,12 @@ pub struct TaskDto {
     pub failures: i32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct PaginationDto {
     pub page: Option<i64>,
     pub page_size: Option<i64>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct FilterDto {
     pub name: Option<String>,
     pub kind: Option<String>,

@@ -9,6 +9,7 @@ use actix_web::{
 use task_runner::{
     DbPool, db_operation,
     dtos::{self},
+    initialize_db_pool,
 };
 use uuid::Uuid;
 
@@ -18,13 +19,7 @@ async fn list_task(
     pagination: web::Query<dtos::PaginationDto>, // pagination
     filter: web::Query<dtos::FilterDto>,         // filter
 ) -> actix_web::Result<impl Responder> {
-    // handle pagination
-    // handle filter -> pending, running
-    // -> return basicTaskDto
-    // TODO: Implement the logic for listing tasks
-    log::info!("got query");
     let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
-    log::info!("got conn");
     let tasks = db_operation::list_task_filtered_paged(&mut conn, pagination.0, filter.0)
         .await
         // map diesel query errors to a 500 error response
@@ -105,13 +100,13 @@ async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
     // initialize DB pool outside of `HttpServer::new` so that it is shared across all workers
-    let pool = initialize_db_pool();
+    let pool = initialize_db_pool().await;
 
     log::info!("starting HTTP server at http://localhost:8080");
 
     let p = pool.clone();
 
-    actix_web::rt::spawn(async {
+    actix_web::rt::spawn(async move {
         task_runner::workers::start_loop(p).await;
     });
     let p2 = pool.clone();
@@ -133,19 +128,4 @@ async fn main() -> std::io::Result<()> {
     .bind(("127.0.0.1", 8080))?
     .run()
     .await
-}
-
-/// Initialize database connection pool based on `DATABASE_URL` environment variable.
-///
-/// See more: <https://docs.rs/diesel/latest/diesel/r2d2/index.html>.
-fn initialize_db_pool() -> DbPool {
-    use diesel_async::pooled_connection::AsyncDieselConnectionManager;
-    use diesel_async::pooled_connection::deadpool::Pool;
-    let conn_spec = std::env::var("DATABASE_URL").expect("DATABASE_URL should be set");
-    let config = AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(conn_spec);
-    
-    Pool::builder(config)
-        .max_size(10)
-        .build()
-        .expect("failed to connect to db")
 }

@@ -4,26 +4,20 @@ use crate::{
     models::{self, Action, Task, TriggerKind},
     rule::Rule,
 };
+use actix_web::rt;
+use diesel::BelongingToDsl;
 use diesel::prelude::*;
-use diesel::{BelongingToDsl};
 use diesel_async::RunQueryDsl;
 use serde_json::json;
-use std::{collections::HashSet, sync::Arc, thread};
+use std::collections::HashSet;
 
 /// This ensures the non responding tasks are set to fail
 ///
 /// Add the date of failure
 pub async fn timeout_loop(pool: DbPool) {
-    let p = Arc::from(pool);
     loop {
-        // select all pending tasks
-        // check if the timeout is reached
-        // if so, update the task status to failed
-        // and update the ended_at timestamp
-        let pp = p.clone();
-
         // note that obtaining a connection from the pool is also potentially blocking
-        let conn = pp.get();
+        let conn = pool.get();
 
         if let Ok(mut conn) = conn.await {
             let res = db_operation::ensure_pending_tasks_timeout(&mut conn).await;
@@ -47,7 +41,8 @@ pub async fn timeout_loop(pool: DbPool) {
             }
         }
 
-        thread::sleep(std::time::Duration::from_secs(1));
+        // thread::sleep(std::time::Duration::from_secs(1));
+        rt::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 
@@ -58,16 +53,9 @@ pub struct EvaluationContext {
 }
 
 pub async fn start_loop(pool: DbPool) {
-    let p = Arc::from(pool);
     loop {
-        // select all pending tasks
-        // check if the timeout is reached
-        // if so, update the task status to failed
-        // and update the ended_at timestamp
-        let pp = p.clone();
-
         // note that obtaining a connection from the pool is also potentially blocking
-        let conn = pp.get();
+        let conn = pool.get();
 
         if let Ok(mut conn) = conn.await {
             let res = db_operation::list_all_pending(&mut conn).await;
@@ -118,11 +106,16 @@ pub async fn start_loop(pool: DbPool) {
             }
         }
 
-        thread::sleep(std::time::Duration::from_secs(1));
+        // thread::sleep(std::time::Duration::from_secs(1));
+        actix_web::rt::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 
-async fn evaluate_rules(_task: &Task, conn: &mut Conn, ctx: &mut EvaluationContext) -> bool {
+async fn evaluate_rules<'a>(
+    _task: &Task,
+    conn: &mut Conn<'a>,
+    ctx: &mut EvaluationContext,
+) -> bool {
     let conditions = &_task.start_condition.conditions;
     if conditions.is_empty() {
         return true;
@@ -163,7 +156,7 @@ async fn evaluate_rules(_task: &Task, conn: &mut Conn, ctx: &mut EvaluationConte
                     .await
                     .expect("failed to count for execution");
                 log::info!("count: {}", &l.len());
-                let res = l.len() < concurency_rule.max_concurency.try_into().unwrap();
+                let res = l.len() < concurency_rule.max_concurency as usize;
                 // should use an id instead
                 if res {
                     ok.insert(cond.clone());
@@ -177,7 +170,7 @@ async fn evaluate_rules(_task: &Task, conn: &mut Conn, ctx: &mut EvaluationConte
     true
 }
 
-async fn start_task(task: &Task, conn: &mut Conn) -> Result<(), diesel::result::Error> {
+async fn start_task<'a>(task: &Task, conn: &mut Conn<'a>) -> Result<(), diesel::result::Error> {
     let actions = Action::belonging_to(&task).load::<Action>(conn).await?;
     // TODO: should be in the query directly
     for action in actions.iter().filter(|e| e.trigger == TriggerKind::Start) {
@@ -198,7 +191,7 @@ async fn start_task(task: &Task, conn: &mut Conn) -> Result<(), diesel::result::
     Ok(())
 }
 
-pub async fn end_task(task_id: &uuid::Uuid, conn: &mut Conn) -> Result<(), DbError> {
+pub async fn end_task<'a>(task_id: &uuid::Uuid, conn: &mut Conn<'a>) -> Result<(), DbError> {
     use crate::schema::task::dsl::*;
     let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
     let actions = Action::belonging_to(&t).load::<Action>(conn).await?;
