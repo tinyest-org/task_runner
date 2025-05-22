@@ -1,16 +1,19 @@
-use std::{collections::HashSet, sync::Arc, thread};
-
-use diesel::{BelongingToDsl, PgConnection, RunQueryDsl};
-use serde_json::json;
-
 use crate::{
-    DbPool,
+    Conn, DbPool,
     db_operation::{self, DbError},
     models::{self, Action, Task, TriggerKind},
-    rule::{ConcurencyRule, Rule},
+    rule::Rule,
 };
+use diesel::prelude::*;
+use diesel::{BelongingToDsl};
+use diesel_async::RunQueryDsl;
+use serde_json::json;
+use std::{collections::HashSet, sync::Arc, thread};
 
-pub fn timeout_loop(pool: DbPool) {
+/// This ensures the non responding tasks are set to fail
+///
+/// Add the date of failure
+pub async fn timeout_loop(pool: DbPool) {
     let p = Arc::from(pool);
     loop {
         // select all pending tasks
@@ -22,8 +25,8 @@ pub fn timeout_loop(pool: DbPool) {
         // note that obtaining a connection from the pool is also potentially blocking
         let conn = pp.get();
 
-        if let Ok(mut conn) = conn {
-            let res = db_operation::ensure_pending_tasks_timeout(&mut conn);
+        if let Ok(mut conn) = conn.await {
+            let res = db_operation::ensure_pending_tasks_timeout(&mut conn).await;
             match res {
                 Ok(failed) => {
                     // use logger instead of println
@@ -54,7 +57,7 @@ pub struct EvaluationContext {
     ok: HashSet<Rule>,
 }
 
-pub fn start_loop(pool: DbPool) {
+pub async fn start_loop(pool: DbPool) {
     let p = Arc::from(pool);
     loop {
         // select all pending tasks
@@ -66,8 +69,8 @@ pub fn start_loop(pool: DbPool) {
         // note that obtaining a connection from the pool is also potentially blocking
         let conn = pp.get();
 
-        if let Ok(mut conn) = conn {
-            let res = db_operation::list_all_pending(&mut conn);
+        if let Ok(mut conn) = conn.await {
+            let res = db_operation::list_all_pending(&mut conn).await;
             match res {
                 Ok(tasks) => {
                     let mut ctx = EvaluationContext {
@@ -77,17 +80,14 @@ pub fn start_loop(pool: DbPool) {
                     // use logger instead of println
                     log::debug!("Start worker: found {} tasks", tasks.len());
                     for t in tasks {
-                        if evaluate_rules(&t, &mut conn, &mut ctx) {
-                            // start the task
-                            let res = start_task(&t, &mut conn);
-                            match res {
+                        if evaluate_rules(&t, &mut conn, &mut ctx).await {
+                            match start_task(&t, &mut conn).await {
                                 Ok(_) => {
                                     // use logger instead of println
                                     log::debug!("Start worker: task {} started", t.id);
                                     // update the task status to running
                                     use crate::schema::task::dsl::*;
                                     use diesel::dsl::now;
-                                    use diesel::prelude::*;
                                     diesel::update(task.filter(id.eq(t.id)))
                                         .set((
                                             status.eq(models::StatusKind::Running),
@@ -95,6 +95,7 @@ pub fn start_loop(pool: DbPool) {
                                             last_updated.eq(now),
                                         ))
                                         .execute(&mut conn)
+                                        .await
                                         .expect("Failed to update task status");
                                 }
                                 Err(e) => {
@@ -121,35 +122,26 @@ pub fn start_loop(pool: DbPool) {
     }
 }
 
-// add lifetime
-
-enum Pre<'a> {
-    True,
-    False,
-    Cond(&'a Rule),
-}
-
-fn evaluate_rules(_task: &Task, conn: &mut PgConnection, ctx: &mut EvaluationContext) -> bool {
+async fn evaluate_rules(_task: &Task, conn: &mut Conn, ctx: &mut EvaluationContext) -> bool {
     let conditions = &_task.start_condition.conditions;
     if conditions.len() == 0 {
         return true;
     }
     let ok = &mut ctx.ok;
     let ko = &mut ctx.ko;
-    return conditions.iter().all(|cond| {
+    for cond in conditions {
         if ok.contains(cond) {
-            return true;
+            continue;
         }
         if ko.contains(cond) {
             return false;
         }
         match cond {
-            crate::rule::Rule::None => true,
+            crate::rule::Rule::None => {}
             crate::rule::Rule::Concurency(concurency_rule) => {
                 // cache partial result
                 use crate::schema::task::dsl::*;
                 use diesel::PgJsonbExpressionMethods;
-                use diesel::prelude::*;
                 let m1 = concurency_rule.matcher.clone();
                 let mut m = json!({});
                 m1.fields.iter().for_each(|e| {
@@ -168,6 +160,7 @@ fn evaluate_rules(_task: &Task, conn: &mut PgConnection, ctx: &mut EvaluationCon
                             .and(metadata.contains(m)),
                     )
                     .load::<Task>(conn)
+                    .await
                     .expect("failed to count for execution");
                 log::info!("count: {}", &l.len());
                 let res = l.len() < concurency_rule.max_concurency.try_into().unwrap();
@@ -176,15 +169,16 @@ fn evaluate_rules(_task: &Task, conn: &mut PgConnection, ctx: &mut EvaluationCon
                     ok.insert(cond.clone());
                 } else {
                     ko.insert(cond.clone());
+                    return false;
                 }
-                res
             }
         }
-    });
+    }
+    return true;
 }
 
-fn start_task(task: &Task, conn: &mut PgConnection) -> Result<(), diesel::result::Error> {
-    let actions = Action::belonging_to(&task).load::<Action>(conn)?;
+async fn start_task(task: &Task, conn: &mut Conn) -> Result<(), diesel::result::Error> {
+    let actions = Action::belonging_to(&task).load::<Action>(conn).await?;
     // TODO: should be in the query directly
     for action in actions.iter().filter(|e| e.trigger == TriggerKind::Start) {
         let res = action.execute(task);
@@ -204,10 +198,10 @@ fn start_task(task: &Task, conn: &mut PgConnection) -> Result<(), diesel::result
     Ok(())
 }
 
-pub fn end_task(task_id: &uuid::Uuid, conn: &mut PgConnection) -> Result<(), DbError> {
-    use {crate::schema::task::dsl::*, diesel::prelude::*};
-    let t = task.filter(id.eq(task_id)).first::<Task>(conn)?;
-    let actions = Action::belonging_to(&t).load::<Action>(conn)?;
+pub async fn end_task(task_id: &uuid::Uuid, conn: &mut Conn) -> Result<(), DbError> {
+    use crate::schema::task::dsl::*;
+    let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
+    let actions = Action::belonging_to(&t).load::<Action>(conn).await?;
     for action in actions.iter().filter(|e| e.trigger == TriggerKind::End) {
         let res = action.execute(&t);
         match res {

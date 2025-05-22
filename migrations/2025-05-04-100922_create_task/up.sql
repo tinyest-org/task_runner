@@ -19,3 +19,6 @@ CREATE TABLE "task"(
 	"start_condition" jsonb not null
 );
 
+-- CREATE TABLE "rule"(
+-- 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+-- );

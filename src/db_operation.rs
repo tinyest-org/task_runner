@@ -1,14 +1,15 @@
-use diesel::{prelude::*, sql_types};
-
-use uuid::Uuid;
-
 use crate::{
+    Conn,
     dtos::{self, TaskDto},
     models::{self, Action, NewAction, Task},
     rule::Rules,
     workers::end_task,
 };
-
+use diesel::prelude::*;
+use diesel::sql_types;
+use diesel_async::AsyncConnection;
+use diesel_async::RunQueryDsl;
+use uuid::Uuid;
 pub type DbError = Box<dyn std::error::Error + Send + Sync>;
 
 /// TaskDto is a data transfer object that represents a task with its actions.
@@ -42,10 +43,10 @@ impl TaskDto {
 
 /// Update all tasks with status running and last_updated older than timeout to failed and update
 /// the ended_at field to the current time.
-pub fn ensure_pending_tasks_timeout(conn: &mut PgConnection) -> Result<Vec<Task>, DbError> {
+pub async fn ensure_pending_tasks_timeout(conn: &mut Conn) -> Result<Vec<Task>, DbError> {
     use {
         crate::schema::task::dsl::*,
-        diesel::{dsl::now, pg::data_types::PgInterval, prelude::*},
+        diesel::{dsl::now, pg::data_types::PgInterval},
     };
     let updated = diesel::update(
         task.filter(
@@ -59,25 +60,25 @@ pub fn ensure_pending_tasks_timeout(conn: &mut PgConnection) -> Result<Vec<Task>
     )
     .set((status.eq(models::StatusKind::Failure), ended_at.eq(now)))
     .returning(Task::as_returning())
-    .get_results::<Task>(conn)?;
+    .get_results::<Task>(conn)
+    .await?;
     Ok(updated)
 }
 
-pub fn list_all_pending(conn: &mut PgConnection) -> Result<Vec<Task>, DbError> {
-    use {crate::schema::task::dsl::*, diesel::prelude::*};
-
+pub async fn list_all_pending(conn: &mut Conn) -> Result<Vec<Task>, DbError> {
+    use crate::schema::task::dsl::*;
     let tasks = task
         .filter(status.eq(models::StatusKind::Pending))
-        .get_results::<Task>(conn)?;
+        .get_results(conn)
+        .await?;
     Ok(tasks)
 }
-
-pub fn update_task(
-    conn: &mut PgConnection,
+pub async fn update_task(
+    conn: &mut Conn,
     task_id: Uuid,
     dto: dtos::UpdateTaskDto,
 ) -> Result<usize, DbError> {
-    use {crate::schema::task::dsl::*, diesel::prelude::*};
+    use crate::schema::task::dsl::*;
     log::debug!("Update task: {:?}", &dto);
     let s = dto.status.clone();
     let is_end = dto
@@ -99,20 +100,23 @@ pub fn update_task(
                 dto.metadata.map(|m| metadata.eq(m)),
                 dto.status.map(|m| status.eq(m)),
             ))
-            .execute(conn)?;
+            .execute(conn)
+            .await?;
+
     if is_end {
         // TODO: execute on end action triggers
-        match end_task(&task_id, conn) {
+        match end_task(&task_id, conn).await {
             Ok(_) => log::debug!("task {} end actions are successfull", &task_id),
             Err(_) => log::error!("task {} end actions failed", &task_id),
         }
     }
+
     Ok(res)
 }
 
 /// Run query using Diesel to find user by uid and return it.
-pub fn find_detailed_task_by_id(
-    conn: &mut PgConnection,
+pub async fn find_detailed_task_by_id(
+    conn: &mut Conn,
     task_id: Uuid,
 ) -> Result<Option<dtos::TaskDto>, DbError> {
     use crate::schema::task::dsl::*;
@@ -120,18 +124,20 @@ pub fn find_detailed_task_by_id(
     let t = task
         .filter(id.eq(task_id))
         .first::<models::Task>(conn)
-        .optional()?;
-    match t {
-        None => Ok(None),
-        Some(base_task) => {
-            let actions = Action::belonging_to(&base_task).load::<Action>(conn)?;
-            Ok(Some(TaskDto::new(base_task, actions)))
-        }
-    }
+        .await?;
+    // match t {
+    //     None => Ok(None),
+    //     Some(base_task) => {
+    //         let actions = Action::belonging_to(&base_task).load::<Action>(conn)?;
+    //         Ok(Some(TaskDto::new(base_task, actions)))
+    //     }
+    // }
+    // TODO: fix
+    Ok(None)
 }
 
-pub fn list_task_filtered_paged(
-    conn: &mut PgConnection,
+pub async fn list_task_filtered_paged(
+    conn: &mut Conn,
     pagination: dtos::PaginationDto,
     filter: dtos::FilterDto,
 ) -> Result<Vec<dtos::BasicTaskDto>, DbError> {
@@ -148,7 +154,8 @@ pub fn list_task_filtered_paged(
             )
             .limit(page_size)
             .order(created_at.desc())
-            .load::<models::Task>(conn)?
+            .load::<models::Task>(conn)
+            .await?
     } else {
         task.offset(offset)
             .filter(
@@ -157,7 +164,8 @@ pub fn list_task_filtered_paged(
             )
             .limit(page_size)
             .order(created_at.desc())
-            .load::<models::Task>(conn)?
+            .load::<models::Task>(conn)
+            .await?
     };
 
     let tasks: Vec<dtos::BasicTaskDto> = result
@@ -175,7 +183,7 @@ pub fn list_task_filtered_paged(
 }
 
 /// Insert a new task into the database.
-pub fn insert_new_task(conn: &mut PgConnection, dto: dtos::NewTaskDto) -> Result<TaskDto, DbError> {
+pub async fn insert_new_task(conn: &mut Conn, dto: dtos::NewTaskDto) -> Result<TaskDto, DbError> {
     use crate::schema::{action::dsl::action, task::dsl::task};
 
     let new_task = models::NewTask {
@@ -190,7 +198,8 @@ pub fn insert_new_task(conn: &mut PgConnection, dto: dtos::NewTaskDto) -> Result
     let new_task = diesel::insert_into(task)
         .values(new_task)
         .returning(Task::as_returning())
-        .get_result(conn)?;
+        .get_result(conn)
+        .await?;
 
     let actions = if let Some(actions) = dto.actions {
         let items = actions
@@ -206,7 +215,8 @@ pub fn insert_new_task(conn: &mut PgConnection, dto: dtos::NewTaskDto) -> Result
         diesel::insert_into(action)
             .values(items)
             .returning(Action::as_returning())
-            .get_results(conn)?
+            .get_results(conn)
+            .await?
     } else {
         vec![]
     };

@@ -3,12 +3,9 @@
 //! Diesel v2 is not an async library, so we have to execute queries in `web::block` closures which
 //! offload blocking code (like Diesel's) to a thread-pool in order to not block the server.
 
-use std::thread;
-
 use actix_web::{
     App, HttpResponse, HttpServer, Responder, error, get, middleware, patch, post, web,
 };
-use diesel::{prelude::*, r2d2};
 use task_runner::{
     DbPool, db_operation,
     dtos::{self},
@@ -25,15 +22,11 @@ async fn list_task(
     // handle filter -> pending, running
     // -> return basicTaskDto
     // TODO: Implement the logic for listing tasks
-    let tasks = web::block(move || {
-        // note that obtaining a connection from the pool is also potentially blocking
-        let mut conn = pool.get()?;
-
-        db_operation::list_task_filtered_paged(&mut conn, pagination.0, filter.0)
-    })
-    .await?
-    // map diesel query errors to a 500 error response
-    .map_err(error::ErrorInternalServerError)?;
+    let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let tasks = db_operation::list_task_filtered_paged(&mut conn, pagination.0, filter.0)
+        .await
+        // map diesel query errors to a 500 error response
+        .map_err(error::ErrorInternalServerError)?;
 
     Ok(HttpResponse::Ok().json(tasks))
 }
@@ -46,14 +39,10 @@ async fn update_task(
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
     log::debug!("Update task: {:?}", &form.status);
-    let count = web::block(move || {
-        // note that obtaining a connection from the pool is also potentially blocking
-        let mut conn = pool.get()?;
-        db_operation::update_task(&mut conn, *task_id, form.0)
-        // db_operation::find_detailed_task_by_id(&mut conn, *task_id)
-    })
-    .await?
-    .map_err(error::ErrorInternalServerError)?;
+    let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let count = db_operation::update_task(&mut conn, *task_id, form.0)
+        .await
+        .map_err(error::ErrorInternalServerError)?;
     Ok(match count {
         1 => HttpResponse::Ok().body("Task updated successfully".to_string()),
         _ => HttpResponse::NotFound().body("Task not found".to_string()),
@@ -71,15 +60,11 @@ async fn get_task(
     task_id: web::Path<Uuid>,
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
-    let task = web::block(move || {
-        // note that obtaining a connection from the pool is also potentially blocking
-        let mut conn = pool.get()?;
-
-        db_operation::find_detailed_task_by_id(&mut conn, *task_id)
-    })
-    .await?
-    // map diesel query errors to a 500 error response
-    .map_err(error::ErrorInternalServerError)?;
+    let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let task = db_operation::find_detailed_task_by_id(&mut conn, *task_id)
+        .await
+        // map diesel query errors to a 500 error response
+        .map_err(error::ErrorInternalServerError)?;
 
     Ok(match task {
         // user was found; return 200 response with JSON formatted user object
@@ -100,15 +85,11 @@ async fn add_task(
     form: web::Json<dtos::NewTaskDto>,
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
-    let user = web::block(move || {
-        // note that obtaining a connection from the pool is also potentially blocking
-        let mut conn = pool.get()?;
-
-        db_operation::insert_new_task(&mut conn, form.0)
-    })
-    .await?
-    // map diesel query errors to a 500 error response
-    .map_err(error::ErrorInternalServerError)?;
+    let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let user = db_operation::insert_new_task(&mut conn, form.0)
+        .await
+        // map diesel query errors to a 500 error response
+        .map_err(error::ErrorInternalServerError)?;
 
     // user was added successfully; return 201 response with new user info
     Ok(HttpResponse::Created().json(user))
@@ -125,16 +106,15 @@ async fn main() -> std::io::Result<()> {
     log::info!("starting HTTP server at http://localhost:8080");
 
     let p = pool.clone();
-    thread::spawn(move || {
-        // start timeout worker
-        task_runner::workers::start_loop(p);
+
+    actix_web::rt::spawn(async {
+        task_runner::workers::start_loop(p).await;
     });
     let p2 = pool.clone();
-    thread::spawn(move || {
-        // start timeout worker
-        task_runner::workers::timeout_loop(p2);
+    actix_web::rt::spawn(async {
+        task_runner::workers::timeout_loop(p2).await;
     });
-
+    
     HttpServer::new(move || {
         App::new()
             // add DB pool handle to app data; enables use of `web::Data<DbPool>` extractor
@@ -155,9 +135,12 @@ async fn main() -> std::io::Result<()> {
 ///
 /// See more: <https://docs.rs/diesel/latest/diesel/r2d2/index.html>.
 fn initialize_db_pool() -> DbPool {
+    use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+    use diesel_async::pooled_connection::deadpool::Pool;
     let conn_spec = std::env::var("DATABASE_URL").expect("DATABASE_URL should be set");
-    let manager = r2d2::ConnectionManager::<PgConnection>::new(conn_spec);
-    r2d2::Pool::builder()
-        .build(manager)
-        .expect("database URL should be valid path to SQLite DB file")
+    let config = AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(conn_spec);
+    let pool = Pool::builder(config)
+        .build()
+        .expect("failed to connect to db");
+    pool
 }
