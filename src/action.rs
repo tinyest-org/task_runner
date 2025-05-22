@@ -36,14 +36,19 @@ pub fn get_http_client() -> reqwest::Client {
         .expect("Failed to build HTTP client")
 }
 
+pub struct ActionContext {
+    pub host_address: String,
+}
+
 impl Action  {
     //  should be provided with server context excutor
     // -> provide return url
-    pub async fn execute(&self, task: &Task) -> Result<bool, String> {
+    pub async fn execute(&self, ctx: &ActionContext , task: &Task) -> Result<bool, String> {
         match self.kind {
             ActionKindEnum::Webhook => {
                 // TODO: should be properly configured
-                let my_address = "http://localhost:8080";
+                // let my_address = "http://localhost:8080";
+                let my_address = &ctx.host_address;
                 let params: WebhookParamas = serde_json::from_value(self.params.clone())
                     .map_err(|e| format!("Failed to parse webhook params: {}", e))?;
                 let url = params.url;

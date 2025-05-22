@@ -1,5 +1,6 @@
 use crate::{
     Conn, DbPool,
+    action::ActionContext,
     db_operation::{self, DbError},
     models::{self, Action, Task, TriggerKind},
     rule::Rule,
@@ -40,8 +41,6 @@ pub async fn timeout_loop(pool: DbPool) {
                 }
             }
         }
-
-        // thread::sleep(std::time::Duration::from_secs(1));
         rt::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
@@ -52,7 +51,9 @@ pub struct EvaluationContext {
     ok: HashSet<Rule>,
 }
 
-pub async fn start_loop(pool: DbPool) {
+pub async fn start_loop(
+    action_context: &ActionContext,
+    pool: DbPool) {
     loop {
         // note that obtaining a connection from the pool is also potentially blocking
         let conn = pool.get();
@@ -69,7 +70,7 @@ pub async fn start_loop(pool: DbPool) {
                     log::debug!("Start worker: found {} tasks", tasks.len());
                     for t in tasks {
                         if evaluate_rules(&t, &mut conn, &mut ctx).await {
-                            match start_task(&t, &mut conn).await {
+                            match start_task(action_context, &t, &mut conn).await {
                                 Ok(_) => {
                                     // use logger instead of println
                                     log::debug!("Start worker: task {} started", t.id);
@@ -170,11 +171,15 @@ async fn evaluate_rules<'a>(
     true
 }
 
-async fn start_task<'a>(task: &Task, conn: &mut Conn<'a>) -> Result<(), diesel::result::Error> {
+async fn start_task<'a>(
+    ctx: &ActionContext,
+    task: &Task,
+    conn: &mut Conn<'a>,
+) -> Result<(), diesel::result::Error> {
     let actions = Action::belonging_to(&task).load::<Action>(conn).await?;
     // TODO: should be in the query directly
     for action in actions.iter().filter(|e| e.trigger == TriggerKind::Start) {
-        let res = action.execute(task).await;
+        let res = action.execute(ctx, task).await;
         match res {
             Ok(_) => {
                 // update the action status to success
@@ -191,12 +196,16 @@ async fn start_task<'a>(task: &Task, conn: &mut Conn<'a>) -> Result<(), diesel::
     Ok(())
 }
 
-pub async fn end_task<'a>(task_id: &uuid::Uuid, conn: &mut Conn<'a>) -> Result<(), DbError> {
+pub async fn end_task<'a>(
+    ctx: &ActionContext,
+    task_id: &uuid::Uuid,
+    conn: &mut Conn<'a>,
+) -> Result<(), DbError> {
     use crate::schema::task::dsl::*;
     let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
     let actions = Action::belonging_to(&t).load::<Action>(conn).await?;
     for action in actions.iter().filter(|e| e.trigger == TriggerKind::End) {
-        let res = action.execute(&t).await;
+        let res = action.execute(ctx, &t).await;
         match res {
             Ok(_) => {
                 // update the action status to success
