@@ -29,8 +29,8 @@ pub struct WebhookParamas {
     headers: Option<HashMap<String, String>>,
 }
 
-pub fn get_http_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+pub fn get_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .expect("Failed to build HTTP client")
@@ -39,7 +39,7 @@ pub fn get_http_client() -> reqwest::blocking::Client {
 impl Action  {
     //  should be provided with server context excutor
     // -> provide return url
-    pub fn execute(&self, task: &Task) -> Result<bool, String> {
+    pub async fn execute(&self, task: &Task) -> Result<bool, String> {
         match self.kind {
             ActionKindEnum::Webhook => {
                 // TODO: should be properly configured
@@ -59,7 +59,7 @@ impl Action  {
                         request = request.header(key, value);
                     }
                 }
-                let response = request.send().map_err(|e| format!("Failed to send request: {}", e))?;
+                let response = request.send().await.map_err(|e| format!("Failed to send request: {}", e))?;
                 if response.status().is_success() {
                     Ok(true)
                 } else {

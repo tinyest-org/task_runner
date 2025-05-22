@@ -197,6 +197,7 @@ pub async fn insert_new_task(conn: &mut Conn, dto: dtos::NewTaskDto) -> Result<T
         .returning(Task::as_returning())
         .get_result(conn)
         .await?;
+    log::info!("inserted task");
 
     let actions = if let Some(actions) = dto.actions {
         let items = actions
@@ -217,5 +218,6 @@ pub async fn insert_new_task(conn: &mut Conn, dto: dtos::NewTaskDto) -> Result<T
     } else {
         vec![]
     };
+    log::info!("inserted actions");
     Ok(TaskDto::new(new_task, actions)) // Changed from Ok(r) to Ok(dto)
 }

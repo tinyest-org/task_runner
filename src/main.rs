@@ -22,12 +22,14 @@ async fn list_task(
     // handle filter -> pending, running
     // -> return basicTaskDto
     // TODO: Implement the logic for listing tasks
+    log::info!("got query");
     let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
+    log::info!("got conn");
     let tasks = db_operation::list_task_filtered_paged(&mut conn, pagination.0, filter.0)
         .await
         // map diesel query errors to a 500 error response
         .map_err(error::ErrorInternalServerError)?;
-
+    log::info!("got result");
     Ok(HttpResponse::Ok().json(tasks))
 }
 
@@ -84,13 +86,15 @@ async fn add_task(
     pool: web::Data<DbPool>,
     form: web::Json<dtos::NewTaskDto>,
 ) -> actix_web::Result<impl Responder> {
+    log::info!("got query");
     // use web::block to offload blocking Diesel queries without blocking server thread
     let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
+    log::info!("got conn");
     let user = db_operation::insert_new_task(&mut conn, form.0)
         .await
         // map diesel query errors to a 500 error response
         .map_err(error::ErrorInternalServerError)?;
-
+    log::info!("action inserted");
     // user was added successfully; return 201 response with new user info
     Ok(HttpResponse::Created().json(user))
 }
@@ -114,7 +118,7 @@ async fn main() -> std::io::Result<()> {
     actix_web::rt::spawn(async {
         task_runner::workers::timeout_loop(p2).await;
     });
-    
+
     HttpServer::new(move || {
         App::new()
             // add DB pool handle to app data; enables use of `web::Data<DbPool>` extractor
@@ -141,6 +145,7 @@ fn initialize_db_pool() -> DbPool {
     let config = AsyncDieselConnectionManager::<diesel_async::AsyncPgConnection>::new(conn_spec);
     
     Pool::builder(config)
+        .max_size(10)
         .build()
         .expect("failed to connect to db")
 }

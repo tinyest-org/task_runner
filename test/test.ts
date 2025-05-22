@@ -71,7 +71,7 @@ async function createOne(projectId: number) {
 
 async function main() {
     await createOne(1251);
-    await createOne(1253);
+    // await createOne(1253);
 }
 
 main();

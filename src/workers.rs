@@ -181,7 +181,7 @@ async fn start_task(task: &Task, conn: &mut Conn) -> Result<(), diesel::result::
     let actions = Action::belonging_to(&task).load::<Action>(conn).await?;
     // TODO: should be in the query directly
     for action in actions.iter().filter(|e| e.trigger == TriggerKind::Start) {
-        let res = action.execute(task);
+        let res = action.execute(task).await;
         match res {
             Ok(_) => {
                 // update the action status to success
@@ -203,7 +203,7 @@ pub async fn end_task(task_id: &uuid::Uuid, conn: &mut Conn) -> Result<(), DbErr
     let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
     let actions = Action::belonging_to(&t).load::<Action>(conn).await?;
     for action in actions.iter().filter(|e| e.trigger == TriggerKind::End) {
-        let res = action.execute(&t);
+        let res = action.execute(&t).await;
         match res {
             Ok(_) => {
                 // update the action status to success
