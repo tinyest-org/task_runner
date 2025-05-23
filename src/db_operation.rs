@@ -1,6 +1,6 @@
 use crate::{
     Conn,
-    action::ActionContext,
+    action::ActionExecutor,
     dtos::{self, TaskDto},
     models::{self, Action, NewAction, Task},
     rule::Rules,
@@ -74,7 +74,7 @@ pub async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task>, DbEr
     Ok(tasks)
 }
 pub async fn update_task<'a>(
-    action_context: &ActionContext,
+    evaluator: &ActionExecutor,
     conn: &mut Conn<'a>,
     task_id: Uuid,
     dto: dtos::UpdateTaskDto,
@@ -106,7 +106,7 @@ pub async fn update_task<'a>(
 
     if is_end {
         // TODO: execute on end action triggers
-        match end_task(action_context, &task_id, conn).await {
+        match end_task(evaluator, &task_id, conn).await {
             Ok(_) => log::debug!("task {} end actions are successfull", &task_id),
             Err(_) => log::error!("task {} end actions failed", &task_id),
         }

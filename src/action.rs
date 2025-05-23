@@ -6,7 +6,11 @@ use crate::models::{Action, ActionKindEnum, Task};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub enum HttpVerb {
-    Get, Post, Delete, Put, Patch
+    Get,
+    Post,
+    Delete,
+    Put,
+    Patch,
 }
 
 impl From<HttpVerb> for reqwest::Method {
@@ -40,16 +44,18 @@ pub struct ActionContext {
     pub host_address: String,
 }
 
-impl Action  {
-    //  should be provided with server context excutor
-    // -> provide return url
-    pub async fn execute(&self, ctx: &ActionContext , task: &Task) -> Result<bool, String> {
-        match self.kind {
+pub struct ActionExecutor {
+    pub ctx: ActionContext,
+}
+
+impl ActionExecutor {
+    pub async fn execute(&self, action: &Action, task: &Task) -> Result<bool, String> {
+        match action.kind {
             ActionKindEnum::Webhook => {
                 // TODO: should be properly configured
                 // let my_address = "http://localhost:8080";
-                let my_address = &ctx.host_address;
-                let params: WebhookParamas = serde_json::from_value(self.params.clone())
+                let my_address = &self.ctx.host_address;
+                let params: WebhookParamas = serde_json::from_value(action.params.clone())
                     .map_err(|e| format!("Failed to parse webhook params: {}", e))?;
                 let url = params.url;
                 let client = get_http_client();
@@ -64,7 +70,10 @@ impl Action  {
                         request = request.header(key, value);
                     }
                 }
-                let response = request.send().await.map_err(|e| format!("Failed to send request: {}", e))?;
+                let response = request
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to send request: {}", e))?;
                 if response.status().is_success() {
                     Ok(true)
                 } else {

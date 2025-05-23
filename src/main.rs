@@ -6,12 +6,14 @@
 use std::sync::Arc;
 
 use actix_web::{
-    error, get, http::header::{Header, TryIntoHeaderValue}, middleware, patch, post, web, App, HttpResponse, HttpServer, Responder
+    App, HttpResponse, HttpServer, Responder, error, get,
+    http::header::{Header, TryIntoHeaderValue},
+    middleware, patch, post, web,
 };
 use actix_web_prometheus::PrometheusMetricsBuilder;
 use task_runner::{
     DbPool,
-    action::ActionContext,
+    action::{ActionContext, ActionExecutor},
     db_operation,
     dtos::{self},
     initialize_db_pool,
@@ -35,14 +37,14 @@ async fn list_task(
 #[patch("/task/{task_id}")]
 async fn update_task(
     pool: web::Data<DbPool>,
-    action_context: web::Data<ActionContext>,
+    evaluator: web::Data<ActionExecutor>,
     task_id: web::Path<Uuid>,
     form: web::Json<dtos::UpdateTaskDto>,
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
     log::debug!("Update task: {:?}", &form.status);
     let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
-    let count = db_operation::update_task(action_context.get_ref(), &mut conn, *task_id, form.0)
+    let count = db_operation::update_task(evaluator.get_ref(), &mut conn, *task_id, form.0)
         .await
         .map_err(error::ErrorInternalServerError)?;
     Ok(match count {
@@ -83,7 +85,6 @@ use std::fmt;
 struct Requester(String);
 
 impl Header for Requester {
-
     fn name() -> HeaderName {
         HeaderName::from_static("requester")
     }
@@ -144,7 +145,9 @@ async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     let host_address = std::env::var("HOST_URL").expect("Env var `HOST_URL` not set");
     // in order to let applications know how to respond back
-    let action_context = Arc::from(ActionContext { host_address });
+    let action_context = Arc::from(ActionExecutor {
+        ctx: ActionContext { host_address },
+    });
 
     // initialize DB pool outside of `HttpServer::new` so that it is shared across all workers
     let pool = initialize_db_pool().await;
