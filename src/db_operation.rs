@@ -1,5 +1,10 @@
 use crate::{
-    action::ActionContext, dtos::{self, TaskDto}, models::{self, Action, NewAction, Task}, rule::Rules, workers::end_task, Conn
+    Conn,
+    action::ActionContext,
+    dtos::{self, TaskDto},
+    models::{self, Action, NewAction, Task},
+    rule::Rules,
+    workers::end_task,
 };
 use diesel::prelude::*;
 use diesel::sql_types;
@@ -199,7 +204,6 @@ pub async fn insert_new_task<'a>(
         .returning(Task::as_returning())
         .get_result(conn)
         .await?;
-    log::info!("inserted task");
 
     let actions = if let Some(actions) = dto.actions {
         let items = actions
@@ -220,6 +224,19 @@ pub async fn insert_new_task<'a>(
     } else {
         vec![]
     };
-    log::info!("inserted actions");
     Ok(TaskDto::new(new_task, actions)) // Changed from Ok(r) to Ok(dto)
+}
+
+pub async fn set_started_task<'a>(conn: &mut Conn<'a>, t: &Task) -> Result<(), DbError> {
+    use crate::schema::task::dsl::*;
+    use diesel::dsl::now;
+    diesel::update(task.filter(id.eq(t.id)))
+        .set((
+            status.eq(models::StatusKind::Running),
+            started_at.eq(now),
+            last_updated.eq(now),
+        ))
+        .execute(conn)
+        .await?;
+    Ok(())
 }

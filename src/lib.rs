@@ -7,25 +7,20 @@ pub mod rule;
 pub mod schema;
 pub mod workers;
 
-use std::time::Duration;
-
-/// Short-hand for the database pool type to use throughout the app.
-// pub type DbPool = Pool<AsyncDieselConnectionManager<>>;
 use diesel::{ConnectionError, ConnectionResult};
 use diesel_async::AsyncPgConnection;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::pooled_connection::ManagerConfig;
 use diesel_async::pooled_connection::bb8::PooledConnection;
 use diesel_async::pooled_connection::bb8::{self, Pool};
-use dtos::FilterDto;
-use dtos::PaginationDto;
+use std::time::Duration;
+
 use futures_util::FutureExt;
 use futures_util::future::BoxFuture;
 use rustls::ClientConfig;
 use rustls_platform_verifier::ConfigVerifierExt;
 
 pub type DbPool = bb8::Pool<AsyncPgConnection>;
-
 
 pub type Conn<'a> = PooledConnection<'a, AsyncPgConnection>;
 
@@ -46,12 +41,6 @@ pub async fn initialize_db_pool() -> DbPool {
         .build(mgr)
         .await
         .expect("failed to get pool");
-    let p = pool.clone();
-    log::info!("starting");
-    let mut conn = p.get().await.unwrap();
-    log::info!("got conn");
-    db_operation::list_task_filtered_paged(&mut conn, PaginationDto::default(), FilterDto::default()).await.unwrap();
-    log::info!("did query");
     pool
 }
 
@@ -68,6 +57,3 @@ fn establish_connection(config: &str) -> BoxFuture<ConnectionResult<AsyncPgConne
     };
     fut.boxed()
 }
-
-
-

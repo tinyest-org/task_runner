@@ -34,6 +34,7 @@ diesel::table! {
     use super::sql_types::StatusKind;
 
     task (id) {
+        // add requester field to track how want the data
         id -> Uuid,
         name -> Nullable<Text>,
         kind -> Text,

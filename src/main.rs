@@ -6,8 +6,9 @@
 use std::sync::Arc;
 
 use actix_web::{
-    App, HttpResponse, HttpServer, Responder, error, get, middleware, patch, post, web,
+    error, get, http::header::{Header, TryIntoHeaderValue}, middleware, patch, post, web, App, HttpResponse, HttpServer, Responder
 };
+use actix_web_prometheus::PrometheusMetricsBuilder;
 use task_runner::{
     DbPool,
     action::ActionContext,
@@ -28,7 +29,6 @@ async fn list_task(
         .await
         // map diesel query errors to a 500 error response
         .map_err(error::ErrorInternalServerError)?;
-    log::info!("got result");
     Ok(HttpResponse::Ok().json(tasks))
 }
 
@@ -76,6 +76,46 @@ async fn get_task(
     })
 }
 
+use actix_web::http::header::{HeaderName, HeaderValue};
+
+use std::fmt;
+#[derive(Debug)]
+struct Requester(String);
+
+impl Header for Requester {
+
+    fn name() -> HeaderName {
+        HeaderName::from_static("requester")
+    }
+
+    fn parse<M>(msg: &M) -> Result<Self, error::ParseError>
+    where
+        M: actix_web::HttpMessage,
+    {
+        if let Some(header_value) = msg.headers().get(HeaderName::from_static("requester")) {
+            header_value
+                .to_str()
+                .map(|s| Requester(s.to_owned()))
+                .map_err(|_| error::ParseError::Header)
+        } else {
+            Err(error::ParseError::Header)
+        }
+    }
+}
+
+impl fmt::Display for Requester {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl TryIntoHeaderValue for Requester {
+    type Error = actix_web::http::header::InvalidHeaderValue;
+
+    fn try_into_value(self) -> Result<HeaderValue, Self::Error> {
+        HeaderValue::from_str(&self.0)
+    }
+}
 /// Creates new user.
 ///
 /// Extracts:
@@ -85,16 +125,15 @@ async fn get_task(
 async fn add_task(
     pool: web::Data<DbPool>,
     form: web::Json<dtos::NewTaskDto>,
+    requester: web::Header<Requester>,
 ) -> actix_web::Result<impl Responder> {
-    log::info!("got query");
+    log::debug!("got query from {}", requester.0);
     // use web::block to offload blocking Diesel queries without blocking server thread
     let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
-    log::info!("got conn");
     let user = db_operation::insert_new_task(&mut conn, form.0)
         .await
         // map diesel query errors to a 500 error response
         .map_err(error::ErrorInternalServerError)?;
-    log::info!("action inserted");
     // user was added successfully; return 201 response with new user info
     Ok(HttpResponse::Created().json(user))
 }
@@ -104,12 +143,14 @@ async fn main() -> std::io::Result<()> {
     dotenvy::dotenv().ok();
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     let host_address = std::env::var("HOST_URL").expect("Env var `HOST_URL` not set");
+    // in order to let applications know how to respond back
     let action_context = Arc::from(ActionContext { host_address });
 
     // initialize DB pool outside of `HttpServer::new` so that it is shared across all workers
     let pool = initialize_db_pool().await;
+    let port = 8080;
 
-    log::info!("starting HTTP server at http://localhost:8080");
+    log::info!("starting HTTP server at http://localhost:{port}");
 
     let p = pool.clone();
 
@@ -122,19 +163,27 @@ async fn main() -> std::io::Result<()> {
         task_runner::workers::timeout_loop(p2).await;
     });
 
+    let prometheus = PrometheusMetricsBuilder::new("api")
+        .endpoint("/metrics")
+        // .const_labels(labels)
+        .build()
+        .unwrap();
+
     HttpServer::new(move || {
         App::new()
             // add DB pool handle to app data; enables use of `web::Data<DbPool>` extractor
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(action_context.clone()))
+            .wrap(prometheus.clone())
             // add request logger middleware
             .wrap(middleware::Logger::default())
+            // should add health metrics
             .service(get_task)
             .service(add_task)
             .service(list_task)
             .service(update_task)
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("127.0.0.1", port))?
     .run()
     .await
 }

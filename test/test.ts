@@ -2,6 +2,7 @@ async function createOne(projectId: number) {
     const req = await fetch("http://localhost:8080/task", {
         method: "POST",
         headers: {
+            "requester": "tester/Bun",
             "content-type": "application/json",
         },
         body: JSON.stringify({

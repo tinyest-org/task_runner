@@ -2,7 +2,7 @@ use crate::{
     Conn, DbPool,
     action::ActionContext,
     db_operation::{self, DbError},
-    models::{self, Action, Task, TriggerKind},
+    models::{Action, Task, TriggerKind},
     rule::Rule,
 };
 use actix_web::rt;
@@ -51,10 +51,8 @@ pub struct EvaluationContext {
     ok: HashSet<Rule>,
 }
 
-pub async fn start_loop(
-    action_context: &ActionContext,
-    pool: DbPool) {
-    loop {
+pub async fn start_loop(action_context: &ActionContext, pool: DbPool) {
+    'outer: loop {
         // note that obtaining a connection from the pool is also potentially blocking
         let conn = pool.get();
 
@@ -75,17 +73,21 @@ pub async fn start_loop(
                                     // use logger instead of println
                                     log::debug!("Start worker: task {} started", t.id);
                                     // update the task status to running
-                                    use crate::schema::task::dsl::*;
-                                    use diesel::dsl::now;
-                                    diesel::update(task.filter(id.eq(t.id)))
-                                        .set((
-                                            status.eq(models::StatusKind::Running),
-                                            started_at.eq(now),
-                                            last_updated.eq(now),
+                                    let mut i = 0;
+                                    while let Err(_) =
+                                        db_operation::set_started_task(&mut conn, &t).await
+                                    {
+                                        log::warn!("failed to update task in database");
+                                        actix_web::rt::time::sleep(std::time::Duration::from_secs(
+                                            1,
                                         ))
-                                        .execute(&mut conn)
-                                        .await
-                                        .expect("Failed to update task status");
+                                        .await;
+                                        i += 1;
+                                        if i == 10 {
+                                            // we want to stop starting tasks as we are in a inconsistant state
+                                            break 'outer;
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     log::error!(
@@ -156,7 +158,6 @@ async fn evaluate_rules<'a>(
                     .load::<Task>(conn)
                     .await
                     .expect("failed to count for execution");
-                log::info!("count: {}", &l.len());
                 let res = l.len() < concurency_rule.max_concurency as usize;
                 // should use an id instead
                 if res {
