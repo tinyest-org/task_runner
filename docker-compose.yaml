@@ -9,3 +9,12 @@ services:
       PGDATABASE: testing_db
     ports:
       - 5432:5432
+
+  task-runner:
+    image: task-runner
+    environment:
+      - DATABASE_URL=postgres://test_user:testing@localhost/testing_db
+      - HOST_URL=http://localhost:8080
+
+    ports:
+      - 8080:8080
