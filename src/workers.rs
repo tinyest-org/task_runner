@@ -74,8 +74,9 @@ pub async fn start_loop(action_context: &ActionContext, pool: DbPool) {
                                     log::debug!("Start worker: task {} started", t.id);
                                     // update the task status to running
                                     let mut i = 0;
-                                    while let Err(_) =
-                                        db_operation::set_started_task(&mut conn, &t).await
+                                    while db_operation::set_started_task(&mut conn, &t)
+                                        .await
+                                        .is_err()
                                     {
                                         log::warn!("failed to update task in database");
                                         actix_web::rt::time::sleep(std::time::Duration::from_secs(

@@ -33,15 +33,15 @@ pub async fn initialize_db_pool() -> DbPool {
     config.custom_setup = Box::new(establish_connection);
     let mgr = AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(db_url, config);
 
-    let pool = Pool::builder()
+    
+    Pool::builder()
         .max_size(10)
         .min_idle(Some(5))
         .max_lifetime(Some(Duration::from_secs(60 * 60 * 24)))
         .idle_timeout(Some(Duration::from_secs(60 * 2)))
         .build(mgr)
         .await
-        .expect("failed to get pool");
-    pool
+        .expect("failed to get pool")
 }
 
 fn establish_connection(config: &str) -> BoxFuture<ConnectionResult<AsyncPgConnection>> {
