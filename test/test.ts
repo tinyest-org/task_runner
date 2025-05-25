@@ -47,8 +47,9 @@ async function createOne(projectId: number) {
                     "name": "Call main api", // could be removed
                     "kind": "Webhook",
                     "params": {
-                        "url": "http://localhost:9090/task",
-                        "verb": "Post",
+                        // "url": "http://localhost:9090/task",
+                        "url": "https://example.com",
+                        "verb": "Get",
                         "body": {
                             "projectId": projectId, // could use a ref to the metadata ?
                             "wait_for": 2,

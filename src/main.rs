@@ -11,6 +11,7 @@ use actix_web::{
     middleware, patch, post, web,
 };
 use actix_web_prometheus::PrometheusMetricsBuilder;
+use rustls::crypto::CryptoProvider;
 use task_runner::{
     DbPool,
     action::{ActionContext, ActionExecutor},
@@ -144,6 +145,8 @@ async fn main() -> std::io::Result<()> {
     dotenvy::dotenv().ok();
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     let host_address = std::env::var("HOST_URL").expect("Env var `HOST_URL` not set");
+    rustls::crypto::ring::default_provider().install_default().expect("Failed to install rustls crypto provider");
+    // CryptoProvider::install_default();
     // in order to let applications know how to respond back
     let action_context = Arc::from(ActionExecutor {
         ctx: ActionContext { host_address },
@@ -186,7 +189,7 @@ async fn main() -> std::io::Result<()> {
             .service(list_task)
             .service(update_task)
     })
-    .bind(("127.0.0.1", port))?
+    .bind(("0.0.0.0", port))?
     .run()
     .await
 }

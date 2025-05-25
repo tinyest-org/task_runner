@@ -17,18 +17,22 @@ diesel = { version = "2.2.8", features = [
 uuid = { version = "1.16.0", features = ["v4", "serde"] }
 env_logger = "0.11.8"
 log = "0.4.27"
+reqwest = { version = "0.12.8", features = [
+    "json",
+    "rustls-tls",
+], default-features = false }
 diesel-derive-enum = { version = "3.0.0-beta.1", features = ["postgres"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 actix = { version = "0.13.5", features = [] }
 tokio-postgres = "0.7.7"
 diesel-async = { version = "0.5.2", features = ["postgres", "bb8"] }
 futures-util = "0.3.21"
-rustls = { version = "0.23.8" , features = ["ring"]}
 # ring = "0.17.8"
 rustls-platform-verifier = "0.5.0"
 tokio-postgres-rustls = "0.13.0"
 tokio = { version = "1.45.0", default-features = false }
 actix-web-prometheus = "0.1.2"
+rustls = { version = "0.23.8", features = ["ring"], default-features = false }
 
 [profile.release]
 strip = true      # Automatically strip symbols from the binary.
@@ -46,9 +50,3 @@ path = "src/test_server.rs"
 [[bin]]
 name = "cache"
 path = "src/cache_helper.rs"
-
-
-[dependencies.reqwest]
-version = "0.12"
-default-features = false
-features = ["json"]
