@@ -69,6 +69,7 @@ pub async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task>, DbEr
     use crate::schema::task::dsl::*;
     let tasks = task
         .filter(status.eq(models::StatusKind::Pending))
+        .order(created_at.asc())
         .get_results(conn)
         .await?;
     Ok(tasks)

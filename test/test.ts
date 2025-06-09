@@ -5,7 +5,7 @@ async function createOne(projectId: number) {
             "requester": "tester/Bun",
             "content-type": "application/json",
         },
-        body: JSON.stringify({
+        body: JSON.stringify([{
             "name": "cluster",
             "kind": "cluster",
             "timeout": 6,
@@ -60,7 +60,7 @@ async function createOne(projectId: number) {
                     },
                 },
             ],
-        }),
+        }]),
     });
 
     const text = await req.text();

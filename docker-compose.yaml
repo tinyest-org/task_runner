@@ -14,6 +14,6 @@ services:
     image: task-runner
     environment:
       - DATABASE_URL=postgres://test_user:testing@postgres/testing_db
-      - HOST_URL=http://localhost:8080
+      - HOST_URL=http://localhost:8085
     ports:
-      - 8080:8080
+      - 8085:8080

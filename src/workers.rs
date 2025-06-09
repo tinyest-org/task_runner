@@ -3,7 +3,7 @@ use crate::{
     action::ActionExecutor,
     db_operation::{self, DbError},
     models::{Action, Task, TriggerKind},
-    rule::Rule,
+    rule::Strategy,
 };
 use actix_web::rt;
 use diesel::BelongingToDsl;
@@ -47,8 +47,8 @@ pub async fn timeout_loop(pool: DbPool) {
 
 /// In order to cache results and avoid too many db calls
 pub struct EvaluationContext {
-    ko: HashSet<Rule>,
-    ok: HashSet<Rule>,
+    ko: HashSet<Strategy>,
+    ok: HashSet<Strategy>,
 }
 
 pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
@@ -128,7 +128,7 @@ async fn evaluate_rules<'a>(
     let ko = &mut ctx.ko;
     for cond in conditions {
         // for now the ok is disabled
-        // as the conditions may go from ok to ko 
+        // as the conditions may go from ok to ko
         // after starting a previous task
         // if ok.contains(cond) {
         //     continue;
@@ -137,14 +137,12 @@ async fn evaluate_rules<'a>(
             return false;
         }
         match cond {
-            crate::rule::Rule::None => {}
-            crate::rule::Rule::Concurency(concurency_rule) => {
+            crate::rule::Strategy::Concurency(concurency_rule) => {
                 // cache partial result
                 use crate::schema::task::dsl::*;
                 use diesel::PgJsonbExpressionMethods;
-                let m1 = concurency_rule.matcher.clone();
                 let mut m = json!({});
-                m1.fields.iter().for_each(|e| {
+                concurency_rule.matcher.fields.iter().for_each(|e| {
                     let k = _task.metadata.get(e);
                     match k {
                         Some(v) => {
@@ -153,19 +151,31 @@ async fn evaluate_rules<'a>(
                         None => unreachable!("None should't be there"),
                     }
                 });
-                let l = task
+                let count = task
                     .filter(
-                        kind.eq(m1.kind)
-                            .and(status.eq(m1.status))
+                        kind.eq(&concurency_rule.matcher.kind)
+                            .and(status.eq(&concurency_rule.matcher.status))
                             .and(metadata.contains(m)),
                     )
-                    .load::<Task>(conn)
+                    .count()
+                    .get_result::<i64>(conn)
                     .await
                     .expect("failed to count for execution");
-                let res = l.len() < concurency_rule.max_concurency as usize;
+
+                let is_same = &concurency_rule.matcher.kind == &_task.kind;
+
+                let res = {
+                    if is_same {
+                        // we start the new task of the same kind, so we must ensure we don't get over capacity
+                        count < concurency_rule.max_concurency.into()
+                    } else {
+                        count <= concurency_rule.max_concurency.into()
+                    }
+                };
                 // should use an id instead
                 if res {
-                    ok.insert(cond.clone());
+                    // relica
+                    // ok.insert(cond.clone());
                 } else {
                     ko.insert(cond.clone());
                     return false;

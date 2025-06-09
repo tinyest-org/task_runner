@@ -26,7 +26,7 @@ impl From<HttpVerb> for reqwest::Method {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct WebhookParamas {
+pub struct WebhookParams {
     url: String,
     verb: HttpVerb,
     body: Option<serde_json::Value>,
@@ -55,7 +55,7 @@ impl ActionExecutor {
                 // TODO: should be properly configured
                 // let my_address = "http://localhost:8080";
                 let my_address = &self.ctx.host_address;
-                let params: WebhookParamas = serde_json::from_value(action.params.clone())
+                let params: WebhookParams = serde_json::from_value(action.params.clone())
                     .map_err(|e| format!("Failed to parse webhook params: {}", e))?;
                 let url = params.url;
                 let client = get_http_client();

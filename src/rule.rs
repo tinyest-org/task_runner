@@ -24,15 +24,14 @@ use crate::models::StatusKind;
 /// ```
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq)]
 #[serde(tag = "type")] // -> this way the "type" field will be used to determine the type of the rule
-pub enum Rule {
-    None, // we start immediately
+pub enum Strategy {
     Concurency(ConcurencyRule),
 }
 
 #[derive(AsExpression, FromSqlRow, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[diesel(sql_type = Jsonb)]
 pub struct Rules {
-    pub conditions: Vec<Rule>,
+    pub conditions: Vec<Strategy>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq)]

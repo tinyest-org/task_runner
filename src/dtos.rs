@@ -6,6 +6,7 @@ use crate::{
     rule::Rules,
 };
 
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewTaskDto {
     pub name: String,

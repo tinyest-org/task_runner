@@ -126,18 +126,22 @@ impl TryIntoHeaderValue for Requester {
 #[post("/task")]
 async fn add_task(
     pool: web::Data<DbPool>,
-    form: web::Json<dtos::NewTaskDto>,
+    form: web::Json<Vec<dtos::NewTaskDto>>,
     requester: web::Header<Requester>,
 ) -> actix_web::Result<impl Responder> {
     log::debug!("got query from {}", requester.0);
-    // use web::block to offload blocking Diesel queries without blocking server thread
     let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
-    let user = db_operation::insert_new_task(&mut conn, form.0)
-        .await
-        // map diesel query errors to a 500 error response
-        .map_err(error::ErrorInternalServerError)?;
+    // TODO: check the dedupe strategy
+    let mut result = vec![];
+    for i in form.0.into_iter() {
+        let task = db_operation::insert_new_task(&mut conn, i)
+            .await
+            // map diesel query errors to a 500 error response
+            .map_err(error::ErrorInternalServerError)?;
+        result.push(task);
+    }
     // user was added successfully; return 201 response with new user info
-    Ok(HttpResponse::Created().json(user))
+    Ok(HttpResponse::Created().json(result))
 }
 
 #[actix_web::main]
@@ -145,7 +149,13 @@ async fn main() -> std::io::Result<()> {
     dotenvy::dotenv().ok();
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     let host_address = std::env::var("HOST_URL").expect("Env var `HOST_URL` not set");
-    rustls::crypto::ring::default_provider().install_default().expect("Failed to install rustls crypto provider");
+    let port = 8080;
+
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+    log::info!("starting HTTP server at http://localhost:{port}");
+    log::info!("Using public url {}", &host_address);
     // CryptoProvider::install_default();
     // in order to let applications know how to respond back
     let action_context = Arc::from(ActionExecutor {
@@ -154,9 +164,6 @@ async fn main() -> std::io::Result<()> {
 
     // initialize DB pool outside of `HttpServer::new` so that it is shared across all workers
     let pool = initialize_db_pool().await;
-    let port = 8080;
-
-    log::info!("starting HTTP server at http://localhost:{port}");
 
     let p = pool.clone();
 
