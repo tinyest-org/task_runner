@@ -11,7 +11,6 @@ use actix_web::{
     middleware, patch, post, web,
 };
 use actix_web_prometheus::PrometheusMetricsBuilder;
-use rustls::crypto::CryptoProvider;
 use task_runner::{
     DbPool,
     action::{ActionContext, ActionExecutor},
@@ -23,11 +22,11 @@ use uuid::Uuid;
 
 #[get("/task")]
 async fn list_task(
-    pool: web::Data<DbPool>,
+    state: web::Data<AppState>,
     pagination: web::Query<dtos::PaginationDto>, // pagination
     filter: web::Query<dtos::FilterDto>,         // filter
 ) -> actix_web::Result<impl Responder> {
-    let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let mut conn = state.pool.get().await.map_err(error::ErrorInternalServerError)?;
     let tasks = db_operation::list_task_filtered_paged(&mut conn, pagination.0, filter.0)
         .await
         // map diesel query errors to a 500 error response
@@ -37,15 +36,14 @@ async fn list_task(
 
 #[patch("/task/{task_id}")]
 async fn update_task(
-    pool: web::Data<DbPool>,
-    evaluator: web::Data<ActionExecutor>,
+    state: web::Data<AppState>,
+    // evaluator: web::Data<ActionExecutor>,
     task_id: web::Path<Uuid>,
     form: web::Json<dtos::UpdateTaskDto>,
 ) -> actix_web::Result<impl Responder> {
-    // use web::block to offload blocking Diesel queries without blocking server thread
-    log::debug!("Update task: {:?}", &form.status);
-    let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
-    let count = db_operation::update_task(evaluator.get_ref(), &mut conn, *task_id, form.0)
+    log::info!("Update task: {:?}", &form.status);
+    let mut conn = state.pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let count = db_operation::update_task(&state.action_executor, &mut conn, *task_id, form.0)
         .await
         .map_err(error::ErrorInternalServerError)?;
     Ok(match count {
@@ -61,11 +59,11 @@ async fn update_task(
 /// - a user UID from the request path
 #[get("/task/{task_id}")]
 async fn get_task(
-    pool: web::Data<DbPool>,
+    state: web::Data<AppState>,
     task_id: web::Path<Uuid>,
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
-    let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let mut conn = state.pool.get().await.map_err(error::ErrorInternalServerError)?;
     let task = db_operation::find_detailed_task_by_id(&mut conn, *task_id)
         .await
         // map diesel query errors to a 500 error response
@@ -125,12 +123,12 @@ impl TryIntoHeaderValue for Requester {
 /// - a JSON form containing new user info from the request body
 #[post("/task")]
 async fn add_task(
-    pool: web::Data<DbPool>,
+    state: web::Data<AppState>,
     form: web::Json<Vec<dtos::NewTaskDto>>,
     requester: web::Header<Requester>,
 ) -> actix_web::Result<impl Responder> {
     log::debug!("got query from {}", requester.0);
-    let mut conn = pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let mut conn = state.pool.get().await.map_err(error::ErrorInternalServerError)?;
     // TODO: check the dedupe strategy
     let mut result = vec![];
     for i in form.0.into_iter() {
@@ -144,12 +142,18 @@ async fn add_task(
     Ok(HttpResponse::Created().json(result))
 }
 
+#[derive(Clone)]
+struct AppState {
+    pub action_executor: ActionExecutor,
+    pub pool: DbPool,
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenvy::dotenv().ok();
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     let host_address = std::env::var("HOST_URL").expect("Env var `HOST_URL` not set");
-    let port = 8080;
+    let port = 8085;
 
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -158,12 +162,20 @@ async fn main() -> std::io::Result<()> {
     log::info!("Using public url {}", &host_address);
     // CryptoProvider::install_default();
     // in order to let applications know how to respond back
+    let pool = initialize_db_pool().await;
+    let app_data = AppState {
+        pool: pool.clone(),
+        action_executor: ActionExecutor {
+            ctx: ActionContext {
+                host_address: host_address.to_owned(),
+            },
+        },
+    };
     let action_context = Arc::from(ActionExecutor {
         ctx: ActionContext { host_address },
     });
 
     // initialize DB pool outside of `HttpServer::new` so that it is shared across all workers
-    let pool = initialize_db_pool().await;
 
     let p = pool.clone();
 
@@ -185,12 +197,9 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             // add DB pool handle to app data; enables use of `web::Data<DbPool>` extractor
-            .app_data(web::Data::new(pool.clone()))
-            .app_data(web::Data::new(action_context.clone()))
+            .app_data(web::Data::new(app_data.clone()))
             .wrap(prometheus.clone())
-            // add request logger middleware
             .wrap(middleware::Logger::default())
-            // should add health metrics
             .service(get_task)
             .service(add_task)
             .service(list_task)

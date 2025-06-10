@@ -39,11 +39,12 @@ pub fn get_http_client() -> reqwest::Client {
         .build()
         .expect("Failed to build HTTP client")
 }
-
+#[derive(Clone)]
 pub struct ActionContext {
     pub host_address: String,
 }
 
+#[derive(Clone)]
 pub struct ActionExecutor {
     pub ctx: ActionContext,
 }
