@@ -2,15 +2,6 @@ FROM task-builder
 
 RUN apk add --no-cache libpq-dev
 
-WORKDIR /app
-
-# handle cache if possible here
-COPY ./Cargo.toml /app
-COPY ./Cargo.lock /app
-COPY rust-toolchain.toml /app
-COPY ./src/cache_helper.rs /app/src/cache_helper.rs
-RUN cargo build --release --bin cache
-
 COPY ./src /app/src
 # do a release build
 RUN cargo build --release --bin server
