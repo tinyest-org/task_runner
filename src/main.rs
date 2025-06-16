@@ -9,6 +9,7 @@ use actix_web::{
     App, HttpResponse, HttpServer, Responder, error, get, middleware, patch, post, web,
 };
 use actix_web_prometheus::PrometheusMetricsBuilder;
+use diesel::{Connection, PgConnection};
 use task_runner::{
     DbPool,
     action::{ActionContext, ActionExecutor},
@@ -18,6 +19,10 @@ use task_runner::{
     initialize_db_pool,
 };
 use uuid::Uuid;
+
+use diesel_migrations::MigrationHarness;
+use diesel_migrations::{EmbeddedMigrations, embed_migrations};
+pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 #[get("/task")]
 async fn list_task(
@@ -129,11 +134,13 @@ struct AppState {
     pub action_executor: ActionExecutor,
     pub pool: DbPool,
 }
+// embed_migrations!("./migrations");
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenvy::dotenv().ok();
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    let db_url = std::env::var("DATABASE_URL").expect("Env var `DATABASE_URL` not set");
     let host_address = std::env::var("HOST_URL").expect("Env var `HOST_URL` not set");
     let port = 8085;
 
@@ -145,6 +152,10 @@ async fn main() -> std::io::Result<()> {
     // CryptoProvider::install_default();
     // in order to let applications know how to respond back
     let pool = initialize_db_pool().await;
+    
+    let mut conn = PgConnection::establish(&db_url).unwrap();
+    conn.run_pending_migrations(MIGRATIONS).unwrap();
+
     let app_data = AppState {
         pool: pool.clone(),
         action_executor: ActionExecutor {

@@ -35,6 +35,7 @@ tokio-postgres-rustls = "0.13.0"
 tokio = { version = "1.45.0", default-features = false }
 actix-web-prometheus = "0.1.2"
 rustls = { version = "0.23.8", features = ["ring"], default-features = false }
+diesel_migrations = "2.2.0"
 
 [profile.release]
 strip = true      # Automatically strip symbols from the binary.
