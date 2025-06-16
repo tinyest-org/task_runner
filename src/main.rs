@@ -112,10 +112,16 @@ async fn add_task(
             .await
             // map diesel query errors to a 500 error response
             .map_err(error::ErrorInternalServerError)?;
-        result.push(task);
+        if let Some(t) = task {
+            result.push(t);
+        }
+    }
+    if result.len() > 0 {
+        Ok(HttpResponse::Created().json(result))
+    } else {
+        Ok(HttpResponse::NoContent().finish())
     }
     // user was added successfully; return 201 response with new user info
-    Ok(HttpResponse::Created().json(result))
 }
 
 #[derive(Clone)]
