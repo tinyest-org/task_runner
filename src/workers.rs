@@ -48,7 +48,7 @@ pub async fn timeout_loop(pool: DbPool) {
 /// In order to cache results and avoid too many db calls
 pub struct EvaluationContext {
     ko: HashSet<Strategy>,
-    ok: HashSet<Strategy>,
+    // ok: HashSet<Strategy>,
 }
 
 pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
@@ -61,7 +61,7 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
             match res {
                 Ok(tasks) => {
                     let mut ctx = EvaluationContext {
-                        ok: HashSet::new(),
+                        // ok: HashSet::new(),
                         ko: HashSet::new(),
                     };
                     // use logger instead of println
@@ -115,8 +115,8 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
     }
 }
 
-async fn evaluate_rules<'a>(
-    _task: &Task,
+pub async fn evaluate_rules<'a>(
+    _task: &Task, // in order to avoid issue when importing the schema
     conn: &mut Conn<'a>,
     ctx: &mut EvaluationContext,
 ) -> bool {
@@ -124,7 +124,7 @@ async fn evaluate_rules<'a>(
     if conditions.is_empty() {
         return true;
     }
-    let ok = &mut ctx.ok;
+    // let ok = &mut ctx.ok;
     let ko = &mut ctx.ko;
     for cond in conditions {
         // for now the ok is disabled

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     models::{ActionKindEnum, StatusKind, TriggerKind},
-    rule::Rules,
+    rule::{Matcher, Rules},
 };
 
 
@@ -15,6 +15,8 @@ pub struct NewTaskDto {
     pub actions: Option<Vec<ActionDto>>,
     pub metadata: Option<serde_json::Value>,
     pub rules: Option<Rules>,
+    /// if a task matches one of the matcher then the task is not created
+    pub dedupe_strategy: Option<Vec<Matcher>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

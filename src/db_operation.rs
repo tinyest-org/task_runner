@@ -3,12 +3,13 @@ use crate::{
     action::ActionExecutor,
     dtos::{self, TaskDto},
     models::{self, Action, NewAction, Task},
-    rule::Rules,
-    workers::end_task,
+    rule::{Matcher, Rules},
+    workers::{end_task},
 };
 use diesel::prelude::*;
 use diesel::sql_types;
 use diesel_async::RunQueryDsl;
+use serde_json::{json};
 use uuid::Uuid;
 pub type DbError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -184,12 +185,60 @@ pub async fn list_task_filtered_paged<'a>(
     Ok(tasks)
 }
 
+/// ensure we avoid creating duplicate tasks
+async fn handle_dedupe<'a>(
+    conn: &mut Conn<'a>,
+    rules: Vec<Matcher>,
+    _metadata: &Option<serde_json::Value>,
+) -> bool {
+    for matcher in rules.iter() {
+        use crate::schema::task::dsl::*;
+        use diesel::PgJsonbExpressionMethods;
+        let mut m = json!({});
+        if let Some(_m) = _metadata {
+            matcher.fields.iter().for_each(|e| {
+                let k = _m.get(e);
+                match k {
+                    Some(v) => {
+                        m[e] = v.clone();
+                    }
+                    None => unreachable!("None should't be there"),
+                }
+            });
+        }
+        let count = task
+            .filter(
+                kind.eq(&matcher.kind)
+                    .and(status.eq(&matcher.status))
+                    .and(metadata.contains(m)),
+            )
+            .count()
+            .get_result::<i64>(conn)
+            .await
+            .expect("failed to count for execution");
+        if count > 0 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Insert a new task into the database.
 pub async fn insert_new_task<'a>(
     conn: &mut Conn<'a>,
     dto: dtos::NewTaskDto,
-) -> Result<TaskDto, DbError> {
+) -> Result<Option<TaskDto>, DbError> {
     use crate::schema::{action::dsl::action, task::dsl::task};
+
+    let should_write = if let Some(s) = dto.dedupe_strategy {
+        handle_dedupe(conn, s, &dto.metadata).await
+    } else {
+        true
+    };
+
+    if !should_write {
+        return Ok(None);
+    }
 
     let new_task = models::NewTask {
         name: dto.name,
@@ -225,7 +274,7 @@ pub async fn insert_new_task<'a>(
     } else {
         vec![]
     };
-    Ok(TaskDto::new(new_task, actions)) // Changed from Ok(r) to Ok(dto)
+    Ok(Some(TaskDto::new(new_task, actions))) // Changed from Ok(r) to Ok(dto)
 }
 
 pub async fn set_started_task<'a>(conn: &mut Conn<'a>, t: &Task) -> Result<(), DbError> {

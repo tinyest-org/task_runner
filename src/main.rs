@@ -6,9 +6,7 @@
 use std::sync::Arc;
 
 use actix_web::{
-    App, HttpResponse, HttpServer, Responder, error, get,
-    http::header::{Header, TryIntoHeaderValue},
-    middleware, patch, post, web,
+    App, HttpResponse, HttpServer, Responder, error, get, middleware, patch, post, web,
 };
 use actix_web_prometheus::PrometheusMetricsBuilder;
 use task_runner::{
@@ -16,6 +14,7 @@ use task_runner::{
     action::{ActionContext, ActionExecutor},
     db_operation,
     dtos::{self},
+    helper::Requester,
     initialize_db_pool,
 };
 use uuid::Uuid;
@@ -26,7 +25,11 @@ async fn list_task(
     pagination: web::Query<dtos::PaginationDto>, // pagination
     filter: web::Query<dtos::FilterDto>,         // filter
 ) -> actix_web::Result<impl Responder> {
-    let mut conn = state.pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let mut conn = state
+        .pool
+        .get()
+        .await
+        .map_err(error::ErrorInternalServerError)?;
     let tasks = db_operation::list_task_filtered_paged(&mut conn, pagination.0, filter.0)
         .await
         // map diesel query errors to a 500 error response
@@ -42,7 +45,11 @@ async fn update_task(
     form: web::Json<dtos::UpdateTaskDto>,
 ) -> actix_web::Result<impl Responder> {
     log::info!("Update task: {:?}", &form.status);
-    let mut conn = state.pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let mut conn = state
+        .pool
+        .get()
+        .await
+        .map_err(error::ErrorInternalServerError)?;
     let count = db_operation::update_task(&state.action_executor, &mut conn, *task_id, form.0)
         .await
         .map_err(error::ErrorInternalServerError)?;
@@ -63,7 +70,11 @@ async fn get_task(
     task_id: web::Path<Uuid>,
 ) -> actix_web::Result<impl Responder> {
     // use web::block to offload blocking Diesel queries without blocking server thread
-    let mut conn = state.pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let mut conn = state
+        .pool
+        .get()
+        .await
+        .map_err(error::ErrorInternalServerError)?;
     let task = db_operation::find_detailed_task_by_id(&mut conn, *task_id)
         .await
         // map diesel query errors to a 500 error response
@@ -77,45 +88,6 @@ async fn get_task(
     })
 }
 
-use actix_web::http::header::{HeaderName, HeaderValue};
-
-use std::fmt;
-#[derive(Debug)]
-struct Requester(String);
-
-impl Header for Requester {
-    fn name() -> HeaderName {
-        HeaderName::from_static("requester")
-    }
-
-    fn parse<M>(msg: &M) -> Result<Self, error::ParseError>
-    where
-        M: actix_web::HttpMessage,
-    {
-        if let Some(header_value) = msg.headers().get(HeaderName::from_static("requester")) {
-            header_value
-                .to_str()
-                .map(|s| Requester(s.to_owned()))
-                .map_err(|_| error::ParseError::Header)
-        } else {
-            Err(error::ParseError::Header)
-        }
-    }
-}
-
-impl fmt::Display for Requester {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl TryIntoHeaderValue for Requester {
-    type Error = actix_web::http::header::InvalidHeaderValue;
-
-    fn try_into_value(self) -> Result<HeaderValue, Self::Error> {
-        HeaderValue::from_str(&self.0)
-    }
-}
 /// Creates new user.
 ///
 /// Extracts:
@@ -128,7 +100,11 @@ async fn add_task(
     requester: web::Header<Requester>,
 ) -> actix_web::Result<impl Responder> {
     log::debug!("got query from {}", requester.0);
-    let mut conn = state.pool.get().await.map_err(error::ErrorInternalServerError)?;
+    let mut conn = state
+        .pool
+        .get()
+        .await
+        .map_err(error::ErrorInternalServerError)?;
     // TODO: check the dedupe strategy
     let mut result = vec![];
     for i in form.0.into_iter() {
@@ -158,7 +134,7 @@ async fn main() -> std::io::Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
-    log::info!("starting HTTP server at http://localhost:{port}");
+    log::info!("starting HTTP server at http://0.0.0.0:{port}");
     log::info!("Using public url {}", &host_address);
     // CryptoProvider::install_default();
     // in order to let applications know how to respond back
@@ -183,6 +159,7 @@ async fn main() -> std::io::Result<()> {
     actix_web::rt::spawn(async move {
         task_runner::workers::start_loop(a.clone().as_ref(), p).await;
     });
+
     let p2 = pool.clone();
     actix_web::rt::spawn(async {
         task_runner::workers::timeout_loop(p2).await;
