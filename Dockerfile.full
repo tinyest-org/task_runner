@@ -1,15 +1,8 @@
-FROM task-builder
+FROM rust:1-alpine3.21
 
+ENV RUSTFLAGS="-C target-feature=-crt-static"
+RUN apk add --no-cache musl-dev 
 RUN apk add --no-cache libpq-dev
-
-WORKDIR /app
-
-# handle cache if possible here
-COPY ./Cargo.toml /app
-COPY ./Cargo.lock /app
-COPY rust-toolchain.toml /app
-COPY ./src/cache_helper.rs /app/src/cache_helper.rs
-RUN cargo build --release --bin cache
 
 COPY ./src /app/src
 # do a release build
