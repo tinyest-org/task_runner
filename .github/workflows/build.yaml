@@ -23,5 +23,5 @@ jobs:
         uses: docker/build-push-action@v2
         with:
           push: true
-          file: docker/Dockerfile.full
+          file: Dockerfile.full
           tags: plawn/task-runner:latest
