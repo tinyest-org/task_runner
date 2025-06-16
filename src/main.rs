@@ -105,8 +105,8 @@ async fn add_task(
         .get()
         .await
         .map_err(error::ErrorInternalServerError)?;
-    // TODO: check the dedupe strategy
     let mut result = vec![];
+    // this shall always be executed in order to reception
     for i in form.0.into_iter() {
         let task = db_operation::insert_new_task(&mut conn, i)
             .await

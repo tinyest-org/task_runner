@@ -9,6 +9,19 @@ async function createOne(projectId: number) {
             "name": "cluster",
             "kind": "cluster",
             "timeout": 6,
+            "dedupe_strategy": [
+                {
+                    status: "Pending",
+                    kind: "cluster",
+                    // if field `projectId` is present then we match
+                    // Running && cluster && projectId == metadata.projectId
+                    // else just
+                    // Running && cluster
+                    fields: [
+                        "projectId",
+                    ],
+                },
+            ],
             "rules": {
                 // condition to before starting the task
                 "conditions": [
