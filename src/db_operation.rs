@@ -4,12 +4,12 @@ use crate::{
     dtos::{self, TaskDto},
     models::{self, Action, NewAction, Task},
     rule::{Matcher, Rules},
-    workers::{end_task},
+    workers::end_task,
 };
 use diesel::prelude::*;
 use diesel::sql_types;
 use diesel_async::RunQueryDsl;
-use serde_json::{json};
+use serde_json::json;
 use uuid::Uuid;
 pub type DbError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -153,7 +153,8 @@ pub async fn list_task_filtered_paged<'a>(
             .filter(
                 name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
                     .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string()))))
-                    .and(status.eq(dto_status)),
+                    .and(status.eq(dto_status))
+                    .and(metadata.contains(filter.metadata.unwrap_or(json!({})))),
             )
             .limit(page_size)
             .order(created_at.desc())

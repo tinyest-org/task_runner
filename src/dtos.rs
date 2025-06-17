@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use chrono::Utc;
-use diesel::sql_types::Uuid;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{
     models::{ActionKindEnum, StatusKind, TriggerKind},
@@ -75,4 +77,5 @@ pub struct FilterDto {
     pub kind: Option<String>,
     pub status: Option<StatusKind>,
     pub timeout: Option<i32>,
+    pub metadata: Option<Value>,
 }
