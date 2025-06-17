@@ -9,7 +9,7 @@ use crate::{
 use diesel::prelude::*;
 use diesel::sql_types;
 use diesel_async::RunQueryDsl;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 pub type DbError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -146,6 +146,12 @@ pub async fn list_task_filtered_paged<'a>(
 ) -> Result<Vec<dtos::BasicTaskDto>, DbError> {
     use crate::schema::task::dsl::*;
     // use diesel to find the required data
+    log::info!("{:?}", &filter);
+    let m = filter
+        .metadata
+        .map(|f| serde_json::from_str::<Value>(&f).ok())
+        .flatten();
+    log::info!("M: {:?}", &m);
     let page_size = 50;
     let offset = pagination.page.unwrap_or(0) * page_size;
     let result = if let Some(dto_status) = filter.status {
@@ -154,7 +160,7 @@ pub async fn list_task_filtered_paged<'a>(
                 name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
                     .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string()))))
                     .and(status.eq(dto_status))
-                    .and(metadata.contains(filter.metadata.unwrap_or(json!({})))),
+                    .and(metadata.contains(m.unwrap_or(json!({})))),
             )
             .limit(page_size)
             .order(created_at.desc())
@@ -164,7 +170,8 @@ pub async fn list_task_filtered_paged<'a>(
         task.offset(offset)
             .filter(
                 name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
-                    .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string())))),
+                    .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string()))))
+                    .and(metadata.contains(m.unwrap_or(json!({})))),
             )
             .limit(page_size)
             .order(created_at.desc())

@@ -77,5 +77,5 @@ pub struct FilterDto {
     pub kind: Option<String>,
     pub status: Option<StatusKind>,
     pub timeout: Option<i32>,
-    pub metadata: Option<Value>,
+    pub metadata: Option<String>,
 }
