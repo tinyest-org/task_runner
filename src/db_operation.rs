@@ -93,8 +93,8 @@ pub async fn update_task<'a>(
         diesel::update(task.filter(id.eq(task_id).and(status.ne(models::StatusKind::Failure))))
             .set((
                 last_updated.eq(diesel::dsl::now),
-                dto.new_success.map(|e| failures.eq(success + e)),
-                dto.new_failures.map(|e| success.eq(failures + e)),
+                dto.new_success.map(|e| success.eq(success + e)),
+                dto.new_failures.map(|e| failures.eq(failures + e)),
                 // if success or failure then update ended_at
                 s.filter(|e| {
                     *e == models::StatusKind::Success || *e == models::StatusKind::Failure
@@ -174,6 +174,7 @@ pub async fn list_task_filtered_paged<'a>(
     let tasks: Vec<dtos::BasicTaskDto> = result
         .into_iter()
         .map(|base_task| dtos::BasicTaskDto {
+            id: base_task.id,
             name: base_task.name.unwrap_or_default(),
             kind: base_task.kind,
             status: base_task.status,

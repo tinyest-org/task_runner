@@ -10,10 +10,10 @@ services:
     ports:
       - 5432:5432
 
-  task-runner:
-    image: task-runner
-    environment:
-      - DATABASE_URL=postgres://test_user:testing@postgres/testing_db
-      - HOST_URL=http://localhost:8085
-    ports:
-      - 8085:8085
+  # task-runner:
+  #   image: task-runner
+  #   environment:
+  #     - DATABASE_URL=postgres://test_user:testing@postgres/testing_db
+  #     - HOST_URL=http://localhost:8085
+  #   ports:
+  #     - 8085:8085

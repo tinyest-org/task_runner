@@ -78,7 +78,9 @@ impl ActionExecutor {
                 if response.status().is_success() {
                     Ok(true)
                 } else {
-                    Err(format!("Request failed with status: {}", response.status()))
+                    let t = response.text().await.unwrap();
+                    log::error!("Reponse: {}", t);
+                    Err(format!("Request failed with status: {}", "e"))
                 }
             }
         }

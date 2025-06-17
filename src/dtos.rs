@@ -1,11 +1,11 @@
 use chrono::Utc;
+use diesel::sql_types::Uuid;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     models::{ActionKindEnum, StatusKind, TriggerKind},
     rule::{Matcher, Rules},
 };
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewTaskDto {
@@ -21,6 +21,7 @@ pub struct NewTaskDto {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BasicTaskDto {
+    pub id: uuid::Uuid,
     pub name: String,
     pub kind: String,
     pub status: StatusKind,
@@ -68,6 +69,8 @@ pub struct PaginationDto {
 }
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct FilterDto {
+    // TODO: add filter on metadata 
+    // to get the proper tasks for a given project
     pub name: Option<String>,
     pub kind: Option<String>,
     pub status: Option<StatusKind>,

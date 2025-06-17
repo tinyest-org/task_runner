@@ -49,7 +49,6 @@ async fn update_task(
     task_id: web::Path<Uuid>,
     form: web::Json<dtos::UpdateTaskDto>,
 ) -> actix_web::Result<impl Responder> {
-    log::info!("Update task: {:?}", &form.status);
     let mut conn = state
         .pool
         .get()
