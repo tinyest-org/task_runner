@@ -1,8 +1,5 @@
-use std::collections::HashMap;
-
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{
     models::{ActionKindEnum, StatusKind, TriggerKind},
@@ -71,7 +68,7 @@ pub struct PaginationDto {
 }
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct FilterDto {
-    // TODO: add filter on metadata 
+    // TODO: add filter on metadata
     // to get the proper tasks for a given project
     pub name: Option<String>,
     pub kind: Option<String>,
