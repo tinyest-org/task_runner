@@ -89,22 +89,25 @@ pub async fn update_task<'a>(
         .clone()
         .map(|e| e == models::StatusKind::Success || e == models::StatusKind::Failure)
         .unwrap_or(false);
-    let res =
-        diesel::update(task.filter(id.eq(task_id).and(status.ne(models::StatusKind::Failure))))
-            .set((
-                last_updated.eq(diesel::dsl::now),
-                dto.new_success.map(|e| success.eq(success + e)),
-                dto.new_failures.map(|e| failures.eq(failures + e)),
-                // if success or failure then update ended_at
-                s.filter(|e| {
-                    *e == models::StatusKind::Success || *e == models::StatusKind::Failure
-                })
-                .map(|_| ended_at.eq(diesel::dsl::now)),
-                dto.metadata.map(|m| metadata.eq(m)),
-                dto.status.map(|m| status.eq(m)),
-            ))
-            .execute(conn)
-            .await?;
+    let res = diesel::update(
+        task.filter(
+            id.eq(task_id)
+                // lock failed tasks for update
+                .and(status.ne(models::StatusKind::Failure)),
+        ),
+    )
+    .set((
+        last_updated.eq(diesel::dsl::now),
+        dto.new_success.map(|e| success.eq(success + e)),
+        dto.new_failures.map(|e| failures.eq(failures + e)),
+        // if success or failure then update ended_at
+        s.filter(|e| *e == models::StatusKind::Success || *e == models::StatusKind::Failure)
+            .map(|_| ended_at.eq(diesel::dsl::now)),
+        dto.metadata.map(|m| metadata.eq(m)),
+        dto.status.map(|m| status.eq(m)),
+    ))
+    .execute(conn)
+    .await?;
 
     if is_end {
         // TODO: execute on end action triggers
@@ -188,6 +191,9 @@ pub async fn list_task_filtered_paged<'a>(
             status: base_task.status,
             created_at: base_task.created_at,
             ended_at: base_task.ended_at,
+            started_at: base_task.started_at,
+            success: base_task.success,
+            failures: base_task.failures,
         })
         .collect();
 

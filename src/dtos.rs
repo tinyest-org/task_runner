@@ -25,6 +25,9 @@ pub struct BasicTaskDto {
     pub kind: String,
     pub status: StatusKind,
     pub created_at: chrono::DateTime<Utc>,
+    pub started_at: Option<chrono::DateTime<Utc>>,
+    pub success: i32,
+    pub failures: i32,
     pub ended_at: Option<chrono::DateTime<Utc>>,
 }
 
