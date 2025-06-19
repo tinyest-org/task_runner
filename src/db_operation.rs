@@ -4,6 +4,7 @@ use crate::{
     dtos::{self, TaskDto},
     models::{self, Action, NewAction, Task},
     rule::{Matcher, Rules},
+    schema::sql_types::StatusKind,
     workers::end_task,
 };
 use diesel::prelude::*;
@@ -30,6 +31,7 @@ impl TaskDto {
             ended_at: base_task.ended_at,
             last_updated: base_task.last_updated,
             started_at: base_task.started_at,
+            failure_reason: base_task.failure_reason,
             actions: actions
                 .iter()
                 .map(|a| dtos::ActionDto {
@@ -84,10 +86,18 @@ pub async fn update_task<'a>(
     use crate::schema::task::dsl::*;
     log::debug!("Update task: {:?}", &dto);
     let s = dto.status.clone();
+    let is_failed = dto
+        .status
+        .as_ref()
+        .map(|s| s == &models::StatusKind::Failure)
+        .unwrap_or(false);
+    if dto.failure_reason.is_some() && !is_failed {
+        return Ok(2);
+    }
     let is_end = dto
         .status
-        .clone()
-        .map(|e| e == models::StatusKind::Success || e == models::StatusKind::Failure)
+        .as_ref()
+        .map(|e| e == &models::StatusKind::Success || e == &models::StatusKind::Failure)
         .unwrap_or(false);
     let res = diesel::update(
         task.filter(
@@ -105,6 +115,7 @@ pub async fn update_task<'a>(
             .map(|_| ended_at.eq(diesel::dsl::now)),
         dto.metadata.map(|m| metadata.eq(m)),
         dto.status.map(|m| status.eq(m)),
+        dto.failure_reason.map(|m| failure_reason.eq(m)),
     ))
     .execute(conn)
     .await?;

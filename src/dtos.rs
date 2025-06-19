@@ -37,6 +37,7 @@ pub struct UpdateTaskDto {
     pub status: Option<StatusKind>,
     pub new_success: Option<i32>,
     pub new_failures: Option<i32>,
+    pub failure_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,6 +63,7 @@ pub struct TaskDto {
     pub last_updated: chrono::DateTime<Utc>,
     pub success: i32,
     pub failures: i32,
+    pub failure_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]

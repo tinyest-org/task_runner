@@ -24,6 +24,7 @@ pub struct Task {
     pub metadata: serde_json::Value,
     pub ended_at: Option<chrono::DateTime<Utc>>,
     pub start_condition: Rules,
+    pub failure_reason: Option<String>,
 }
 
 #[derive(Identifiable, Queryable, Associations, Selectable, PartialEq, Debug, Serialize)]

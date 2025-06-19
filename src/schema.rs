@@ -47,6 +47,7 @@ diesel::table! {
         metadata -> Jsonb,
         ended_at -> Nullable<Timestamptz>,
         start_condition -> Jsonb,
+        failure_reason -> Nullable<Text>,
     }
 }
 

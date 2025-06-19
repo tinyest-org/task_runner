@@ -16,7 +16,8 @@ CREATE TABLE "task"(
 	failures INT4  NOT NULL default 0,
 	metadata  jsonb not null default '{}'::jsonb,
 	"ended_at" TIMESTAMPTZ,
-	"start_condition" jsonb not null
+	"start_condition" jsonb not null,
+	"failure_reason" TEXT
 );
 
 -- CREATE TABLE "rule"(
