@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{Action, ActionKindEnum, Task};
+use crate::{
+    dtos::ActionDto,
+    models::{Action, ActionKindEnum, Task},
+};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub enum HttpVerb {
@@ -50,11 +53,9 @@ pub struct ActionExecutor {
 }
 
 impl ActionExecutor {
-    pub async fn execute(&self, action: &Action, task: &Task) -> Result<bool, String> {
+    pub async fn execute(&self, action: &Action, task: &Task) -> Result<Option<ActionDto>, String> {
         match action.kind {
             ActionKindEnum::Webhook => {
-                // TODO: should be properly configured
-                // let my_address = "http://localhost:8080";
                 let my_address = &self.ctx.host_address;
                 let params: WebhookParams = serde_json::from_value(action.params.clone())
                     .map_err(|e| format!("Failed to parse webhook params: {}", e))?;
@@ -76,7 +77,11 @@ impl ActionExecutor {
                     .await
                     .map_err(|e| format!("Failed to send request: {}", e))?;
                 if response.status().is_success() {
-                    Ok(true)
+                    // try to parse cancel task
+                    Ok(match response.text().await {
+                        Ok(body) => serde_json::from_str(&body).ok(),
+                        Err(_) => None,
+                    })
                 } else {
                     let t = response.text().await.unwrap();
                     log::error!("Reponse: {}", t);

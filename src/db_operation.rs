@@ -1,10 +1,9 @@
 use crate::{
     Conn,
     action::ActionExecutor,
-    dtos::{self, TaskDto},
+    dtos::{self, ActionDto, TaskDto},
     models::{self, Action, NewAction, Task},
     rule::{Matcher, Rules},
-    schema::sql_types::StatusKind,
     workers::end_task,
 };
 use diesel::prelude::*;
@@ -249,12 +248,40 @@ async fn handle_dedupe<'a>(
     true
 }
 
+async fn insert_actions<'a>(
+    task_id: Uuid,
+    actions: &[ActionDto],
+    trigger: Option<&models::TriggerKind>,
+    conn: &mut Conn<'a>,
+) -> Result<Vec<Action>, DbError> {
+    use crate::schema::action::dsl::action;
+    if actions.is_empty() {
+        return Ok(vec![]);
+    }
+    let items = actions
+        .iter()
+        .map(|a| NewAction {
+            task_id,
+            kind: &a.kind,
+            params: a.params.clone(),
+            trigger: trigger.unwrap_or(&a.trigger),
+        })
+        .collect::<Vec<_>>();
+
+    let r = diesel::insert_into(action)
+        .values(items)
+        .returning(Action::as_returning())
+        .get_results(conn)
+        .await?;
+    Ok(r)
+}
+
 /// Insert a new task into the database.
 pub async fn insert_new_task<'a>(
     conn: &mut Conn<'a>,
     dto: dtos::NewTaskDto,
 ) -> Result<Option<TaskDto>, DbError> {
-    use crate::schema::{action::dsl::action, task::dsl::task};
+    use crate::schema::task::dsl::task;
 
     let should_write = if let Some(s) = dto.dedupe_strategy {
         handle_dedupe(conn, s, &dto.metadata).await
@@ -282,30 +309,21 @@ pub async fn insert_new_task<'a>(
         .await?;
 
     let actions = if let Some(actions) = dto.actions {
-        let items = actions
-            .iter()
-            .map(|a| NewAction {
-                task_id: new_task.id,
-                kind: a.kind.clone(),
-                params: a.params.clone(),
-                trigger: a.trigger.clone(),
-            })
-            .collect::<Vec<_>>();
-
-        diesel::insert_into(action)
-            .values(items)
-            .returning(Action::as_returning())
-            .get_results(conn)
-            .await?
+        insert_actions(new_task.id, &actions, None, conn).await?
     } else {
         vec![]
     };
     Ok(Some(TaskDto::new(new_task, actions))) // Changed from Ok(r) to Ok(dto)
 }
 
-pub async fn set_started_task<'a>(conn: &mut Conn<'a>, t: &Task) -> Result<(), DbError> {
+pub async fn set_started_task<'a>(
+    conn: &mut Conn<'a>,
+    t: &Task,
+    cancel_tasks: &[ActionDto],
+) -> Result<(), DbError> {
     use crate::schema::task::dsl::*;
     use diesel::dsl::now;
+    // TODO: save cancel task and bind to task
     diesel::update(task.filter(id.eq(t.id)))
         .set((
             status.eq(models::StatusKind::Running),
@@ -314,5 +332,13 @@ pub async fn set_started_task<'a>(conn: &mut Conn<'a>, t: &Task) -> Result<(), D
         ))
         .execute(conn)
         .await?;
+
+    insert_actions(
+        t.id,
+        &cancel_tasks,
+        Some(&models::TriggerKind::Cancel),
+        conn,
+    )
+    .await?;
     Ok(())
 }

@@ -55,31 +55,30 @@ pub struct NewTask {
     pub start_condition: Rules,
 }
 
-#[derive(Queryable, Associations, Selectable, PartialEq, Debug, Serialize, Insertable)]
+#[derive(Associations, PartialEq, Debug, Serialize, Insertable)]
 #[diesel(
     table_name = crate::schema::action, 
     belongs_to(Task), 
     check_for_backend(diesel::pg::Pg))
 ]
-pub struct NewAction {
+pub struct NewAction<'a> {
     pub task_id: uuid::Uuid,
-    pub kind: ActionKindEnum,
+    pub kind: &'a ActionKindEnum,
     pub params: serde_json::Value,
-    pub trigger: TriggerKind,
-    // TODO: add params
+    pub trigger: &'a TriggerKind,
 }
 
-impl NewAction {
-    pub fn new(task_id: uuid::Uuid, kind: ActionKindEnum, params: serde_json::Value, trigger: TriggerKind) -> Self {
-        // should validate the params against the kind
-        Self {
-            task_id,
-            kind,
-            params,
-            trigger,
-        }
-    }
-}
+// impl NewAction {
+//     pub fn new(task_id: uuid::Uuid, kind: ActionKindEnum, params: serde_json::Value, trigger: TriggerKind) -> Self {
+//         // should validate the params against the kind
+//         Self {
+//             task_id,
+//             kind,
+//             params,
+//             trigger,
+//         }
+//     }
+// }
 
 #[derive(Debug,PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone)]
 #[db_enum(existing_type_path = "crate::schema::sql_types::ActionKind")]
@@ -90,7 +89,7 @@ pub enum ActionKindEnum {
 #[derive(Debug,PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone)]
 #[db_enum(existing_type_path = "crate::schema::sql_types::TriggerKind")]
 pub enum TriggerKind {
-    Start, End
+    Start, End, Cancel
 }
 
 #[derive(Debug,PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, Hash, Eq)]

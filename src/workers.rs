@@ -2,6 +2,7 @@ use crate::{
     Conn, DbPool,
     action::ActionExecutor,
     db_operation::{self, DbError},
+    dtos::ActionDto,
     models::{Action, Task, TriggerKind},
     rule::Strategy,
 };
@@ -55,7 +56,7 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
     'outer: loop {
         // note that obtaining a connection from the pool is also potentially blocking
         let conn = pool.get();
-
+        let max_retries = 10;
         if let Ok(mut conn) = conn.await {
             let res = db_operation::list_all_pending(&mut conn).await;
             match res {
@@ -69,14 +70,18 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
                     for t in tasks {
                         if evaluate_rules(&t, &mut conn, &mut ctx).await {
                             match start_task(evaluator, &t, &mut conn).await {
-                                Ok(_) => {
+                                Ok(cancel_tasks) => {
                                     // use logger instead of println
                                     log::debug!("Start worker: task {} started", t.id);
                                     // update the task status to running
                                     let mut i = 0;
-                                    while db_operation::set_started_task(&mut conn, &t)
-                                        .await
-                                        .is_err()
+                                    while db_operation::set_started_task(
+                                        &mut conn,
+                                        &t,
+                                        &cancel_tasks,
+                                    )
+                                    .await
+                                    .is_err()
                                     {
                                         log::warn!("failed to update task in database");
                                         actix_web::rt::time::sleep(std::time::Duration::from_secs(
@@ -84,8 +89,13 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
                                         ))
                                         .await;
                                         i += 1;
-                                        if i == 10 {
+                                        if i == max_retries {
                                             // we want to stop starting tasks as we are in a inconsistant state
+                                            log::error!(
+                                                "Start worker: error saving task {}: after {} retries",
+                                                t.id,
+                                                max_retries,
+                                            );
                                             break 'outer;
                                         }
                                     }
@@ -162,7 +172,7 @@ pub async fn evaluate_rules<'a>(
                     .await
                     .expect("failed to count for execution");
 
-                let is_same = &concurency_rule.matcher.kind == &_task.kind;
+                let is_same = concurency_rule.matcher.kind == _task.kind;
 
                 let res = {
                     if is_same {
@@ -190,25 +200,32 @@ async fn start_task<'a>(
     evaluator: &ActionExecutor,
     task: &Task,
     conn: &mut Conn<'a>,
-) -> Result<(), diesel::result::Error> {
-    let actions = Action::belonging_to(&task).load::<Action>(conn).await?;
-    // TODO: should be in the query directly
-    for action in actions.iter().filter(|e| e.trigger == TriggerKind::Start) {
-        let res = evaluator.execute(&action, task).await;
+) -> Result<Vec<ActionDto>, diesel::result::Error> {
+    use crate::schema::action::dsl::*;
+    let actions = Action::belonging_to(&task)
+        .filter(trigger.eq(TriggerKind::Start))
+        .load::<Action>(conn)
+        .await?;
+    let mut tasks = vec![];
+    for act in actions.iter() {
+        let res = evaluator.execute(act, task).await;
         match res {
-            Ok(_) => {
+            Ok(r) => {
                 // update the action status to success
                 // update the action ended_at timestamp
-                log::debug!("Action {} executed successfully", action.id);
+                if let Some(t) = r {
+                    tasks.push(t);
+                };
+                log::debug!("Action {} executed successfully", act.id);
             }
             Err(e) => {
                 // update the action status to failure
                 // update the action ended_at timestamp
-                log::error!("Action {} failed: {}", action.id, e);
+                log::error!("Action {} failed: {}", act.id, e);
             }
         }
     }
-    Ok(())
+    Ok(tasks)
 }
 
 pub async fn end_task<'a>(
@@ -216,21 +233,55 @@ pub async fn end_task<'a>(
     task_id: &uuid::Uuid,
     conn: &mut Conn<'a>,
 ) -> Result<(), DbError> {
+    use crate::schema::action::dsl::trigger;
     use crate::schema::task::dsl::*;
     let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
-    let actions = Action::belonging_to(&t).load::<Action>(conn).await?;
-    for action in actions.iter().filter(|e| e.trigger == TriggerKind::End) {
-        let res = evaluator.execute(&action, &t).await;
+    let actions = Action::belonging_to(&t)
+        .filter(trigger.eq(TriggerKind::End))
+        .load::<Action>(conn)
+        .await?;
+    for act in actions.iter() {
+        let res = evaluator.execute(act, &t).await;
         match res {
             Ok(_) => {
                 // update the action status to success
                 // update the action ended_at timestamp
-                log::debug!("Action {} executed successfully", action.id);
+                log::debug!("Action {} executed successfully", act.id);
             }
             Err(e) => {
                 // update the action status to failure
                 // update the action ended_at timestamp
-                log::error!("Action {} failed: {}", action.id, e);
+                log::error!("Action {} failed: {}", act.id, e);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn cancel_task<'a>(
+    evaluator: &ActionExecutor,
+    task_id: &uuid::Uuid,
+    conn: &mut Conn<'a>,
+) -> Result<(), DbError> {
+    use crate::schema::action::dsl::trigger;
+    use crate::schema::task::dsl::*;
+    let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
+    let actions = Action::belonging_to(&t)
+        .filter(trigger.eq(TriggerKind::Cancel))
+        .load::<Action>(conn)
+        .await?;
+    for act in actions.iter() {
+        let res = evaluator.execute(act, &t).await;
+        match res {
+            Ok(_) => {
+                // update the action status to success
+                // update the action ended_at timestamp
+                log::debug!("Action {} executed successfully", act.id);
+            }
+            Err(e) => {
+                // update the action status to failure
+                // update the action ended_at timestamp
+                log::error!("Action {} failed: {}", act.id, e);
             }
         }
     }

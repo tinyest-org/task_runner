@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use actix_web::{
-    App, HttpResponse, HttpServer, Responder, error, get, middleware, patch, post, web,
+    App, HttpResponse, HttpServer, Responder, delete, error, get, middleware, patch, post, web,
 };
 use actix_web_prometheus::PrometheusMetricsBuilder;
 use diesel::{Connection, PgConnection};
@@ -16,7 +16,7 @@ use task_runner::{
     db_operation,
     dtos::{self},
     helper::Requester,
-    initialize_db_pool,
+    initialize_db_pool, workers,
 };
 use uuid::Uuid;
 
@@ -88,15 +88,10 @@ async fn get_task(
         // user was found; return 200 response with JSON formatted user object
         Some(t) => HttpResponse::Ok().json(t),
         // user was not found; return 404 response with error message
-        None => HttpResponse::NotFound().body("No task found with UID".to_string()),
+        None => HttpResponse::NotFound().body("No task found with UID"),
     })
 }
 
-/// Creates new user.
-///
-/// Extracts:
-/// - the database pool handle from application data
-/// - a JSON form containing new user info from the request body
 #[post("/task")]
 async fn add_task(
     state: web::Data<AppState>,
@@ -112,6 +107,12 @@ async fn add_task(
     let mut result = vec![];
     // this shall always be executed in order to reception
     for i in form.0.into_iter() {
+        if let Some(e) = &i.actions {
+            // failure of a start or end action is not properly handled for now
+            if e.len() > 1 {
+                return Ok(HttpResponse::BadRequest().body("only one action allowed for now"));
+            }
+        }
         let task = db_operation::insert_new_task(&mut conn, i)
             .await
             // map diesel query errors to a 500 error response
@@ -120,12 +121,28 @@ async fn add_task(
             result.push(t);
         }
     }
-    if result.len() > 0 {
-        Ok(HttpResponse::Created().json(result))
-    } else {
+    if result.is_empty() {
         Ok(HttpResponse::NoContent().finish())
+    } else {
+        Ok(HttpResponse::Created().json(result))
     }
     // user was added successfully; return 201 response with new user info
+}
+
+#[delete("/task/{task_id}")]
+async fn cancel_task(
+    state: web::Data<AppState>,
+    task_id: web::Path<Uuid>,
+) -> actix_web::Result<impl Responder> {
+    let mut conn = state
+        .pool
+        .get()
+        .await
+        .map_err(error::ErrorInternalServerError)?;
+    match workers::cancel_task(&state.action_executor, &task_id, &mut conn).await {
+        Ok(_) => Ok(HttpResponse::Ok().finish()),
+        Err(_) => Ok(HttpResponse::BadRequest().finish()),
+    }
 }
 
 #[derive(Clone)]
@@ -151,7 +168,7 @@ async fn main() -> std::io::Result<()> {
     // CryptoProvider::install_default();
     // in order to let applications know how to respond back
     let pool = initialize_db_pool().await;
-    
+
     let mut conn = PgConnection::establish(&db_url).unwrap();
     conn.run_pending_migrations(MIGRATIONS).unwrap();
 
