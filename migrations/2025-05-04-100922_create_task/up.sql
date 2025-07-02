@@ -1,6 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
-CREATE TYPE status_kind AS ENUM ('pending', 'running', 'failure', 'success');
+CREATE TYPE status_kind AS ENUM ('pending', 'running', 'failure', 'success', 'paused');
 
 -- Your SQL goes here
 CREATE TABLE "task"(

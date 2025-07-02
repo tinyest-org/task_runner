@@ -84,6 +84,16 @@ pub async fn update_task<'a>(
 ) -> Result<usize, DbError> {
     use crate::schema::task::dsl::*;
     log::debug!("Update task: {:?}", &dto);
+    // TODO: make cleaner, ensure we only have failure or success
+    // can't change to the other kind -> reserved for internal use
+    if let Some(s) = &dto.status {
+        if s == &models::StatusKind::Failure || s == &models::StatusKind::Success {
+        } else {
+            
+            return Ok(2);
+        }
+    }
+    let is_end = dto.status.is_some();
     let s = dto.status.clone();
     let is_failed = dto
         .status
@@ -93,11 +103,6 @@ pub async fn update_task<'a>(
     if dto.failure_reason.is_some() && !is_failed {
         return Ok(2);
     }
-    let is_end = dto
-        .status
-        .as_ref()
-        .map(|e| e == &models::StatusKind::Success || e == &models::StatusKind::Failure)
-        .unwrap_or(false);
     let res = diesel::update(
         task.filter(
             id.eq(task_id)
@@ -110,7 +115,7 @@ pub async fn update_task<'a>(
         dto.new_success.map(|e| success.eq(success + e)),
         dto.new_failures.map(|e| failures.eq(failures + e)),
         // if success or failure then update ended_at
-        s.filter(|e| *e == models::StatusKind::Success || *e == models::StatusKind::Failure)
+        s.filter(|e| e == &models::StatusKind::Success || e == &models::StatusKind::Failure)
             .map(|_| ended_at.eq(diesel::dsl::now)),
         dto.metadata.map(|m| metadata.eq(m)),
         dto.status.map(|m| status.eq(m)),

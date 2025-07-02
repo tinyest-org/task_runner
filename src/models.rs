@@ -95,6 +95,6 @@ pub enum TriggerKind {
 #[derive(Debug,PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, Hash, Eq)]
 #[db_enum(existing_type_path = "crate::schema::sql_types::StatusKind")]
 pub enum StatusKind {
-    Pending, Running, Failure, Success
+    Pending, Running, Failure, Success, Paused
 }
 
