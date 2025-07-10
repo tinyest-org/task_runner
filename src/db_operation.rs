@@ -163,13 +163,10 @@ pub async fn list_task_filtered_paged<'a>(
     filter: dtos::FilterDto,
 ) -> Result<Vec<dtos::BasicTaskDto>, DbError> {
     use crate::schema::task::dsl::*;
-    // use diesel to find the required data
-    log::info!("{:?}", &filter);
     let m = filter
         .metadata
         .map(|f| serde_json::from_str::<Value>(&f).ok())
         .flatten();
-    log::info!("M: {:?}", &m);
     let page_size = 50;
     let offset = pagination.page.unwrap_or(0) * page_size;
     let result = if let Some(dto_status) = filter.status {
