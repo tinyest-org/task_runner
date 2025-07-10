@@ -77,10 +77,16 @@ impl ActionExecutor {
                     .await
                     .map_err(|e| format!("Failed to send request: {}", e))?;
                 if response.status().is_success() {
-                    // try to parse cancel task
+                    // try to parse cancel
                     Ok(match response.text().await {
-                        Ok(body) => serde_json::from_str(&body).ok(),
-                        Err(_) => None,
+                        Ok(body) => {
+                            log::info!("query with success: -> {}", &body);
+                            serde_json::from_str(&body).ok()
+                        }
+                        Err(_) => {
+                            log::info!("query with success");
+                            None
+                        }
                     })
                 } else {
                     let t = response.text().await.unwrap();

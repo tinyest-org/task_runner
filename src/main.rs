@@ -16,7 +16,9 @@ use task_runner::{
     db_operation,
     dtos::{self},
     helper::Requester,
-    initialize_db_pool, workers,
+    initialize_db_pool,
+    models::{ActionKindEnum, TriggerKind},
+    workers,
 };
 use uuid::Uuid;
 
@@ -106,10 +108,11 @@ async fn add_task(
         .map_err(error::ErrorInternalServerError)?;
     let mut result = vec![];
     // this shall always be executed in order to reception
-    for i in form.0.into_iter() {
+    let f = form.0;
+    for i in f.into_iter() {
         if let Some(e) = &i.actions {
             // failure of a start or end action is not properly handled for now
-            if e.len() > 1 {
+            if e.iter().filter(|e| e.trigger == TriggerKind::Start).count() > 1 {
                 return Ok(HttpResponse::BadRequest().body("only one action allowed for now"));
             }
         }
