@@ -60,7 +60,11 @@ pub async fn ensure_pending_tasks_timeout<'a>(conn: &mut Conn<'a>) -> Result<Vec
                         * timeout))),
         ),
     )
-    .set((status.eq(models::StatusKind::Failure), ended_at.eq(now)))
+    .set((
+        status.eq(models::StatusKind::Failure),
+        ended_at.eq(now),
+        failure_reason.eq("Timeout"),
+    ))
     .returning(Task::as_returning())
     .get_results::<Task>(conn)
     .await?;
@@ -89,7 +93,6 @@ pub async fn update_task<'a>(
     if let Some(s) = &dto.status {
         if s == &models::StatusKind::Failure || s == &models::StatusKind::Success {
         } else {
-            
             return Ok(2);
         }
     }
