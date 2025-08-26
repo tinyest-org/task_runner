@@ -365,20 +365,14 @@ pub async fn set_started_task<'a>(
     use crate::schema::task::dsl::*;
     // 1. We need `sql` for the binding trick
     use diesel::dsl::{now, case_when, sql};
-
+    use crate::schema::task::status as task_status; // Alias the column for clarity in sql
     // 2. Import the auto-generated SQL type for your enum
     use crate::schema::sql_types::StatusKind as StatusKindSql;
 
     // TODO: save cancel task and bind to task
     diesel::update(task.filter(id.eq(t.id)))
         .set((
-            status.eq(
-                case_when(
-                    status.eq(models::StatusKind::Pending),
-                    sql("?").bind::<StatusKindSql, _>(models::StatusKind::Running)
-                )
-                .otherwise(status)
-            ),
+            task_status.eq(sql("CASE WHEN task.status = 'Pending' THEN 'Running' ELSE task.status END")),
             // These fields are always updated
             started_at.eq(now),
             last_updated.eq(now),
