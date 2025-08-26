@@ -321,17 +321,65 @@ pub async fn insert_new_task<'a>(
     Ok(Some(TaskDto::new(new_task, actions))) // Changed from Ok(r) to Ok(dto)
 }
 
+// pub async fn set_started_task<'a>(
+//     conn: &mut Conn<'a>,
+//     t: &Task,
+//     cancel_tasks: &[ActionDto],
+// ) -> Result<(), DbError> {
+//     use crate::schema::task::dsl::*;
+//     use diesel::dsl::{case_when, now, sql};
+//     use crate::schema::task::status as task_status; // Alias the column for clarity in sql
+//     // TODO: save cancel task and bind to task
+//     diesel::update(task.filter(id.eq(t.id)))
+//         .set((
+//             // Use diesel::dsl::sql for the conditional logic
+//             task_status.eq(sql("CASE WHEN task.status = 'Pending' THEN 'Running' ELSE task.status END")),
+//             // These fields are always updated
+//             started_at.eq(now),
+//             last_updated.eq(now),
+//         ))
+//         .execute(conn)
+//         .await?;
+
+//     insert_actions(
+//         t.id,
+//         &cancel_tasks,
+//         Some(&models::TriggerKind::Cancel),
+//         conn,
+//     )
+//     .await?;
+//     Ok(())
+// }
+
+
+
+
 pub async fn set_started_task<'a>(
     conn: &mut Conn<'a>,
     t: &Task,
     cancel_tasks: &[ActionDto],
 ) -> Result<(), DbError> {
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::RunQueryDsl;
+
     use crate::schema::task::dsl::*;
-    use diesel::dsl::now;
+    // 1. We need `sql` for the binding trick
+    use diesel::dsl::{now, case_when, sql};
+
+    // 2. Import the auto-generated SQL type for your enum
+    use crate::schema::sql_types::StatusKind as StatusKindSql;
+
     // TODO: save cancel task and bind to task
     diesel::update(task.filter(id.eq(t.id)))
         .set((
-            status.eq(models::StatusKind::Running),
+            status.eq(
+                case_when(
+                    status.eq(models::StatusKind::Pending),
+                    sql("?").bind::<StatusKindSql, _>(models::StatusKind::Running)
+                )
+                .otherwise(status)
+            ),
+            // These fields are always updated
             started_at.eq(now),
             last_updated.eq(now),
         ))
