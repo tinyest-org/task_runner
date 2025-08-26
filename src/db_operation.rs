@@ -372,7 +372,7 @@ pub async fn set_started_task<'a>(
     // TODO: save cancel task and bind to task
     diesel::update(task.filter(id.eq(t.id)))
         .set((
-            task_status.eq(sql("CASE WHEN task.status = 'Pending' THEN 'Running' ELSE task.status END")),
+            task_status.eq(sql("CASE WHEN task.status = 'pending' THEN 'running' ELSE task.status END")),
             // These fields are always updated
             started_at.eq(now),
             last_updated.eq(now),
