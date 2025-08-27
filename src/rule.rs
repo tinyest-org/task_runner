@@ -26,6 +26,7 @@ use crate::models::StatusKind;
 #[serde(tag = "type")] // -> this way the "type" field will be used to determine the type of the rule
 pub enum Strategy {
     Concurency(ConcurencyRule),
+    // After(AfterRule),
 }
 
 #[derive(AsExpression, FromSqlRow, Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -39,6 +40,12 @@ pub struct ConcurencyRule {
     pub max_concurency: i32,
     pub matcher: Matcher,
 }
+
+#[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq)]
+pub struct AfterRule {
+
+}
+
 
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq)]
 pub struct Matcher {
