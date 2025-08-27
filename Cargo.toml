@@ -13,6 +13,7 @@ diesel = { version = "2.2.8", features = [
     "uuid",
     "serde_json",
     "chrono",
+    "32-column-tables",
 ], default-features = false }
 uuid = { version = "1.16.0", features = ["v4", "serde"] }
 env_logger = "0.11.8"

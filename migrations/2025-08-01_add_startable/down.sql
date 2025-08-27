@@ -1,0 +1,1 @@
+ALTER TABLE task DROP IF EXISTS startable;

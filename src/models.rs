@@ -25,6 +25,17 @@ pub struct Task {
     pub ended_at: Option<chrono::DateTime<Utc>>,
     pub start_condition: Rules,
     pub failure_reason: Option<String>,
+    /// We use this field to know, if the task shall be evaluated for startup
+    /// 
+    /// for example, if the task should run only after other tasks are done, 
+    /// 
+    /// then no need to evaluate all rules
+    pub startable: bool,
+
+    /// count parent_success to know if we can move to the startable state
+    pub parent_success: i32,
+    /// count parent_failures to know if we can move to the startable state
+    pub parent_failures: i32,
 }
 
 #[derive(Identifiable, Queryable, Associations, Selectable, PartialEq, Debug, Serialize)]

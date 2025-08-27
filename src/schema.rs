@@ -48,6 +48,9 @@ diesel::table! {
         ended_at -> Nullable<Timestamptz>,
         start_condition -> Jsonb,
         failure_reason -> Nullable<Text>,
+        startable -> Bool,
+        parent_success -> Int4,
+        parent_failures -> Int4,
     }
 }
 
