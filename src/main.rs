@@ -17,7 +17,7 @@ use task_runner::{
     dtos::{self},
     helper::Requester,
     initialize_db_pool,
-    models::{ActionKindEnum, TriggerKind},
+    models::TriggerKind,
     workers,
 };
 use uuid::Uuid;
@@ -56,9 +56,10 @@ async fn update_task(
         .get()
         .await
         .map_err(error::ErrorInternalServerError)?;
-    let count = db_operation::update_task(&state.action_executor, &mut conn, *task_id, form.0)
-        .await
-        .map_err(error::ErrorInternalServerError)?;
+    let count =
+        db_operation::update_running_task(&state.action_executor, &mut conn, *task_id, form.0)
+            .await
+            .map_err(error::ErrorInternalServerError)?;
     Ok(match count {
         1 => HttpResponse::Ok().body("Task updated successfully".to_string()),
         _ => HttpResponse::NotFound().body("Task not found".to_string()),
@@ -143,6 +144,22 @@ async fn cancel_task(
         .await
         .map_err(error::ErrorInternalServerError)?;
     match workers::cancel_task(&state.action_executor, &task_id, &mut conn).await {
+        Ok(_) => Ok(HttpResponse::Ok().finish()),
+        Err(_) => Ok(HttpResponse::BadRequest().finish()),
+    }
+}
+
+#[patch("/task/pause/{task_id}")]
+async fn pause_task(
+    state: web::Data<AppState>,
+    task_id: web::Path<Uuid>,
+) -> actix_web::Result<impl Responder> {
+    let mut conn = state
+        .pool
+        .get()
+        .await
+        .map_err(error::ErrorInternalServerError)?;
+    match db_operation::pause_task(&task_id, &mut conn).await {
         Ok(_) => Ok(HttpResponse::Ok().finish()),
         Err(_) => Ok(HttpResponse::BadRequest().finish()),
     }

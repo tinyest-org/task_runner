@@ -3,7 +3,7 @@ use crate::{
     action::ActionExecutor,
     db_operation::{self, DbError},
     dtos::ActionDto,
-    models::{Action, Task, TriggerKind},
+    models::{Action, StatusKind, Task, TriggerKind},
     rule::Strategy,
 };
 use actix_web::rt;
@@ -266,24 +266,43 @@ pub async fn cancel_task<'a>(
     use crate::schema::action::dsl::trigger;
     use crate::schema::task::dsl::*;
     let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
-    let actions = Action::belonging_to(&t)
-        .filter(trigger.eq(TriggerKind::Cancel))
-        .load::<Action>(conn)
-        .await?;
-    for act in actions.iter() {
-        let res = evaluator.execute(act, &t).await;
-        match res {
-            Ok(_) => {
-                // update the action status to success
-                // update the action ended_at timestamp
-                log::debug!("Action {} executed successfully", act.id);
-            }
-            Err(e) => {
-                // update the action status to failure
-                // update the action ended_at timestamp
-                log::error!("Action {} failed: {}", act.id, e);
+    match t.status {
+        StatusKind::Pending | StatusKind::Paused => {
+            // we do nothing
+        }
+        StatusKind::Running => {
+            // running so we try to stop using cancel actions
+            let actions = Action::belonging_to(&t)
+                .filter(trigger.eq(TriggerKind::Cancel))
+                .load::<Action>(conn)
+                .await?;
+            for act in actions.iter() {
+                let res = evaluator.execute(act, &t).await;
+                match res {
+                    Ok(_) => {
+                        // update the action status to success
+                        // update the action ended_at timestamp
+                        log::debug!("Action {} executed successfully", act.id);
+                    }
+                    Err(e) => {
+                        // update the action status to failure
+                        // update the action ended_at timestamp
+                        log::error!("Action {} failed: {}", act.id, e);
+                    }
+                }
             }
         }
+        _ => {
+            // invalid -> return error
+            return Err(Box::from(
+                "Invalid operation: cannot cancel task in this state",
+            ));
+        }
     }
+    // we update to the canceled state
+    diesel::update(task.filter(id.eq(task_id)))
+        .set(status.eq(StatusKind::Canceled))
+        .execute(conn)
+        .await?;
     Ok(())
 }

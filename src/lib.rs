@@ -44,7 +44,7 @@ pub async fn initialize_db_pool() -> DbPool {
         .expect("failed to get pool")
 }
 
-fn establish_connection(config: &str) -> BoxFuture<ConnectionResult<AsyncPgConnection>> {
+fn establish_connection(config: &'_ str) -> BoxFuture<'_, ConnectionResult<AsyncPgConnection>> {
     let fut = async {
         // We first set up the way we want rustls to work.
         let rustls_config = ClientConfig::with_platform_verifier();

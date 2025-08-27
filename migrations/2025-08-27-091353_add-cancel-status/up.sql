@@ -1,0 +1,1 @@
+ALTER TYPE status_kind ADD VALUE 'canceled';
