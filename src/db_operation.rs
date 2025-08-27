@@ -1,10 +1,5 @@
 use crate::{
-    Conn,
-    action::ActionExecutor,
-    dtos::{self, ActionDto, TaskDto},
-    models::{self, Action, NewAction, Task},
-    rule::{Matcher, Rules},
-    workers::end_task,
+    action::ActionExecutor, dtos::{self, ActionDto, TaskDto}, models::{self, Action, NewAction, StatusKind, Task}, rule::{Matcher, Rules}, workers::end_task, Conn
 };
 use diesel::prelude::*;
 use diesel::sql_types;
@@ -80,7 +75,7 @@ pub async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task>, DbEr
         .await?;
     Ok(tasks)
 }
-pub async fn update_task<'a>(
+pub async fn update_running_task<'a>(
     evaluator: &ActionExecutor,
     conn: &mut Conn<'a>,
     task_id: Uuid,
@@ -387,5 +382,17 @@ pub async fn set_started_task<'a>(
         conn,
     )
     .await?;
+    Ok(())
+}
+
+pub async fn pause_task<'a>(
+    task_id: &uuid::Uuid,
+    conn: &mut Conn<'a>,
+) -> Result<(), DbError> {
+    use crate::schema::task::dsl::*;
+    diesel::update(task.filter(id.eq(task_id)))
+        .set(status.eq(StatusKind::Paused))
+        .execute(conn)
+        .await?;
     Ok(())
 }
