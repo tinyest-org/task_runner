@@ -11,7 +11,7 @@ use diesel::BelongingToDsl;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use serde_json::json;
-use std::{collections::HashSet, error::Error};
+use std::collections::HashSet;
 
 /// This ensures the non responding tasks are set to fail
 ///

@@ -17,7 +17,7 @@ use task_runner::{
     dtos::{self},
     helper::Requester,
     initialize_db_pool,
-    models::{ActionKindEnum, TriggerKind},
+    models::TriggerKind,
     workers,
 };
 use uuid::Uuid;

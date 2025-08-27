@@ -1,5 +1,10 @@
 use crate::{
-    action::ActionExecutor, dtos::{self, ActionDto, TaskDto}, models::{self, Action, NewAction, StatusKind, Task}, rule::{Matcher, Rules}, workers::end_task, Conn
+    Conn,
+    action::ActionExecutor,
+    dtos::{self, ActionDto, TaskDto},
+    models::{self, Action, NewAction, StatusKind, Task},
+    rule::{Matcher, Rules},
+    workers::end_task,
 };
 use diesel::prelude::*;
 use diesel::sql_types;
@@ -346,9 +351,6 @@ pub async fn insert_new_task<'a>(
 //     Ok(())
 // }
 
-
-
-
 pub async fn set_started_task<'a>(
     conn: &mut Conn<'a>,
     t: &Task,
@@ -359,15 +361,15 @@ pub async fn set_started_task<'a>(
 
     use crate::schema::task::dsl::*;
     // 1. We need `sql` for the binding trick
-    use diesel::dsl::{now, case_when, sql};
-    use crate::schema::task::status as task_status; // Alias the column for clarity in sql
-    // 2. Import the auto-generated SQL type for your enum
-    use crate::schema::sql_types::StatusKind as StatusKindSql;
+    use crate::schema::task::status as task_status;
+    use diesel::dsl::{now, sql}; // Alias the column for clarity in sql
 
     // TODO: save cancel task and bind to task
     diesel::update(task.filter(id.eq(t.id)))
         .set((
-            task_status.eq(sql("CASE WHEN task.status = 'pending' THEN 'running' ELSE task.status END")),
+            task_status.eq(sql(
+                "CASE WHEN task.status = 'pending' THEN 'running' ELSE task.status END",
+            )),
             // These fields are always updated
             started_at.eq(now),
             last_updated.eq(now),
@@ -385,10 +387,7 @@ pub async fn set_started_task<'a>(
     Ok(())
 }
 
-pub async fn pause_task<'a>(
-    task_id: &uuid::Uuid,
-    conn: &mut Conn<'a>,
-) -> Result<(), DbError> {
+pub async fn pause_task<'a>(task_id: &uuid::Uuid, conn: &mut Conn<'a>) -> Result<(), DbError> {
     use crate::schema::task::dsl::*;
     diesel::update(task.filter(id.eq(task_id)))
         .set(status.eq(StatusKind::Paused))
