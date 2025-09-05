@@ -3,7 +3,7 @@ use crate::{
     action::ActionExecutor,
     db_operation::{self, DbError},
     dtos::ActionDto,
-    models::{Action, StatusKind, Task, TriggerKind},
+    models::{self, Action, StatusKind, Task, TriggerKind},
     rule::Strategy,
 };
 use actix_web::rt;
@@ -11,7 +11,14 @@ use diesel::BelongingToDsl;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use serde_json::json;
-use std::collections::HashSet;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, atomic::AtomicI32},
+};
+use tokio::sync::{Mutex, OnceCell, mpsc};
+
+pub static GLOBAL_SENDER: OnceCell<mpsc::Sender<UpdateEvent>> = OnceCell::const_new();
+pub static GLOBAL_RECEIVER: OnceCell<Mutex<mpsc::Receiver<UpdateEvent>>> = OnceCell::const_new();
 
 /// This ensures the non responding tasks are set to fail
 ///
@@ -52,6 +59,14 @@ pub struct EvaluationContext {
     // ok: HashSet<Strategy>,
 }
 
+async fn sleep_secs(secs: u64) {
+    actix_web::rt::time::sleep(std::time::Duration::from_secs(secs)).await;
+}
+
+async fn sleep_ms(ms: u64) {
+    actix_web::rt::time::sleep(std::time::Duration::from_millis(ms)).await;
+}
+
 pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
     'outer: loop {
         // note that obtaining a connection from the pool is also potentially blocking
@@ -71,7 +86,6 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
                         if evaluate_rules(&t, &mut conn, &mut ctx).await {
                             match start_task(evaluator, &t, &mut conn).await {
                                 Ok(cancel_tasks) => {
-                                    // use logger instead of println
                                     log::debug!("Start worker: task {} started", t.id);
                                     // update the task status to running
                                     let mut i = 0;
@@ -84,10 +98,7 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
                                     .is_err()
                                     {
                                         log::warn!("failed to update task in database");
-                                        actix_web::rt::time::sleep(std::time::Duration::from_secs(
-                                            1,
-                                        ))
-                                        .await;
+                                        sleep_secs(1).await;
                                         i += 1;
                                         if i == max_retries {
                                             // we want to stop starting tasks as we are in a inconsistant state
@@ -114,19 +125,16 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
                     }
                 }
                 Err(e) => {
-                    // use logger instead of println
                     log::error!("Start worker: error updating tasks: {:?}", e);
                 }
             }
         }
-
-        // thread::sleep(std::time::Duration::from_secs(1));
-        actix_web::rt::time::sleep(std::time::Duration::from_secs(1)).await;
+        sleep_secs(1).await;
     }
 }
 
 pub async fn evaluate_rules<'a>(
-    _task: &Task, // in order to avoid issue when importing the schema
+    _task: &Task,
     conn: &mut Conn<'a>,
     ctx: &mut EvaluationContext,
 ) -> bool {
@@ -304,5 +312,78 @@ pub async fn cancel_task<'a>(
         .set(status.eq(StatusKind::Canceled))
         .execute(conn)
         .await?;
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct UpdateEvent {
+    pub success: i32,
+    pub failures: i32,
+    pub task_id: uuid::Uuid,
+}
+
+
+#[derive(Debug, Default)]
+pub struct Entry {
+    success: AtomicI32,
+    failures: AtomicI32,
+}
+
+/// receives success / failures updat events
+pub async fn batch_updater(pool: DbPool, receiver: mpsc::Receiver<UpdateEvent>) {
+    let data: Arc<Mutex<HashMap<uuid::Uuid, Entry>>> = Arc::new(Mutex::new(HashMap::new()));
+    let mut receiver = receiver;
+    tokio::spawn({
+        let data = Arc::clone(&data); // Clone the Arc before moving into the closure
+        async move {
+            while let Some(evt) = receiver.recv().await {
+                let mut items_guard = data.lock().await;
+                let e = items_guard.entry(evt.task_id).or_default();
+                e.success
+                    .fetch_add(evt.success, std::sync::atomic::Ordering::Relaxed);
+                e.failures
+                    .fetch_add(evt.failures, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    });
+    loop {
+        // push updates to db
+        if let Ok(mut conn) = pool.get().await {
+            let mut items_guard = data.lock().await;
+            for (task_id, entry) in items_guard.drain() {
+                println!("{} {:?}", &task_id, &entry);
+                match handle_one(task_id, &mut conn, entry).await {
+                    Ok(_) => {}
+                    Err(_) => {
+                        log::error!("failed to apply batch update");
+                    }
+                }
+            }
+        }
+        sleep_ms(100).await;
+    }
+}
+
+async fn handle_one<'a>(
+    task_id: uuid::Uuid,
+    conn: &mut Conn<'a>,
+    entry: Entry,
+) -> Result<(), DbError> {
+    use crate::schema::task::dsl::*;
+    let res = diesel::update(
+        task.filter(
+            id.eq(task_id)
+                // lock failed tasks for update
+                .and(status.ne(models::StatusKind::Failure)),
+        ),
+    )
+    .set((
+        last_updated.eq(diesel::dsl::now),
+        success.eq(success + entry.success.into_inner()),
+        failures.eq(failures + entry.failures.into_inner()),
+    ))
+    .execute(conn)
+    .await?;
+
     Ok(())
 }

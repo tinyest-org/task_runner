@@ -6,20 +6,14 @@
 use std::sync::Arc;
 
 use actix_web::{
-    App, HttpResponse, HttpServer, Responder, delete, error, get, middleware, patch, post, web,
+    App, HttpResponse, HttpServer, Responder, delete, error, get, middleware, patch, post, put, web,
 };
 use actix_web_prometheus::PrometheusMetricsBuilder;
 use diesel::{Connection, PgConnection};
 use task_runner::{
-    DbPool,
-    action::{ActionContext, ActionExecutor},
-    db_operation,
-    dtos::{self},
-    helper::Requester,
-    initialize_db_pool,
-    models::TriggerKind,
-    workers,
+    action::{ActionContext, ActionExecutor}, db_operation, dtos::{self}, helper::Requester, initialize_db_pool, models::TriggerKind, workers::{self, UpdateEvent}, DbPool
 };
+use tokio::sync::mpsc::{self, Sender};
 use uuid::Uuid;
 
 use diesel_migrations::MigrationHarness;
@@ -47,7 +41,6 @@ async fn list_task(
 #[patch("/task/{task_id}")]
 async fn update_task(
     state: web::Data<AppState>,
-    // evaluator: web::Data<ActionExecutor>,
     task_id: web::Path<Uuid>,
     form: web::Json<dtos::UpdateTaskDto>,
 ) -> actix_web::Result<impl Responder> {
@@ -93,6 +86,27 @@ async fn get_task(
         // user was not found; return 404 response with error message
         None => HttpResponse::NotFound().body("No task found with UID"),
     })
+}
+
+/// push to update event queue for update batching
+#[put("/task")]
+async fn batch_task_updater(
+    state: web::Data<AppState>,
+    task_id: web::Path<Uuid>,
+    form: web::Json<dtos::UpdateTaskDto>,
+) -> impl Responder {
+    match state
+        .sender
+        .send(UpdateEvent {
+            success: form.new_success.unwrap_or(0),
+            failures: form.new_failures.unwrap_or(0),
+            task_id: task_id.into_inner(),
+        })
+        .await
+    {
+        Ok(_) => HttpResponse::Ok().body("OK"),
+        Err(_) => HttpResponse::InternalServerError().body("Failed to send"),
+    }
 }
 
 #[post("/task")]
@@ -169,6 +183,7 @@ async fn pause_task(
 struct AppState {
     pub action_executor: ActionExecutor,
     pub pool: DbPool,
+    pub sender: Sender<UpdateEvent>,
 }
 // embed_migrations!("./migrations");
 
@@ -179,6 +194,14 @@ async fn main() -> std::io::Result<()> {
     let db_url = std::env::var("DATABASE_URL").expect("Env var `DATABASE_URL` not set");
     let host_address = std::env::var("HOST_URL").expect("Env var `HOST_URL` not set");
     let port = 8085;
+
+    let (sender, receiver) = mpsc::channel::<UpdateEvent>(100);
+    // GLOBAL_RECEIVER
+    //     .set(Mutex::new(receiver))
+    //     .expect("failed to set global receiver");
+    // GLOBAL_SENDER
+    //     .set(sender)
+    //     .expect("failed to set global sender");
 
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -194,6 +217,7 @@ async fn main() -> std::io::Result<()> {
 
     let app_data = AppState {
         pool: pool.clone(),
+        sender: sender,
         action_executor: ActionExecutor {
             ctx: ActionContext {
                 host_address: host_address.to_owned(),
@@ -218,6 +242,10 @@ async fn main() -> std::io::Result<()> {
         task_runner::workers::timeout_loop(p2).await;
     });
 
+    let p3 = pool.clone();
+    actix_web::rt::spawn(async {
+        task_runner::workers::batch_updater(p3, receiver).await;
+    });
     let prometheus = PrometheusMetricsBuilder::new("api")
         .endpoint("/metrics")
         // .const_labels(labels)
@@ -234,6 +262,7 @@ async fn main() -> std::io::Result<()> {
             .service(add_task)
             .service(list_task)
             .service(update_task)
+            .service(batch_task_updater)
     })
     .bind(("0.0.0.0", port))?
     .run()

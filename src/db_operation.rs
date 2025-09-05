@@ -50,6 +50,7 @@ pub async fn ensure_pending_tasks_timeout<'a>(conn: &mut Conn<'a>) -> Result<Vec
         crate::schema::task::dsl::*,
         diesel::{dsl::now, pg::data_types::PgInterval},
     };
+    const TIMEOUT_REASON: &str = "Timeout";
     let updated = diesel::update(
         task.filter(
             status
@@ -63,7 +64,7 @@ pub async fn ensure_pending_tasks_timeout<'a>(conn: &mut Conn<'a>) -> Result<Vec
     .set((
         status.eq(models::StatusKind::Failure),
         ended_at.eq(now),
-        failure_reason.eq("Timeout"),
+        failure_reason.eq(TIMEOUT_REASON),
     ))
     .returning(Task::as_returning())
     .get_results::<Task>(conn)
@@ -321,36 +322,6 @@ pub async fn insert_new_task<'a>(
     Ok(Some(TaskDto::new(new_task, actions))) // Changed from Ok(r) to Ok(dto)
 }
 
-// pub async fn set_started_task<'a>(
-//     conn: &mut Conn<'a>,
-//     t: &Task,
-//     cancel_tasks: &[ActionDto],
-// ) -> Result<(), DbError> {
-//     use crate::schema::task::dsl::*;
-//     use diesel::dsl::{case_when, now, sql};
-//     use crate::schema::task::status as task_status; // Alias the column for clarity in sql
-//     // TODO: save cancel task and bind to task
-//     diesel::update(task.filter(id.eq(t.id)))
-//         .set((
-//             // Use diesel::dsl::sql for the conditional logic
-//             task_status.eq(sql("CASE WHEN task.status = 'Pending' THEN 'Running' ELSE task.status END")),
-//             // These fields are always updated
-//             started_at.eq(now),
-//             last_updated.eq(now),
-//         ))
-//         .execute(conn)
-//         .await?;
-
-//     insert_actions(
-//         t.id,
-//         &cancel_tasks,
-//         Some(&models::TriggerKind::Cancel),
-//         conn,
-//     )
-//     .await?;
-//     Ok(())
-// }
-
 pub async fn set_started_task<'a>(
     conn: &mut Conn<'a>,
     t: &Task,
@@ -359,7 +330,7 @@ pub async fn set_started_task<'a>(
     use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::RunQueryDsl;
 
-    use crate::schema::task::dsl::*;
+    use crate::schema::task::dsl::{task, id, started_at, last_updated};
     // 1. We need `sql` for the binding trick
     use crate::schema::task::status as task_status;
     use diesel::dsl::{now, sql}; // Alias the column for clarity in sql
@@ -388,7 +359,7 @@ pub async fn set_started_task<'a>(
 }
 
 pub async fn pause_task<'a>(task_id: &uuid::Uuid, conn: &mut Conn<'a>) -> Result<(), DbError> {
-    use crate::schema::task::dsl::*;
+    use crate::schema::task::dsl::{id, status, task};
     diesel::update(task.filter(id.eq(task_id)))
         .set(status.eq(StatusKind::Paused))
         .execute(conn)
