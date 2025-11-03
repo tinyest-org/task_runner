@@ -40,7 +40,7 @@ pub struct UpdateTaskDto {
     pub failure_reason: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ActionDto {
     pub kind: ActionKindEnum,
     pub trigger: TriggerKind,

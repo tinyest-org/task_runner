@@ -11,7 +11,14 @@ use actix_web::{
 use actix_web_prometheus::PrometheusMetricsBuilder;
 use diesel::{Connection, PgConnection};
 use task_runner::{
-    action::{ActionContext, ActionExecutor}, db_operation, dtos::{self}, helper::Requester, initialize_db_pool, models::TriggerKind, workers::{self, UpdateEvent}, DbPool
+    DbPool,
+    action::{ActionContext, ActionExecutor},
+    db_operation::{self, validate_form},
+    dtos::{self},
+    helper::Requester,
+    initialize_db_pool,
+    models::TriggerKind,
+    workers::{self, UpdateEvent},
 };
 use tokio::sync::mpsc::{self, Sender};
 use uuid::Uuid;
@@ -115,10 +122,15 @@ async fn add_task(
     form: web::Json<Vec<dtos::NewTaskDto>>,
     requester: web::Header<Requester>,
 ) -> actix_web::Result<impl Responder> {
+    use diesel_async::RunQueryDsl;
     log::debug!("got query from {}", requester.0);
     let mut conn = state
         .pool
         .get()
+        .await
+        .map_err(error::ErrorInternalServerError)?;
+    diesel::sql_query("BEGIN")
+        .execute(&mut conn)
         .await
         .map_err(error::ErrorInternalServerError)?;
     let mut result = vec![];
@@ -131,6 +143,10 @@ async fn add_task(
                 return Ok(HttpResponse::BadRequest().body("only one action allowed for now"));
             }
         }
+        let valid = validate_form(&i);
+        if !valid {
+            return Ok(HttpResponse::BadRequest().body("Invalid params for action"));
+        }
         let task = db_operation::insert_new_task(&mut conn, i)
             .await
             // map diesel query errors to a 500 error response
@@ -139,6 +155,10 @@ async fn add_task(
             result.push(t);
         }
     }
+    diesel::sql_query("COMMIT")
+        .execute(&mut conn)
+        .await
+        .map_err(error::ErrorInternalServerError)?;
     if result.is_empty() {
         Ok(HttpResponse::NoContent().finish())
     } else {

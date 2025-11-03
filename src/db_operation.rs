@@ -1,9 +1,10 @@
 use crate::{
     Conn,
-    action::ActionExecutor,
-    dtos::{self, ActionDto, TaskDto},
-    models::{self, Action, NewAction, StatusKind, Task},
+    action::{ActionExecutor, WebhookParams},
+    dtos::{self, ActionDto, NewTaskDto, TaskDto},
+    models::{self, Action, ActionKindEnum, NewAction, StatusKind, Task},
     rule::{Matcher, Rules},
+    schema::sql_types::ActionKind,
     workers::end_task,
 };
 use diesel::prelude::*;
@@ -41,6 +42,26 @@ impl TaskDto {
                 .collect(),
         }
     }
+}
+
+fn validate_params(kind: &ActionKindEnum, params: Value) -> bool {
+    match kind {
+        ActionKindEnum::Webhook => {
+            let r: Option<WebhookParams> = serde_json::from_value(params).ok();
+            if r.is_some() {
+                return true;
+            }
+            return false;
+        }
+    }
+}
+
+pub fn validate_form(dto: &NewTaskDto) -> bool {
+    if let Some(actions) = dto.actions.clone() {
+        let r = actions.into_iter().all(|e| validate_params(&e.kind, e.params));
+        return r;
+    }
+    true
 }
 
 /// Update all tasks with status running and last_updated older than timeout to failed and update
@@ -97,7 +118,6 @@ pub async fn update_running_task<'a>(
             return Ok(2);
         }
     }
-    let is_end = dto.status.is_some();
     let s = dto.status.clone();
     let is_failed = dto
         .status
@@ -122,15 +142,15 @@ pub async fn update_running_task<'a>(
         s.filter(|e| e == &models::StatusKind::Success || e == &models::StatusKind::Failure)
             .map(|_| ended_at.eq(diesel::dsl::now)),
         dto.metadata.map(|m| metadata.eq(m)),
-        dto.status.map(|m| status.eq(m)),
+        dto.status.as_ref().map(|m| status.eq(m)),
         dto.failure_reason.map(|m| failure_reason.eq(m)),
     ))
     .execute(conn)
     .await?;
 
-    if is_end {
+    if dto.status.as_ref().is_some() {
         // TODO: execute on end action triggers
-        match end_task(evaluator, &task_id, conn).await {
+        match end_task(evaluator, &task_id, dto.status.unwrap(), conn).await {
             Ok(_) => log::debug!("task {} end actions are successfull", &task_id),
             Err(_) => log::error!("task {} end actions failed", &task_id),
         }
@@ -330,7 +350,7 @@ pub async fn set_started_task<'a>(
     use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::RunQueryDsl;
 
-    use crate::schema::task::dsl::{task, id, started_at, last_updated};
+    use crate::schema::task::dsl::{id, last_updated, started_at, task};
     // 1. We need `sql` for the binding trick
     use crate::schema::task::status as task_status;
     use diesel::dsl::{now, sql}; // Alias the column for clarity in sql

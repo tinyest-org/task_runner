@@ -4,7 +4,7 @@ use crate::{
     db_operation::{self, DbError},
     dtos::ActionDto,
     models::{self, Action, StatusKind, Task, TriggerKind},
-    rule::Strategy,
+    rule::Strategy, schema::task::status,
 };
 use actix_web::rt;
 use diesel::BelongingToDsl;
@@ -239,6 +239,7 @@ async fn start_task<'a>(
 pub async fn end_task<'a>(
     evaluator: &ActionExecutor,
     task_id: &uuid::Uuid,
+    result_status: StatusKind,
     conn: &mut Conn<'a>,
 ) -> Result<(), DbError> {
     use crate::schema::action::dsl::trigger;
@@ -370,7 +371,7 @@ async fn handle_one<'a>(
     entry: Entry,
 ) -> Result<(), DbError> {
     use crate::schema::task::dsl::*;
-    let res = diesel::update(
+    let _res = diesel::update(
         task.filter(
             id.eq(task_id)
                 // lock failed tasks for update
