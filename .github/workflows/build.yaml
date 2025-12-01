@@ -52,98 +52,38 @@ jobs:
       - name: Run tests
         run: cargo test --lib --bins
 
-  # Docker build and test job - validates the image works
-  docker-test:
+  # Integration tests using testcontainers
+  integration-tests:
     runs-on: ubuntu-latest
     needs: ci
-    services:
-      postgres:
-        image: postgres:18-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: task_runner_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -f Dockerfile.full -t task-runner:test .
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
 
-      - name: Start container
-        run: |
-          docker run -d --name task-runner-test \
-            --network host \
-            -e DATABASE_URL="postgres://test:test@localhost:5432/task_runner_test" \
-            -e HOST_URL="http://localhost:4000" \
-            -e PORT=4000 \
-            task-runner:test
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-integration-
+            ${{ runner.os }}-cargo-
 
-          # Wait for container to be ready
-          echo "Waiting for server to start..."
-          for i in {1..30}; do
-            if curl -s http://localhost:4000/health > /dev/null 2>&1; then
-              echo "Server is ready!"
-              break
-            fi
-            if [ $i -eq 30 ]; then
-              echo "Server failed to start"
-              docker logs task-runner-test
-              exit 1
-            fi
-            sleep 1
-          done
-
-      - name: Test health endpoint
-        run: |
-          response=$(curl -s http://localhost:4000/health)
-          echo "Health response: $response"
-          echo "$response" | grep -q '"status":"ok"' || (echo "Health check failed" && exit 1)
-
-      - name: Test ready endpoint
-        run: |
-          response=$(curl -s http://localhost:4000/ready)
-          echo "Ready response: $response"
-          echo "$response" | grep -q '"status":"ready"' || (echo "Ready check failed" && exit 1)
-
-      - name: Test task list endpoint
-        run: |
-          response=$(curl -s -w "\n%{http_code}" http://localhost:4000/task)
-          http_code=$(echo "$response" | tail -n1)
-          body=$(echo "$response" | head -n-1)
-          echo "Task list response ($http_code): $body"
-          [ "$http_code" = "200" ] || (echo "Task list failed with code $http_code" && exit 1)
-
-      - name: Test task creation
-        run: |
-          response=$(curl -s -w "\n%{http_code}" -X POST http://localhost:4000/task \
-            -H "Content-Type: application/json" \
-            -H "requester: github-ci" \
-            -d '[{"id": "test-1", "name": "CI Test Task", "kind": "test", "timeout": 60, "metadata": {}, "on_start": {"kind": "Webhook", "params": {"url": "http://localhost:4000/health"}}}]')
-          http_code=$(echo "$response" | tail -n1)
-          body=$(echo "$response" | head -n-1)
-          echo "Task creation response ($http_code): $body"
-          [ "$http_code" = "201" ] || (echo "Task creation failed with code $http_code" && exit 1)
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker logs task-runner-test || true
-          docker stop task-runner-test || true
-          docker rm task-runner-test || true
+      - name: Run integration tests
+        run: cargo test --test integration_tests -- --test-threads=1
 
   # Docker build and push job - only on master/main push or tags
   docker:
     runs-on: ubuntu-latest
-    needs: [ci, docker-test]
+    needs: [ci, integration-tests]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     steps:
       - name: Checkout
