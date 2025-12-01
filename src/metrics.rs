@@ -3,7 +3,9 @@
 //! Provides custom metrics for tracking task execution, dependencies, and system health.
 
 use once_cell::sync::Lazy;
-use prometheus::{Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec, Opts, Registry};
+use prometheus::{
+    Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec, Opts, Registry,
+};
 
 /// Global metrics registry
 pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
@@ -55,8 +57,11 @@ pub static TASKS_CANCELLED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
 
 /// Tasks timed out
 pub static TASKS_TIMED_OUT_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
-    let counter = IntCounter::new("tasks_timed_out_total", "Total number of tasks that timed out")
-        .expect("metric can be created");
+    let counter = IntCounter::new(
+        "tasks_timed_out_total",
+        "Total number of tasks that timed out",
+    )
+    .expect("metric can be created");
     REGISTRY.register(Box::new(counter.clone())).unwrap();
     counter
 });
@@ -197,7 +202,9 @@ pub static TASK_DURATION_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
             "task_duration_seconds",
             "Task execution duration in seconds from Running to completion",
         )
-        .buckets(vec![1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0]),
+        .buckets(vec![
+            1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0,
+        ]),
         &["kind", "outcome"],
     )
     .expect("metric can be created");
@@ -298,9 +305,7 @@ pub fn record_task_with_dependencies() {
 
 /// Record a task status transition
 pub fn record_status_transition(from: &str, to: &str) {
-    TASK_STATUS_TRANSITIONS
-        .with_label_values(&[from, to])
-        .inc();
+    TASK_STATUS_TRANSITIONS.with_label_values(&[from, to]).inc();
 }
 
 /// Record task completion
@@ -366,9 +371,7 @@ pub fn set_tasks_by_status(status: &str, count: i64) {
 
 /// Update running tasks by kind gauge
 pub fn set_running_tasks_by_kind(kind: &str, count: i64) {
-    RUNNING_TASKS_BY_KIND
-        .with_label_values(&[kind])
-        .set(count);
+    RUNNING_TASKS_BY_KIND.with_label_values(&[kind]).set(count);
 }
 
 /// Record worker loop iteration

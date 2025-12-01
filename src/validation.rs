@@ -353,10 +353,7 @@ mod tests {
         task.name = "".to_string();
         let result = validate_new_task(&task);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .iter()
-            .any(|e| e.field == "name"));
+        assert!(result.unwrap_err().iter().any(|e| e.field == "name"));
     }
 
     #[test]
@@ -365,10 +362,7 @@ mod tests {
         task.kind = "".to_string();
         let result = validate_new_task(&task);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .iter()
-            .any(|e| e.field == "kind"));
+        assert!(result.unwrap_err().iter().any(|e| e.field == "kind"));
     }
 
     #[test]
@@ -377,10 +371,7 @@ mod tests {
         task.timeout = Some(-1);
         let result = validate_new_task(&task);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .iter()
-            .any(|e| e.field == "timeout"));
+        assert!(result.unwrap_err().iter().any(|e| e.field == "timeout"));
     }
 
     #[test]
@@ -392,10 +383,12 @@ mod tests {
         }]);
         let result = validate_new_task(&task);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .iter()
-            .any(|e| e.message.contains("itself")));
+        assert!(
+            result
+                .unwrap_err()
+                .iter()
+                .any(|e| e.message.contains("itself"))
+        );
     }
 
     #[test]
@@ -414,10 +407,12 @@ mod tests {
 
         let result = validate_task_batch(&[task1, task2]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .iter()
-            .any(|e| e.message.contains("Circular")));
+        assert!(
+            result
+                .unwrap_err()
+                .iter()
+                .any(|e| e.message.contains("Circular"))
+        );
     }
 
     #[test]
@@ -429,9 +424,11 @@ mod tests {
         });
         let result = validate_new_task(&task);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .iter()
-            .any(|e| e.field.contains("on_start")));
+        assert!(
+            result
+                .unwrap_err()
+                .iter()
+                .any(|e| e.field.contains("on_start"))
+        );
     }
 }

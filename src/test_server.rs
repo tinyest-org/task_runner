@@ -1,7 +1,4 @@
-
-use actix_web::{
-    App, HttpResponse, HttpServer, Responder, error, middleware, post, rt, web,
-};
+use actix_web::{App, HttpResponse, HttpServer, Responder, error, middleware, post, rt, web};
 use serde::Deserialize;
 use serde_json::json;
 

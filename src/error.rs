@@ -132,7 +132,9 @@ impl ResponseError for ApiError {
 impl From<TaskRunnerError> for ApiError {
     fn from(err: TaskRunnerError) -> Self {
         match err {
-            TaskRunnerError::TaskNotFound(id) => ApiError::NotFound(format!("Task {} not found", id)),
+            TaskRunnerError::TaskNotFound(id) => {
+                ApiError::NotFound(format!("Task {} not found", id))
+            }
             TaskRunnerError::InvalidState { message } => ApiError::BadRequest(message),
             TaskRunnerError::Validation(e) => ApiError::BadRequest(e.to_string()),
             TaskRunnerError::ConcurrencyLimit { kind } => {

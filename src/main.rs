@@ -286,7 +286,9 @@ async fn add_task(
 
     log::info!(
         "[batch_id={}] Creating task batch from requester={}, task_count={}",
-        batch_id, requester.0, form.len()
+        batch_id,
+        requester.0,
+        form.len()
     );
 
     let mut conn = get_conn_with_retry(
@@ -310,7 +312,8 @@ async fn add_task(
         let error_messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
         log::warn!(
             "[batch_id={}] Task batch validation failed: {:?}",
-            batch_id, error_messages
+            batch_id,
+            error_messages
         );
         // Rollback on validation failure
         let _ = diesel::sql_query("ROLLBACK").execute(&mut conn).await;
@@ -325,14 +328,15 @@ async fn add_task(
     for i in f.into_iter() {
         let local_id = i.id.clone();
 
-        let task = match db_operation::insert_new_task(&mut conn, i, &id_mapping, Some(batch_id)).await {
-            Ok(t) => t,
-            Err(e) => {
-                log::error!("[batch_id={}] Failed to insert task: {}", batch_id, e);
-                let _ = diesel::sql_query("ROLLBACK").execute(&mut conn).await;
-                return Err(error::ErrorInternalServerError(e));
-            }
-        };
+        let task =
+            match db_operation::insert_new_task(&mut conn, i, &id_mapping, Some(batch_id)).await {
+                Ok(t) => t,
+                Err(e) => {
+                    log::error!("[batch_id={}] Failed to insert task: {}", batch_id, e);
+                    let _ = diesel::sql_query("ROLLBACK").execute(&mut conn).await;
+                    return Err(error::ErrorInternalServerError(e));
+                }
+            };
         if let Some(t) = task {
             id_mapping.insert(local_id, t.id);
             result.push(t);
@@ -340,14 +344,19 @@ async fn add_task(
     }
 
     if let Err(e) = diesel::sql_query("COMMIT").execute(&mut conn).await {
-        log::error!("[batch_id={}] Failed to commit transaction: {}", batch_id, e);
+        log::error!(
+            "[batch_id={}] Failed to commit transaction: {}",
+            batch_id,
+            e
+        );
         let _ = diesel::sql_query("ROLLBACK").execute(&mut conn).await;
         return Err(error::ErrorInternalServerError(e));
     }
 
     log::info!(
         "[batch_id={}] Task batch created successfully, tasks_created={}",
-        batch_id, result.len()
+        batch_id,
+        result.len()
     );
 
     if result.is_empty() {

@@ -46,9 +46,12 @@ pub async fn timeout_loop(pool: DbPool) {
                         );
                         // Propagate timeout failures to dependent children
                         for failed_task in &failed {
-                            if let Err(e) =
-                                propagate_to_children(&failed_task.id, &StatusKind::Failure, &mut conn)
-                                    .await
+                            if let Err(e) = propagate_to_children(
+                                &failed_task.id,
+                                &StatusKind::Failure,
+                                &mut conn,
+                            )
+                            .await
                             {
                                 log::error!(
                                     "Timeout worker: failed to propagate failure for task {}: {:?}",
@@ -318,7 +321,11 @@ async fn propagate_to_children<'a>(
     let parent_failed = result_status == &StatusKind::Failure;
 
     // Record dependency propagation metric
-    let outcome = if parent_succeeded { "success" } else { "failure" };
+    let outcome = if parent_succeeded {
+        "success"
+    } else {
+        "failure"
+    };
     metrics::record_dependency_propagation(outcome);
 
     // Get all children of this parent task

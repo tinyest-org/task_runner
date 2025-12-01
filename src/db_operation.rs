@@ -65,13 +65,19 @@ pub fn validate_form(dto: &NewTaskDto) -> bool {
     }
     // Validate on_failure actions
     if let Some(actions) = &dto.on_failure {
-        if !actions.iter().all(|e| validate_params(&e.kind, e.params.clone())) {
+        if !actions
+            .iter()
+            .all(|e| validate_params(&e.kind, e.params.clone()))
+        {
             return false;
         }
     }
     // Validate on_success actions
     if let Some(actions) = &dto.on_success {
-        if !actions.iter().all(|e| validate_params(&e.kind, e.params.clone())) {
+        if !actions
+            .iter()
+            .all(|e| validate_params(&e.kind, e.params.clone()))
+        {
             return false;
         }
     }
@@ -372,8 +378,8 @@ pub async fn insert_new_task<'a>(
     id_mapping: &HashMap<String, Uuid>,
     batch_id: Option<Uuid>,
 ) -> Result<Option<TaskDto>, DbError> {
-    use crate::schema::task::dsl::task;
     use crate::schema::link::dsl::link;
+    use crate::schema::task::dsl::task;
 
     let should_write = if let Some(s) = dto.dedupe_strategy {
         handle_dedupe(conn, s, &dto.metadata).await
@@ -461,8 +467,9 @@ pub async fn insert_new_task<'a>(
         &[dto.on_start],
         &models::TriggerKind::Start,
         &models::TriggerCondition::Success,
-        conn
-    ).await?;
+        conn,
+    )
+    .await?;
     all_actions.extend(start_actions);
 
     // Insert on_failure actions
@@ -473,7 +480,8 @@ pub async fn insert_new_task<'a>(
             &models::TriggerKind::End,
             &models::TriggerCondition::Failure,
             conn,
-        ).await?;
+        )
+        .await?;
         all_actions.extend(inserted);
     }
 
@@ -485,7 +493,8 @@ pub async fn insert_new_task<'a>(
             &models::TriggerKind::End,
             &models::TriggerCondition::Success,
             conn,
-        ).await?;
+        )
+        .await?;
         all_actions.extend(inserted);
     }
 

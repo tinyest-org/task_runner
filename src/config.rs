@@ -120,7 +120,11 @@ pub struct ConfigError {
 
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Configuration error for '{}': {}", self.field, self.message)
+        write!(
+            f,
+            "Configuration error for '{}': {}",
+            self.field, self.message
+        )
     }
 }
 

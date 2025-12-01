@@ -37,7 +37,6 @@ pub async fn initialize_db_pool() -> DbPool {
     config.custom_setup = Box::new(establish_connection);
     let mgr = AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(db_url, config);
 
-    
     Pool::builder()
         .max_size(10)
         .min_idle(Some(5))
