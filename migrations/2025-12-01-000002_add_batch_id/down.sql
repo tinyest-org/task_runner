@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_task_batch_id;
+ALTER TABLE task DROP COLUMN IF EXISTS batch_id;

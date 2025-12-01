@@ -2,15 +2,16 @@ use crate::{
     Conn,
     action::{ActionExecutor, WebhookParams},
     dtos::{self, ActionDto, NewTaskDto, TaskDto},
-    models::{self, Action, ActionKindEnum, NewAction, StatusKind, Task},
-    rule::{Matcher, Rules},
-    schema::sql_types::ActionKind,
+    metrics,
+    models::{self, Action, ActionKindEnum, Link, NewAction, StatusKind, Task},
+    rule::Matcher,
     workers::end_task,
 };
 use diesel::prelude::*;
 use diesel::sql_types;
 use diesel_async::RunQueryDsl;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use uuid::Uuid;
 pub type DbError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -19,7 +20,7 @@ impl TaskDto {
     pub fn new(base_task: Task, actions: Vec<Action>) -> Self {
         Self {
             id: base_task.id,
-            name: base_task.name.unwrap_or("".to_string()),
+            name: base_task.name,
             kind: base_task.kind,
             status: base_task.status,
             timeout: base_task.timeout,
@@ -32,6 +33,7 @@ impl TaskDto {
             last_updated: base_task.last_updated,
             started_at: base_task.started_at,
             failure_reason: base_task.failure_reason,
+            batch_id: base_task.batch_id,
             actions: actions
                 .iter()
                 .map(|a| dtos::ActionDto {
@@ -57,9 +59,21 @@ fn validate_params(kind: &ActionKindEnum, params: Value) -> bool {
 }
 
 pub fn validate_form(dto: &NewTaskDto) -> bool {
-    if let Some(actions) = dto.actions.clone() {
-        let r = actions.into_iter().all(|e| validate_params(&e.kind, e.params));
-        return r;
+    // Validate on_start action
+    if !validate_params(&dto.on_start.kind, dto.on_start.params.clone()) {
+        return false;
+    }
+    // Validate on_failure actions
+    if let Some(actions) = &dto.on_failure {
+        if !actions.iter().all(|e| validate_params(&e.kind, e.params.clone())) {
+            return false;
+        }
+    }
+    // Validate on_success actions
+    if let Some(actions) = &dto.on_success {
+        if !actions.iter().all(|e| validate_params(&e.kind, e.params.clone())) {
+            return false;
+        }
     }
     true
 }
@@ -148,9 +162,19 @@ pub async fn update_running_task<'a>(
     .execute(conn)
     .await?;
 
-    if dto.status.as_ref().is_some() {
+    if let Some(ref final_status) = dto.status {
+        // Record completion metrics
+        let outcome = match final_status {
+            models::StatusKind::Success => "success",
+            models::StatusKind::Failure => "failure",
+            _ => "other",
+        };
+        metrics::record_status_transition("Running", outcome);
+        // Note: We don't have task.kind here, so we use "unknown" - a refactor could improve this
+        metrics::record_task_completed(outcome, "unknown");
+
         // TODO: execute on end action triggers
-        match end_task(evaluator, &task_id, dto.status.unwrap(), conn).await {
+        match end_task(evaluator, &task_id, dto.status.clone().unwrap(), conn).await {
             Ok(_) => log::debug!("task {} end actions are successfull", &task_id),
             Err(_) => log::error!("task {} end actions failed", &task_id),
         }
@@ -193,36 +217,68 @@ pub async fn list_task_filtered_paged<'a>(
         .flatten();
     let page_size = 50;
     let offset = pagination.page.unwrap_or(0) * page_size;
-    let result = if let Some(dto_status) = filter.status {
-        task.offset(offset)
-            .filter(
-                name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
-                    .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string()))))
-                    .and(status.eq(dto_status))
-                    .and(metadata.contains(m.unwrap_or(json!({})))),
-            )
-            .limit(page_size)
-            .order(created_at.desc())
-            .load::<models::Task>(conn)
-            .await?
-    } else {
-        task.offset(offset)
-            .filter(
-                name.like(format!("%{}%", filter.name.unwrap_or("".to_string())))
-                    .and(kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string()))))
-                    .and(metadata.contains(m.unwrap_or(json!({})))),
-            )
-            .limit(page_size)
-            .order(created_at.desc())
-            .load::<models::Task>(conn)
-            .await?
+
+    // Build base filter
+    let name_filter = name.like(format!("%{}%", filter.name.unwrap_or("".to_string())));
+    let kind_filter = kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string())));
+    let metadata_filter = metadata.contains(m.unwrap_or(json!({})));
+
+    let result = match (filter.status, filter.batch_id) {
+        (Some(dto_status), Some(bid)) => {
+            task.offset(offset)
+                .filter(
+                    name_filter
+                        .and(kind_filter)
+                        .and(status.eq(dto_status))
+                        .and(metadata_filter)
+                        .and(batch_id.eq(bid)),
+                )
+                .limit(page_size)
+                .order(created_at.desc())
+                .load::<models::Task>(conn)
+                .await?
+        }
+        (Some(dto_status), None) => {
+            task.offset(offset)
+                .filter(
+                    name_filter
+                        .and(kind_filter)
+                        .and(status.eq(dto_status))
+                        .and(metadata_filter),
+                )
+                .limit(page_size)
+                .order(created_at.desc())
+                .load::<models::Task>(conn)
+                .await?
+        }
+        (None, Some(bid)) => {
+            task.offset(offset)
+                .filter(
+                    name_filter
+                        .and(kind_filter)
+                        .and(metadata_filter)
+                        .and(batch_id.eq(bid)),
+                )
+                .limit(page_size)
+                .order(created_at.desc())
+                .load::<models::Task>(conn)
+                .await?
+        }
+        (None, None) => {
+            task.offset(offset)
+                .filter(name_filter.and(kind_filter).and(metadata_filter))
+                .limit(page_size)
+                .order(created_at.desc())
+                .load::<models::Task>(conn)
+                .await?
+        }
     };
 
     let tasks: Vec<dtos::BasicTaskDto> = result
         .into_iter()
         .map(|base_task| dtos::BasicTaskDto {
             id: base_task.id,
-            name: base_task.name.unwrap_or_default(),
+            name: base_task.name,
             kind: base_task.kind,
             status: base_task.status,
             created_at: base_task.created_at,
@@ -230,6 +286,7 @@ pub async fn list_task_filtered_paged<'a>(
             started_at: base_task.started_at,
             success: base_task.success,
             failures: base_task.failures,
+            batch_id: base_task.batch_id,
         })
         .collect();
 
@@ -277,7 +334,8 @@ async fn handle_dedupe<'a>(
 async fn insert_actions<'a>(
     task_id: Uuid,
     actions: &[ActionDto],
-    trigger: Option<&models::TriggerKind>,
+    trigger: &models::TriggerKind,
+    condition: &models::TriggerCondition,
     conn: &mut Conn<'a>,
 ) -> Result<Vec<Action>, DbError> {
     use crate::schema::action::dsl::action;
@@ -290,7 +348,8 @@ async fn insert_actions<'a>(
             task_id,
             kind: &a.kind,
             params: a.params.clone(),
-            trigger: trigger.unwrap_or(&a.trigger),
+            trigger,
+            condition,
         })
         .collect::<Vec<_>>();
 
@@ -302,12 +361,19 @@ async fn insert_actions<'a>(
     Ok(r)
 }
 
-/// Insert a new task into the database.
+/// Insert a new task into the database with optional dependencies.
+///
+/// `id_mapping` maps local client IDs to database UUIDs for resolving dependencies
+/// within the same batch of tasks.
+/// `batch_id` groups all tasks created in the same request for tracing.
 pub async fn insert_new_task<'a>(
     conn: &mut Conn<'a>,
     dto: dtos::NewTaskDto,
+    id_mapping: &HashMap<String, Uuid>,
+    batch_id: Option<Uuid>,
 ) -> Result<Option<TaskDto>, DbError> {
     use crate::schema::task::dsl::task;
+    use crate::schema::link::dsl::link;
 
     let should_write = if let Some(s) = dto.dedupe_strategy {
         handle_dedupe(conn, s, &dto.metadata).await
@@ -319,13 +385,49 @@ pub async fn insert_new_task<'a>(
         return Ok(None);
     }
 
+    // Compute wait counters from dependencies
+    let (wait_success, wait_finished, links) = if let Some(ref deps) = dto.dependencies {
+        let mut ws = 0i32;
+        let mut wf = 0i32;
+        let mut resolved_links = Vec::new();
+
+        for dep in deps {
+            if let Some(&parent_id) = id_mapping.get(&dep.id) {
+                wf += 1;
+                if dep.requires_success {
+                    ws += 1;
+                }
+                resolved_links.push(Link {
+                    parent_id,
+                    child_id: Uuid::nil(), // Will be set after task creation
+                    requires_success: dep.requires_success,
+                });
+            } else {
+                log::warn!("Dependency with local id '{}' not found in mapping", dep.id);
+            }
+        }
+        (ws, wf, resolved_links)
+    } else {
+        (0, 0, Vec::new())
+    };
+
+    // Set status based on whether there are dependencies
+    let initial_status = if wait_finished > 0 {
+        models::StatusKind::Waiting
+    } else {
+        models::StatusKind::Pending
+    };
+
     let new_task = models::NewTask {
         name: dto.name,
         kind: dto.kind,
-        status: models::StatusKind::Pending,
+        status: initial_status,
         timeout: dto.timeout.unwrap_or(60),
         metadata: dto.metadata.unwrap_or(serde_json::Value::Null),
-        start_condition: dto.rules.unwrap_or(Rules { conditions: vec![] }),
+        start_condition: dto.rules.unwrap_or_default(),
+        wait_success,
+        wait_finished,
+        batch_id,
     };
 
     let new_task = diesel::insert_into(task)
@@ -334,12 +436,66 @@ pub async fn insert_new_task<'a>(
         .get_result(conn)
         .await?;
 
-    let actions = if let Some(actions) = dto.actions {
-        insert_actions(new_task.id, &actions, None, conn).await?
-    } else {
-        vec![]
-    };
-    Ok(Some(TaskDto::new(new_task, actions))) // Changed from Ok(r) to Ok(dto)
+    // Insert links with the actual child_id
+    if !links.is_empty() {
+        let links_to_insert: Vec<Link> = links
+            .into_iter()
+            .map(|mut l| {
+                l.child_id = new_task.id;
+                l
+            })
+            .collect();
+
+        diesel::insert_into(link)
+            .values(&links_to_insert)
+            .execute(conn)
+            .await?;
+    }
+
+    // Insert actions: on_start (single), on_failure (many), on_success (many)
+    let mut all_actions = Vec::new();
+
+    // Insert on_start action (condition doesn't matter for start, use Success as default)
+    let start_actions = insert_actions(
+        new_task.id,
+        &[dto.on_start],
+        &models::TriggerKind::Start,
+        &models::TriggerCondition::Success,
+        conn
+    ).await?;
+    all_actions.extend(start_actions);
+
+    // Insert on_failure actions
+    if let Some(failure_actions) = dto.on_failure {
+        let inserted = insert_actions(
+            new_task.id,
+            &failure_actions,
+            &models::TriggerKind::End,
+            &models::TriggerCondition::Failure,
+            conn,
+        ).await?;
+        all_actions.extend(inserted);
+    }
+
+    // Insert on_success actions
+    if let Some(success_actions) = dto.on_success {
+        let inserted = insert_actions(
+            new_task.id,
+            &success_actions,
+            &models::TriggerKind::End,
+            &models::TriggerCondition::Success,
+            conn,
+        ).await?;
+        all_actions.extend(inserted);
+    }
+
+    // Record metrics
+    metrics::record_task_created();
+    if wait_finished > 0 {
+        metrics::record_task_with_dependencies();
+    }
+
+    Ok(Some(TaskDto::new(new_task, all_actions)))
 }
 
 pub async fn set_started_task<'a>(
@@ -370,8 +526,9 @@ pub async fn set_started_task<'a>(
 
     insert_actions(
         t.id,
-        &cancel_tasks,
-        Some(&models::TriggerKind::Cancel),
+        cancel_tasks,
+        &models::TriggerKind::Cancel,
+        &models::TriggerCondition::Success, // Condition doesn't matter for cancel
         conn,
     )
     .await?;

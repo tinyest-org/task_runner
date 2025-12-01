@@ -3,8 +3,9 @@ use crate::{
     action::ActionExecutor,
     db_operation::{self, DbError},
     dtos::ActionDto,
+    metrics,
     models::{self, Action, StatusKind, Task, TriggerKind},
-    rule::Strategy, schema::task::status,
+    rule::Strategy,
 };
 use actix_web::rt;
 use diesel::BelongingToDsl;
@@ -34,11 +35,28 @@ pub async fn timeout_loop(pool: DbPool) {
                 Ok(failed) => {
                     // use logger instead of println
                     if !failed.is_empty() {
+                        // Record timeout metrics
+                        for _ in &failed {
+                            metrics::record_task_timeout();
+                        }
                         log::warn!(
                             "Timeout worker: {} tasks failed, {:?}",
                             &failed.len(),
                             &failed.iter().map(|e| e.id).collect::<Vec<_>>()
                         );
+                        // Propagate timeout failures to dependent children
+                        for failed_task in &failed {
+                            if let Err(e) =
+                                propagate_to_children(&failed_task.id, &StatusKind::Failure, &mut conn)
+                                    .await
+                            {
+                                log::error!(
+                                    "Timeout worker: failed to propagate failure for task {}: {:?}",
+                                    failed_task.id,
+                                    e
+                                );
+                            }
+                        }
                     } else {
                         log::debug!("Timeout worker: no tasks failed");
                     }
@@ -69,6 +87,9 @@ async fn sleep_ms(ms: u64) {
 
 pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
     'outer: loop {
+        let loop_start = std::time::Instant::now();
+        let mut tasks_processed = 0usize;
+
         // note that obtaining a connection from the pool is also potentially blocking
         let conn = pool.get();
         let max_retries = 10;
@@ -86,6 +107,8 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
                         if evaluate_rules(&t, &mut conn, &mut ctx).await {
                             match start_task(evaluator, &t, &mut conn).await {
                                 Ok(cancel_tasks) => {
+                                    tasks_processed += 1;
+                                    metrics::record_status_transition("Pending", "Running");
                                     log::debug!("Start worker: task {} started", t.id);
                                     // update the task status to running
                                     let mut i = 0;
@@ -120,6 +143,7 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
                                 }
                             }
                         } else {
+                            metrics::record_task_blocked_by_concurrency();
                             log::warn!("Start worker: task {} not started", t.id);
                         }
                     }
@@ -129,6 +153,10 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
                 }
             }
         }
+        // Record worker loop metrics
+        let loop_duration = loop_start.elapsed().as_secs_f64();
+        metrics::record_worker_loop_iteration(loop_duration, tasks_processed);
+
         sleep_secs(1).await;
     }
 }
@@ -138,7 +166,7 @@ pub async fn evaluate_rules<'a>(
     conn: &mut Conn<'a>,
     ctx: &mut EvaluationContext,
 ) -> bool {
-    let conditions = &_task.start_condition.conditions;
+    let conditions = &_task.start_condition.0;
     if conditions.is_empty() {
         return true;
     }
@@ -264,6 +292,122 @@ pub async fn end_task<'a>(
             }
         }
     }
+
+    // Propagate completion to dependent children
+    propagate_to_children(task_id, &result_status, conn).await?;
+
+    Ok(())
+}
+
+/// Propagates task completion to dependent children.
+///
+/// When a parent task completes:
+/// 1. Decrement wait_finished for all children in Waiting status
+/// 2. If parent succeeded, also decrement wait_success for children where requires_success = true
+/// 3. If both counters reach 0, transition child from Waiting to Pending
+/// 4. If a required parent fails, mark child as Failure
+async fn propagate_to_children<'a>(
+    parent_id: &uuid::Uuid,
+    result_status: &StatusKind,
+    conn: &mut Conn<'a>,
+) -> Result<(), DbError> {
+    use crate::schema::link::dsl as link_dsl;
+    use crate::schema::task::dsl as task_dsl;
+
+    let parent_succeeded = result_status == &StatusKind::Success;
+    let parent_failed = result_status == &StatusKind::Failure;
+
+    // Record dependency propagation metric
+    let outcome = if parent_succeeded { "success" } else { "failure" };
+    metrics::record_dependency_propagation(outcome);
+
+    // Get all children of this parent task
+    let children_links: Vec<(uuid::Uuid, bool)> = link_dsl::link
+        .filter(link_dsl::parent_id.eq(parent_id))
+        .select((link_dsl::child_id, link_dsl::requires_success))
+        .load::<(uuid::Uuid, bool)>(conn)
+        .await?;
+
+    if children_links.is_empty() {
+        return Ok(());
+    }
+
+    for (child_id, requires_success) in children_links {
+        // If parent failed and this child required success, mark child as failed
+        if parent_failed && requires_success {
+            let failure_reason = format!("Required parent task {} failed", parent_id);
+            diesel::update(
+                task_dsl::task.filter(
+                    task_dsl::id
+                        .eq(child_id)
+                        .and(task_dsl::status.eq(StatusKind::Waiting)),
+                ),
+            )
+            .set((
+                task_dsl::status.eq(StatusKind::Failure),
+                task_dsl::failure_reason.eq(failure_reason),
+                task_dsl::ended_at.eq(diesel::dsl::now),
+            ))
+            .execute(conn)
+            .await?;
+
+            metrics::record_task_failed_by_dependency();
+            log::info!(
+                "Child task {} marked as failed due to required parent {} failure",
+                child_id,
+                parent_id
+            );
+            continue;
+        }
+
+        // Decrement counters for children in Waiting status
+        // wait_finished is always decremented
+        // wait_success is only decremented if parent succeeded AND child requires success
+        let decrement_wait_success = if parent_succeeded && requires_success {
+            1
+        } else {
+            0
+        };
+
+        diesel::update(
+            task_dsl::task.filter(
+                task_dsl::id
+                    .eq(child_id)
+                    .and(task_dsl::status.eq(StatusKind::Waiting)),
+            ),
+        )
+        .set((
+            task_dsl::wait_finished.eq(task_dsl::wait_finished - 1),
+            task_dsl::wait_success.eq(task_dsl::wait_success - decrement_wait_success),
+        ))
+        .execute(conn)
+        .await?;
+
+        // Check if child is ready to transition to Pending
+        // (both counters are 0)
+        let updated_count = diesel::update(
+            task_dsl::task.filter(
+                task_dsl::id
+                    .eq(child_id)
+                    .and(task_dsl::status.eq(StatusKind::Waiting))
+                    .and(task_dsl::wait_finished.eq(0))
+                    .and(task_dsl::wait_success.eq(0)),
+            ),
+        )
+        .set(task_dsl::status.eq(StatusKind::Pending))
+        .execute(conn)
+        .await?;
+
+        if updated_count > 0 {
+            metrics::record_task_unblocked();
+            metrics::record_status_transition("Waiting", "Pending");
+            log::info!(
+                "Child task {} transitioned from Waiting to Pending",
+                child_id
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -313,6 +457,8 @@ pub async fn cancel_task<'a>(
         .set(status.eq(StatusKind::Canceled))
         .execute(conn)
         .await?;
+
+    metrics::record_task_cancelled();
     Ok(())
 }
 
@@ -322,7 +468,6 @@ pub struct UpdateEvent {
     pub failures: i32,
     pub task_id: uuid::Uuid,
 }
-
 
 #[derive(Debug, Default)]
 pub struct Entry {
@@ -352,7 +497,7 @@ pub async fn batch_updater(pool: DbPool, receiver: mpsc::Receiver<UpdateEvent>) 
         if let Ok(mut conn) = pool.get().await {
             let mut items_guard = data.lock().await;
             for (task_id, entry) in items_guard.drain() {
-                println!("{} {:?}", &task_id, &entry);
+                log::debug!("Batch update for task {}: {:?}", &task_id, &entry);
                 match handle_one(task_id, &mut conn, entry).await {
                     Ok(_) => {}
                     Err(_) => {

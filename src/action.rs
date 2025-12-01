@@ -30,10 +30,10 @@ impl From<HttpVerb> for reqwest::Method {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WebhookParams {
-    url: String,
-    verb: HttpVerb,
-    body: Option<serde_json::Value>,
-    headers: Option<HashMap<String, String>>,
+    pub url: String,
+    pub verb: HttpVerb,
+    pub body: Option<serde_json::Value>,
+    pub headers: Option<HashMap<String, String>>,
 }
 
 pub fn get_http_client() -> reqwest::Client {

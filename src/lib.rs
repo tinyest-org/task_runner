@@ -1,10 +1,14 @@
 pub mod action;
+pub mod config;
 pub mod db_operation;
 pub mod dtos;
+pub mod error;
 pub mod helper;
+pub mod metrics;
 pub mod models;
 pub mod rule;
 pub mod schema;
+pub mod validation;
 pub mod workers;
 
 use diesel::{ConnectionError, ConnectionResult};

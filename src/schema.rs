@@ -10,6 +10,10 @@ pub mod sql_types {
     pub struct StatusKind;
 
     #[derive(diesel::query_builder::QueryId, Clone, diesel::sql_types::SqlType)]
+    #[diesel(postgres_type(name = "trigger_condition"))]
+    pub struct TriggerCondition;
+
+    #[derive(diesel::query_builder::QueryId, Clone, diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "trigger_kind"))]
     pub struct TriggerKind;
 }
@@ -18,6 +22,7 @@ diesel::table! {
     use diesel::sql_types::*;
     use super::sql_types::ActionKind;
     use super::sql_types::TriggerKind;
+    use super::sql_types::TriggerCondition;
 
     action (id) {
         id -> Uuid,
@@ -25,7 +30,16 @@ diesel::table! {
         kind -> ActionKind,
         params -> Jsonb,
         trigger -> TriggerKind,
+        condition -> TriggerCondition,
         success -> Nullable<Bool>,
+    }
+}
+
+diesel::table! {
+    link (parent_id, child_id) {
+        parent_id -> Uuid,
+        child_id -> Uuid,
+        requires_success -> Bool,
     }
 }
 
@@ -35,25 +49,27 @@ diesel::table! {
 
     task (id) {
         id -> Uuid,
-        name -> Nullable<Text>,
+        name -> Text,
         kind -> Text,
         status -> StatusKind,
-        created_at -> Timestamptz,
         timeout -> Int4,
+        created_at -> Timestamptz,
         started_at -> Nullable<Timestamptz>,
         last_updated -> Timestamptz,
-        success -> Int4,
-        failures -> Int4,
         metadata -> Jsonb,
         ended_at -> Nullable<Timestamptz>,
         start_condition -> Jsonb,
+        wait_success -> Int4,
+        wait_finished -> Int4,
+        success -> Int4,
+        failures -> Int4,
         failure_reason -> Nullable<Text>,
+        batch_id -> Nullable<Uuid>,
     }
 }
 
 diesel::joinable!(action -> task (task_id));
+// Note: link has two foreign keys to task (parent_id, child_id)
+// We don't use joinable! for link->task since we need explicit joins
 
-diesel::allow_tables_to_appear_in_same_query!(
-    action,
-    task,
-);
+diesel::allow_tables_to_appear_in_same_query!(action, link, task,);

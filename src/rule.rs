@@ -1,26 +1,24 @@
-use diesel::expression::AsExpression;
-use diesel::{deserialize::FromSqlRow, serialize::ToSql, sql_types::Jsonb};
-use serde::{Deserialize, Serialize};
+use crate::models::StatusKind;
 use diesel::deserialize::{self, FromSql};
+use diesel::expression::AsExpression;
 use diesel::pg::{Pg, PgValue};
 use diesel::serialize::{self, IsNull, Output};
+use diesel::{deserialize::FromSqlRow, serialize::ToSql, sql_types::Jsonb};
+use serde::{Deserialize, Serialize};
 use std::io::Write;
-use crate::models::StatusKind;
 
 /// RuleKind is an enum that represents different kinds of rules
 /// example:
-/// ```
+/// ```json
 /// {
-/// type: "Concurency",
-/// max_concurency: 1,
-/// matcher: {
-///     status: "Running",
-///    kind: "clustering",
-///    fields: [
-///        "projectId",
-///    ],
-///},
-///},
+///   "type": "Concurency",
+///   "max_concurency": 1,
+///   "matcher": {
+///     "status": "Running",
+///     "kind": "clustering",
+///     "fields": ["projectId"]
+///   }
+/// }
 /// ```
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq)]
 #[serde(tag = "type")] // -> this way the "type" field will be used to determine the type of the rule
@@ -30,8 +28,12 @@ pub enum Strategy {
 
 #[derive(AsExpression, FromSqlRow, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[diesel(sql_type = Jsonb)]
-pub struct Rules {
-    pub conditions: Vec<Strategy>,
+pub struct Rules(pub Vec<Strategy>);
+
+impl Default for Rules {
+    fn default() -> Self {
+        Rules(Vec::new())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq)]
@@ -46,8 +48,6 @@ pub struct Matcher {
     pub kind: String,        // we want to match on kind
     pub fields: Vec<String>, // we want to match on fields in the params section
 }
-
-
 
 impl ToSql<Jsonb, Pg> for Rules {
     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, Pg>) -> serialize::Result {
@@ -66,4 +66,3 @@ impl FromSql<Jsonb, Pg> for Rules {
         Ok(serde_json::from_value(value)?)
     }
 }
-

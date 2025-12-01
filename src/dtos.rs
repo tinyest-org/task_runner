@@ -8,15 +8,35 @@ use crate::{
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewTaskDto {
+    // Local id used in order to handle dependencies
+    // set by the client, only used to be a local graph (local to the query)
+    pub id: String,
+    
     pub name: String,
+    
     pub kind: String,
     pub timeout: Option<i32>,
-    pub actions: Option<Vec<ActionDto>>,
     pub metadata: Option<serde_json::Value>,
-    pub rules: Option<Rules>,
     /// if a task matches one of the matcher then the task is not created
     pub dedupe_strategy: Option<Vec<Matcher>>,
+    
+    pub rules: Option<Rules>,
+    
+    pub on_start: ActionDto,
+
+    pub dependencies: Option<Vec<Dependency>>,
+
+    pub on_failure: Option<Vec<ActionDto>>,
+    pub on_success: Option<Vec<ActionDto>>,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Dependency {
+    pub id: String,
+    pub requires_success: bool,
+}
+
+// only one action per tas
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BasicTaskDto {
@@ -29,6 +49,7 @@ pub struct BasicTaskDto {
     pub success: i32,
     pub failures: i32,
     pub ended_at: Option<chrono::DateTime<Utc>>,
+    pub batch_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -64,6 +85,7 @@ pub struct TaskDto {
     pub success: i32,
     pub failures: i32,
     pub failure_reason: Option<String>,
+    pub batch_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -78,4 +100,10 @@ pub struct FilterDto {
     pub status: Option<StatusKind>,
     pub timeout: Option<i32>,
     pub metadata: Option<String>,
+    pub batch_id: Option<uuid::Uuid>,
 }
+
+
+// on_start -> one
+// on_success -> many
+// on_failure -> many
