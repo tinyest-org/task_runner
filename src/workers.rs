@@ -8,13 +8,14 @@ use crate::{
     rule::Strategy,
 };
 use actix_web::rt;
+use dashmap::DashMap;
 use diesel::BelongingToDsl;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use serde_json::json;
 use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, atomic::AtomicI32},
+    collections::HashSet,
+    sync::{Arc, atomic::AtomicI32, atomic::Ordering},
 };
 use tokio::sync::{Mutex, OnceCell, mpsc};
 
@@ -89,7 +90,7 @@ async fn sleep_ms(ms: u64) {
 }
 
 pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
-    'outer: loop {
+    loop {
         let loop_start = std::time::Instant::now();
         let mut tasks_processed = 0usize;
 
@@ -127,13 +128,16 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
                                         sleep_secs(1).await;
                                         i += 1;
                                         if i == max_retries {
-                                            // we want to stop starting tasks as we are in a inconsistant state
+                                            // Skip this task and continue with others
+                                            // Task will be retried on next loop iteration
+                                            // (it's still in Pending state since DB update failed)
                                             log::error!(
-                                                "Start worker: error saving task {}: after {} retries",
+                                                "Start worker: error saving task {}: after {} retries, skipping",
                                                 t.id,
                                                 max_retries,
                                             );
-                                            break 'outer;
+                                            metrics::record_task_db_save_failure();
+                                            break;
                                         }
                                     }
                                 }
@@ -318,7 +322,8 @@ async fn propagate_to_children<'a>(
     use crate::schema::task::dsl as task_dsl;
 
     let parent_succeeded = result_status == &StatusKind::Success;
-    let parent_failed = result_status == &StatusKind::Failure;
+    let parent_failed =
+        result_status == &StatusKind::Failure || result_status == &StatusKind::Canceled;
 
     // Record dependency propagation metric
     let outcome = if parent_succeeded {
@@ -343,7 +348,7 @@ async fn propagate_to_children<'a>(
         // If parent failed and this child required success, mark child as failed
         if parent_failed && requires_success {
             let failure_reason = format!("Required parent task {} failed", parent_id);
-            diesel::update(
+            let updated = diesel::update(
                 task_dsl::task.filter(
                     task_dsl::id
                         .eq(child_id)
@@ -358,24 +363,32 @@ async fn propagate_to_children<'a>(
             .execute(conn)
             .await?;
 
-            metrics::record_task_failed_by_dependency();
-            log::info!(
-                "Child task {} marked as failed due to required parent {} failure",
-                child_id,
-                parent_id
-            );
+            if updated > 0 {
+                metrics::record_task_failed_by_dependency();
+                log::info!(
+                    "Child task {} marked as failed due to required parent {} failure",
+                    child_id,
+                    parent_id
+                );
+
+                // Recursively propagate failure to this child's dependents
+                // Use Box::pin to handle async recursion
+                Box::pin(propagate_to_children(&child_id, &StatusKind::Failure, conn)).await?;
+            }
             continue;
         }
 
         // Decrement counters for children in Waiting status
         // wait_finished is always decremented
         // wait_success is only decremented if parent succeeded AND child requires success
-        let decrement_wait_success = if parent_succeeded && requires_success {
+        let decrement_wait_success: i32 = if parent_succeeded && requires_success {
             1
         } else {
             0
         };
 
+        // Decrement counters and transition to Pending if both reach 0
+        // Uses RETURNING to get new values, then conditionally updates status
         diesel::update(
             task_dsl::task.filter(
                 task_dsl::id
@@ -390,8 +403,8 @@ async fn propagate_to_children<'a>(
         .execute(conn)
         .await?;
 
-        // Check if child is ready to transition to Pending
-        // (both counters are 0)
+        // Atomically transition to Pending only if counters are both 0
+        // The WHERE clause ensures this is safe even with concurrent updates
         let updated_count = diesel::update(
             task_dsl::task.filter(
                 task_dsl::id
@@ -461,9 +474,16 @@ pub async fn cancel_task<'a>(
     }
     // we update to the canceled state
     diesel::update(task.filter(id.eq(task_id)))
-        .set(status.eq(StatusKind::Canceled))
+        .set((
+            status.eq(StatusKind::Canceled),
+            ended_at.eq(diesel::dsl::now),
+        ))
         .execute(conn)
         .await?;
+
+    // Propagate cancellation to dependent children
+    // Canceled is treated like failure for children that require success
+    propagate_to_children(task_id, &StatusKind::Canceled, conn).await?;
 
     metrics::record_task_cancelled();
     Ok(())
@@ -482,58 +502,103 @@ pub struct Entry {
     failures: AtomicI32,
 }
 
-/// receives success / failures updat events
+/// Receives success/failure update events and batches them to the database.
+/// Uses DashMap for lock-free concurrent access between receiver and updater.
 pub async fn batch_updater(pool: DbPool, receiver: mpsc::Receiver<UpdateEvent>) {
-    let data: Arc<Mutex<HashMap<uuid::Uuid, Entry>>> = Arc::new(Mutex::new(HashMap::new()));
+    let data: Arc<DashMap<uuid::Uuid, Entry>> = Arc::new(DashMap::new());
     let mut receiver = receiver;
+
+    // Receiver task - continuously drains channel without blocking updater
     tokio::spawn({
-        let data = Arc::clone(&data); // Clone the Arc before moving into the closure
+        let data = Arc::clone(&data);
         async move {
             while let Some(evt) = receiver.recv().await {
-                let mut items_guard = data.lock().await;
-                let e = items_guard.entry(evt.task_id).or_default();
-                e.success
-                    .fetch_add(evt.success, std::sync::atomic::Ordering::Relaxed);
-                e.failures
-                    .fetch_add(evt.failures, std::sync::atomic::Ordering::Relaxed);
+                // DashMap allows concurrent insert/update - no global lock
+                data.entry(evt.task_id)
+                    .or_default()
+                    .success
+                    .fetch_add(evt.success, Ordering::Relaxed);
+                data.entry(evt.task_id)
+                    .or_default()
+                    .failures
+                    .fetch_add(evt.failures, Ordering::Relaxed);
             }
         }
     });
+
+    // Updater loop - persists batched counts to database
     loop {
-        // push updates to db
         if let Ok(mut conn) = pool.get().await {
-            let mut items_guard = data.lock().await;
-            for (task_id, entry) in items_guard.drain() {
-                log::debug!("Batch update for task {}: {:?}", &task_id, &entry);
-                match handle_one(task_id, &mut conn, entry).await {
-                    Ok(_) => {}
-                    Err(_) => {
-                        log::error!("failed to apply batch update");
-                    }
+            // Collect updates - DashMap iter() doesn't block other operations on different shards
+            let updates: Vec<(uuid::Uuid, i32, i32)> = data
+                .iter()
+                .map(|entry| {
+                    let task_id = *entry.key();
+                    let s = entry.value().success.swap(0, Ordering::Relaxed);
+                    let f = entry.value().failures.swap(0, Ordering::Relaxed);
+                    (task_id, s, f)
+                })
+                .filter(|(_, s, f)| *s != 0 || *f != 0)
+                .collect();
+
+            // Process updates
+            for (task_id, success_count, failure_count) in updates {
+                log::debug!(
+                    "Batch update for task {}: success={}, failures={}",
+                    &task_id,
+                    success_count,
+                    failure_count
+                );
+
+                if let Err(e) =
+                    handle_one_with_counts(task_id, &mut conn, success_count, failure_count).await
+                {
+                    log::error!(
+                        "Failed to apply batch update for task {}: {:?}, re-queuing counts",
+                        task_id,
+                        e
+                    );
+                    // Re-add the counts back for retry - no lock needed with DashMap
+                    data.entry(task_id)
+                        .or_default()
+                        .success
+                        .fetch_add(success_count, Ordering::Relaxed);
+                    data.entry(task_id)
+                        .or_default()
+                        .failures
+                        .fetch_add(failure_count, Ordering::Relaxed);
+                    metrics::record_batch_update_failure();
                 }
             }
+
+            // Cleanup zero entries periodically
+            data.retain(|_, entry| {
+                AtomicI32::load(&entry.success, Ordering::Relaxed) != 0
+                    || AtomicI32::load(&entry.failures, Ordering::Relaxed) != 0
+            });
         }
         sleep_ms(100).await;
     }
 }
 
-async fn handle_one<'a>(
+async fn handle_one_with_counts<'a>(
     task_id: uuid::Uuid,
     conn: &mut Conn<'a>,
-    entry: Entry,
+    success_count: i32,
+    failure_count: i32,
 ) -> Result<(), DbError> {
     use crate::schema::task::dsl::*;
     let _res = diesel::update(
         task.filter(
             id.eq(task_id)
-                // lock failed tasks for update
+                // Don't update failed tasks
                 .and(status.ne(models::StatusKind::Failure)),
         ),
     )
     .set((
         last_updated.eq(diesel::dsl::now),
-        success.eq(success + entry.success.into_inner()),
-        failures.eq(failures + entry.failures.into_inner()),
+        success.eq(success + success_count),
+        failures.eq(failures + failure_count),
     ))
     .execute(conn)
     .await?;

@@ -1,13 +1,16 @@
 pub mod action;
+pub mod circuit_breaker;
 pub mod config;
 pub mod db_operation;
 pub mod dtos;
 pub mod error;
+pub mod handlers;
 pub mod helper;
 pub mod metrics;
 pub mod models;
 pub mod rule;
 pub mod schema;
+pub mod tracing;
 pub mod validation;
 pub mod workers;
 

@@ -2,6 +2,9 @@
 //!
 //! These tests verify the HTTP API endpoints against a real PostgreSQL database
 //! running in Docker. They test the full request/response cycle through actix-web.
+//!
+//! IMPORTANT: These tests use the same handlers as the production application,
+//! ensuring that bugs in the handlers are caught by tests.
 
 use actix_web::{App, test, web};
 use diesel::{Connection, PgConnection, RunQueryDsl};
@@ -12,8 +15,10 @@ use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use serde_json::json;
 use std::sync::Arc;
 use task_runner::DbPool;
+use task_runner::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use task_runner::config::Config;
 use task_runner::dtos::{BasicTaskDto, TaskDto};
+use task_runner::handlers::{AppState, configure_routes};
 use task_runner::models::StatusKind;
 use testcontainers::{ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
@@ -223,188 +228,34 @@ fn test_config() -> Arc<Config> {
             batch_flush_interval: std::time::Duration::from_millis(100),
             batch_channel_capacity: 100,
         },
+        circuit_breaker: task_runner::config::CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 5,
+            failure_window_secs: 10,
+            recovery_timeout_secs: 30,
+            success_threshold: 2,
+        },
+        observability: task_runner::config::ObservabilityConfig {
+            slow_query_threshold_ms: 100,
+            tracing_enabled: false,
+            otlp_endpoint: None,
+            service_name: "task-runner-test".to_string(),
+            sampling_ratio: 1.0,
+        },
     })
 }
 
-/// Application state for tests
-#[derive(Clone)]
-#[allow(dead_code)]
-struct AppState {
-    pub action_executor: task_runner::action::ActionExecutor,
-    pub pool: DbPool,
-    pub sender: mpsc::Sender<task_runner::workers::UpdateEvent>,
-    pub config: Arc<Config>,
+/// Create a test circuit breaker (with high thresholds so it doesn't trip during tests)
+fn test_circuit_breaker() -> Arc<CircuitBreaker> {
+    Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 100, // High threshold for tests
+        failure_window: std::time::Duration::from_secs(60),
+        recovery_timeout: std::time::Duration::from_secs(1),
+        success_threshold: 1,
+    }))
 }
 
-/// Configure test app with all routes
-fn configure_test_app(cfg: &mut web::ServiceConfig, state: AppState) {
-    cfg.app_data(web::Data::new(state))
-        .route("/health", web::get().to(health_check))
-        .route("/task", web::get().to(list_tasks))
-        .route("/task", web::post().to(create_tasks))
-        .route("/task/{task_id}", web::get().to(get_task))
-        .route("/task/{task_id}", web::patch().to(update_task))
-        .route("/task/{task_id}", web::delete().to(cancel_task))
-        .route("/task/pause/{task_id}", web::patch().to(pause_task));
-}
-
-// =============================================================================
-// Handler Functions (simplified versions for testing)
-// =============================================================================
-
-async fn health_check(state: web::Data<AppState>) -> actix_web::HttpResponse {
-    match state.pool.get().await {
-        Ok(_) => actix_web::HttpResponse::Ok().json(json!({"status": "ok"})),
-        Err(_) => actix_web::HttpResponse::ServiceUnavailable().json(json!({"status": "error"})),
-    }
-}
-
-async fn list_tasks(
-    state: web::Data<AppState>,
-    pagination: web::Query<task_runner::dtos::PaginationDto>,
-    filter: web::Query<task_runner::dtos::FilterDto>,
-) -> actix_web::HttpResponse {
-    let mut conn = match state.pool.get().await {
-        Ok(c) => c,
-        Err(_) => return actix_web::HttpResponse::ServiceUnavailable().finish(),
-    };
-
-    match task_runner::db_operation::list_task_filtered_paged(&mut conn, pagination.0, filter.0)
-        .await
-    {
-        Ok(tasks) => actix_web::HttpResponse::Ok().json(tasks),
-        Err(_) => actix_web::HttpResponse::InternalServerError().finish(),
-    }
-}
-
-async fn create_tasks(
-    state: web::Data<AppState>,
-    form: web::Json<Vec<task_runner::dtos::NewTaskDto>>,
-) -> actix_web::HttpResponse {
-    use std::collections::HashMap;
-
-    let mut conn = match state.pool.get().await {
-        Ok(c) => c,
-        Err(_) => return actix_web::HttpResponse::ServiceUnavailable().finish(),
-    };
-
-    if diesel_async::RunQueryDsl::execute(diesel::sql_query("BEGIN"), &mut conn)
-        .await
-        .is_err()
-    {
-        return actix_web::HttpResponse::InternalServerError().finish();
-    }
-
-    let mut result = vec![];
-    let mut id_mapping: HashMap<String, uuid::Uuid> = HashMap::new();
-    let batch_id = Some(uuid::Uuid::new_v4());
-
-    for task_dto in form.0.into_iter() {
-        let local_id = task_dto.id.clone();
-        match task_runner::db_operation::insert_new_task(&mut conn, task_dto, &id_mapping, batch_id)
-            .await
-        {
-            Ok(Some(t)) => {
-                id_mapping.insert(local_id, t.id);
-                result.push(t);
-            }
-            Ok(None) => {
-                // Task skipped due to dedupe
-            }
-            Err(_) => {
-                let _ =
-                    diesel_async::RunQueryDsl::execute(diesel::sql_query("ROLLBACK"), &mut conn)
-                        .await;
-                return actix_web::HttpResponse::InternalServerError().finish();
-            }
-        }
-    }
-
-    if diesel_async::RunQueryDsl::execute(diesel::sql_query("COMMIT"), &mut conn)
-        .await
-        .is_err()
-    {
-        return actix_web::HttpResponse::InternalServerError().finish();
-    }
-
-    if result.is_empty() {
-        actix_web::HttpResponse::NoContent().finish()
-    } else {
-        actix_web::HttpResponse::Created().json(result)
-    }
-}
-
-async fn get_task(
-    state: web::Data<AppState>,
-    task_id: web::Path<uuid::Uuid>,
-) -> actix_web::HttpResponse {
-    let mut conn = match state.pool.get().await {
-        Ok(c) => c,
-        Err(_) => return actix_web::HttpResponse::ServiceUnavailable().finish(),
-    };
-
-    match task_runner::db_operation::find_detailed_task_by_id(&mut conn, *task_id).await {
-        Ok(Some(t)) => actix_web::HttpResponse::Ok().json(t),
-        Ok(None) => actix_web::HttpResponse::NotFound().finish(),
-        Err(_) => actix_web::HttpResponse::InternalServerError().finish(),
-    }
-}
-
-async fn update_task(
-    state: web::Data<AppState>,
-    task_id: web::Path<uuid::Uuid>,
-    form: web::Json<task_runner::dtos::UpdateTaskDto>,
-) -> actix_web::HttpResponse {
-    let mut conn = match state.pool.get().await {
-        Ok(c) => c,
-        Err(_) => return actix_web::HttpResponse::ServiceUnavailable().finish(),
-    };
-
-    match task_runner::db_operation::update_running_task(
-        &state.action_executor,
-        &mut conn,
-        *task_id,
-        form.0,
-    )
-    .await
-    {
-        Ok(1) => actix_web::HttpResponse::Ok().body("Task updated"),
-        Ok(_) => actix_web::HttpResponse::NotFound().finish(),
-        Err(_) => actix_web::HttpResponse::InternalServerError().finish(),
-    }
-}
-
-async fn cancel_task(
-    state: web::Data<AppState>,
-    task_id: web::Path<uuid::Uuid>,
-) -> actix_web::HttpResponse {
-    let mut conn = match state.pool.get().await {
-        Ok(c) => c,
-        Err(_) => return actix_web::HttpResponse::ServiceUnavailable().finish(),
-    };
-
-    match task_runner::workers::cancel_task(&state.action_executor, &task_id, &mut conn).await {
-        Ok(_) => actix_web::HttpResponse::Ok().finish(),
-        Err(_) => actix_web::HttpResponse::BadRequest().finish(),
-    }
-}
-
-async fn pause_task(
-    state: web::Data<AppState>,
-    task_id: web::Path<uuid::Uuid>,
-) -> actix_web::HttpResponse {
-    let mut conn = match state.pool.get().await {
-        Ok(c) => c,
-        Err(_) => return actix_web::HttpResponse::ServiceUnavailable().finish(),
-    };
-
-    match task_runner::db_operation::pause_task(&task_id, &mut conn).await {
-        Ok(_) => actix_web::HttpResponse::Ok().finish(),
-        Err(_) => actix_web::HttpResponse::BadRequest().finish(),
-    }
-}
-
-/// Create app state for tests
+/// Create app state for tests (without batch updater)
 fn create_test_state(pool: DbPool) -> AppState {
     let (sender, _receiver) = mpsc::channel(100);
     AppState {
@@ -416,6 +267,30 @@ fn create_test_state(pool: DbPool) -> AppState {
             },
         },
         config: test_config(),
+        circuit_breaker: test_circuit_breaker(),
+    }
+}
+
+/// Create app state with batch updater running (for batch update tests)
+fn create_test_state_with_batch_updater(pool: DbPool) -> AppState {
+    let (sender, receiver) = mpsc::channel(100);
+
+    // Spawn the batch updater background task
+    let pool_clone = pool.clone();
+    tokio::spawn(async move {
+        task_runner::workers::batch_updater(pool_clone, receiver).await;
+    });
+
+    AppState {
+        pool,
+        sender,
+        action_executor: task_runner::action::ActionExecutor {
+            ctx: task_runner::action::ActionContext {
+                host_address: "http://localhost:8080".to_string(),
+            },
+        },
+        config: test_config(),
+        circuit_breaker: test_circuit_breaker(),
     }
 }
 
@@ -475,7 +350,12 @@ async fn test_health_check() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     let req = test::TestRequest::get().uri("/health").to_request();
     let resp = test::call_service(&app, req).await;
@@ -495,11 +375,17 @@ async fn test_create_single_task() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     let task = task_json("task-1", "Test Task", "test-kind");
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task])
         .to_request();
 
@@ -518,7 +404,12 @@ async fn test_create_multiple_tasks() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     let tasks: Vec<serde_json::Value> = (1..=5)
         .map(|i| task_json(&format!("task-{}", i), &format!("Task {}", i), "batch"))
@@ -526,6 +417,7 @@ async fn test_create_multiple_tasks() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -541,12 +433,18 @@ async fn test_get_task_by_id() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create a task first
     let task = task_json("find-me", "Findable Task", "findable");
     let create_req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task])
         .to_request();
 
@@ -572,7 +470,12 @@ async fn test_get_nonexistent_task() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     let random_id = uuid::Uuid::new_v4();
     let req = test::TestRequest::get()
@@ -592,7 +495,12 @@ async fn test_task_with_single_dependency() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create parent and child in same request
     let parent = task_json("parent", "Parent Task", "parent-kind");
@@ -600,6 +508,7 @@ async fn test_task_with_single_dependency() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![parent, child])
         .to_request();
 
@@ -620,7 +529,12 @@ async fn test_task_with_multiple_dependencies() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create three parents and one child
     let tasks = vec![
@@ -641,6 +555,7 @@ async fn test_task_with_multiple_dependencies() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -663,7 +578,12 @@ async fn test_diamond_dag_pattern() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Diamond pattern: A -> B, A -> C, B -> D, C -> D
     //       A
@@ -680,6 +600,7 @@ async fn test_diamond_dag_pattern() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -706,7 +627,12 @@ async fn test_list_tasks() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create some tasks
     let tasks: Vec<serde_json::Value> = (1..=5)
@@ -721,6 +647,7 @@ async fn test_list_tasks() {
 
     let create_req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
     test::call_service(&app, create_req).await;
@@ -732,7 +659,7 @@ async fn test_list_tasks() {
     assert!(list_resp.status().is_success());
 
     let body: Vec<BasicTaskDto> = test::read_body_json(list_resp).await;
-    assert!(body.len() >= 5);
+    assert_eq!(body.len(), 5, "Should return exactly 5 tasks");
 }
 
 #[tokio::test]
@@ -740,7 +667,12 @@ async fn test_filter_by_kind() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create tasks with different kinds
     let tasks = vec![
@@ -752,6 +684,7 @@ async fn test_filter_by_kind() {
 
     let create_req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
     test::call_service(&app, create_req).await;
@@ -776,7 +709,12 @@ async fn test_filter_by_status() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create parent and child (child will be Waiting)
     let tasks = vec![
@@ -791,6 +729,7 @@ async fn test_filter_by_status() {
 
     let create_req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
     test::call_service(&app, create_req).await;
@@ -825,12 +764,18 @@ async fn test_pause_task() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create a task
     let task = task_json("pausable", "Pausable Task", "pausable-kind");
     let create_req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task])
         .to_request();
 
@@ -861,12 +806,18 @@ async fn test_cancel_pending_task() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create a task
     let task = task_json("cancelable", "Cancelable Task", "cancelable-kind");
     let create_req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task])
         .to_request();
 
@@ -901,7 +852,12 @@ async fn test_dedupe_skip_existing() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create first task with metadata
     let task1 = json!({
@@ -915,6 +871,7 @@ async fn test_dedupe_skip_existing() {
 
     let create_req1 = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task1])
         .to_request();
 
@@ -938,6 +895,7 @@ async fn test_dedupe_skip_existing() {
 
     let create_req2 = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task2])
         .to_request();
 
@@ -958,7 +916,12 @@ async fn test_task_with_large_metadata() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     let large_array: Vec<i32> = (0..1000).collect();
     let task = json!({
@@ -981,6 +944,7 @@ async fn test_task_with_large_metadata() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task])
         .to_request();
 
@@ -996,7 +960,12 @@ async fn test_task_with_special_characters_in_name() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     let task = json!({
         "id": "special",
@@ -1009,6 +978,7 @@ async fn test_task_with_special_characters_in_name() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task])
         .to_request();
 
@@ -1020,46 +990,23 @@ async fn test_task_with_special_characters_in_name() {
     assert!(body[0].name.contains("日本語"));
 }
 
-#[tokio::test]
-async fn test_concurrent_task_creation() {
-    let test_app = setup_test_db().await;
-    let state = create_test_state(test_app.pool.clone());
-
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
-
-    // Create 10 tasks concurrently
-    let tasks: Vec<serde_json::Value> = (0..10)
-        .map(|i| {
-            task_json(
-                &format!("concurrent-{}", i),
-                &format!("Concurrent Task {}", i),
-                "concurrent-insert",
-            )
-        })
-        .collect();
-
-    let req = test::TestRequest::post()
-        .uri("/task")
-        .set_json(&tasks)
-        .to_request();
-
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), actix_web::http::StatusCode::CREATED);
-
-    let body: Vec<TaskDto> = test::read_body_json(resp).await;
-    assert_eq!(body.len(), 10);
-}
-
 // =============================================================================
-// Concurrency Rules Tests
+// Concurrency Rules Storage Tests
+// NOTE: These tests only verify rules are stored correctly.
+// Runtime enforcement is done by the worker loop which is not tested here.
 // =============================================================================
 
 #[tokio::test]
-async fn test_task_with_concurrency_rules() {
+async fn test_concurrency_rules_stored_on_task() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Rules use serde tag = "type", so format is {"type": "Concurency", ...}
     let task = json!({
@@ -1082,6 +1029,7 @@ async fn test_task_with_concurrency_rules() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task])
         .to_request();
 
@@ -1102,7 +1050,12 @@ async fn test_task_with_success_and_failure_actions() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     let task = json!({
         "id": "with-actions",
@@ -1117,6 +1070,7 @@ async fn test_task_with_success_and_failure_actions() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task])
         .to_request();
 
@@ -1137,7 +1091,12 @@ async fn test_linear_chain_dag() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Linear chain: A -> B -> C -> D
     let tasks = vec![
@@ -1149,6 +1108,7 @@ async fn test_linear_chain_dag() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -1171,7 +1131,12 @@ async fn test_fan_out_dag() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Fan-out: A -> B, A -> C, A -> D, A -> E
     let tasks = vec![
@@ -1184,6 +1149,7 @@ async fn test_fan_out_dag() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -1206,7 +1172,12 @@ async fn test_fan_in_dag() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Fan-in: A, B, C, D -> E
     let tasks = vec![
@@ -1229,6 +1200,7 @@ async fn test_fan_in_dag() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -1251,7 +1223,12 @@ async fn test_mixed_dependency_requirements() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Mixed requirements: some require success, some just need to finish
     let tasks = vec![
@@ -1270,6 +1247,7 @@ async fn test_mixed_dependency_requirements() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -1290,9 +1268,12 @@ async fn test_child_transitions_when_parent_succeeds() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app =
-        test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state.clone())))
-            .await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create parent and child
     let tasks = vec![
@@ -1307,6 +1288,7 @@ async fn test_child_transitions_when_parent_succeeds() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -1365,9 +1347,12 @@ async fn test_child_fails_when_required_parent_fails() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app =
-        test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state.clone())))
-            .await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create parent and child with required dependency
     let tasks = vec![
@@ -1382,6 +1367,7 @@ async fn test_child_fails_when_required_parent_fails() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -1428,9 +1414,12 @@ async fn test_child_proceeds_when_optional_parent_fails() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app =
-        test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state.clone())))
-            .await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create two parents (required and optional) and one child
     let tasks = vec![
@@ -1449,6 +1438,7 @@ async fn test_child_proceeds_when_optional_parent_fails() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -1525,9 +1515,12 @@ async fn test_multi_level_dag_propagation() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app =
-        test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state.clone())))
-            .await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create: ingest_1, ingest_2 -> cluster -> refresh
     let tasks = vec![
@@ -1544,6 +1537,7 @@ async fn test_multi_level_dag_propagation() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -1640,9 +1634,12 @@ async fn test_failure_propagation_through_chain() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app =
-        test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state.clone())))
-            .await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create: root -> middle -> leaf (all require success)
     let tasks = vec![
@@ -1653,6 +1650,7 @@ async fn test_failure_propagation_through_chain() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -1690,17 +1688,159 @@ async fn test_failure_propagation_through_chain() {
     let middle: TaskDto = test::read_body_json(middle_resp).await;
     assert_eq!(middle.status, StatusKind::Failure);
 
-    // Leaf should also be marked as Failure (cascading)
+    // Leaf should also be marked as Failure (cascading propagation)
     let get_leaf = test::TestRequest::get()
         .uri(&format!("/task/{}", leaf_id))
         .to_request();
     let leaf_resp = test::call_service(&app, get_leaf).await;
     let leaf: TaskDto = test::read_body_json(leaf_resp).await;
-    // Note: Depending on implementation, leaf may be Waiting or Failure
-    // If cascading failure is implemented, it should be Failure
+    assert_eq!(
+        leaf.status,
+        StatusKind::Failure,
+        "Leaf should be Failure due to cascading failure propagation from root -> middle -> leaf"
+    );
     assert!(
-        leaf.status == StatusKind::Failure || leaf.status == StatusKind::Waiting,
-        "Leaf should be Failure (cascading) or Waiting (no cascading)"
+        leaf.failure_reason.is_some(),
+        "Leaf should have a failure reason explaining why it failed"
+    );
+}
+
+/// Test the exact DAG pattern from the CI/CD pipeline:
+/// Build -> (Unit Tests, Integration Tests, Lint) -> Deploy
+/// When Build fails, all downstream tasks should fail via cascading propagation
+#[tokio::test]
+async fn test_cicd_pipeline_failure_cascade() {
+    let test_app = setup_test_db().await;
+    let state = create_test_state(test_app.pool.clone());
+
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .configure(configure_routes),
+    )
+    .await;
+
+    // CI/CD Pipeline DAG:
+    //       Build
+    //      /  |  \
+    //   Unit Int  Lint
+    //      \  |  /
+    //      Deploy
+    let tasks = vec![
+        task_json("build", "Build Project", "build"),
+        task_with_deps("unit", "Unit Tests", "test", vec![("build", true)]),
+        task_with_deps(
+            "integration",
+            "Integration Tests",
+            "test",
+            vec![("build", true)],
+        ),
+        task_with_deps("lint", "Lint Check", "lint", vec![("build", false)]), // doesn't require success
+        task_with_deps(
+            "deploy",
+            "Deploy to Staging",
+            "deploy",
+            vec![
+                ("unit", true),        // requires success
+                ("integration", true), // requires success
+                ("lint", false),       // just needs to finish
+            ],
+        ),
+    ];
+
+    let req = test::TestRequest::post()
+        .uri("/task")
+        .insert_header(("requester", "test"))
+        .set_json(&tasks)
+        .to_request();
+
+    let resp = test::call_service(&app, req).await;
+    let created: Vec<TaskDto> = test::read_body_json(resp).await;
+
+    assert_eq!(created.len(), 5);
+    let build_id = created[0].id;
+    let unit_id = created[1].id;
+    let integration_id = created[2].id;
+    let lint_id = created[3].id;
+    let deploy_id = created[4].id;
+
+    // Verify initial states
+    assert_eq!(created[0].status, StatusKind::Pending); // build
+    assert_eq!(created[1].status, StatusKind::Waiting); // unit
+    assert_eq!(created[2].status, StatusKind::Waiting); // integration
+    assert_eq!(created[3].status, StatusKind::Waiting); // lint
+    assert_eq!(created[4].status, StatusKind::Waiting); // deploy
+
+    let mut conn = state.pool.get().await.unwrap();
+
+    // Fail the build task
+    let fail_build = task_runner::dtos::UpdateTaskDto {
+        status: Some(StatusKind::Failure),
+        metadata: None,
+        new_success: None,
+        new_failures: None,
+        failure_reason: Some("Build compilation failed".to_string()),
+    };
+    task_runner::db_operation::update_running_task(
+        &state.action_executor,
+        &mut conn,
+        build_id,
+        fail_build,
+    )
+    .await
+    .unwrap();
+
+    // Unit Tests should be Failure (required build success)
+    let get_unit = test::TestRequest::get()
+        .uri(&format!("/task/{}", unit_id))
+        .to_request();
+    let unit_resp = test::call_service(&app, get_unit).await;
+    let unit: TaskDto = test::read_body_json(unit_resp).await;
+    assert_eq!(
+        unit.status,
+        StatusKind::Failure,
+        "Unit Tests should fail because required parent (build) failed"
+    );
+
+    // Integration Tests should be Failure (required build success)
+    let get_integration = test::TestRequest::get()
+        .uri(&format!("/task/{}", integration_id))
+        .to_request();
+    let integration_resp = test::call_service(&app, get_integration).await;
+    let integration: TaskDto = test::read_body_json(integration_resp).await;
+    assert_eq!(
+        integration.status,
+        StatusKind::Failure,
+        "Integration Tests should fail because required parent (build) failed"
+    );
+
+    // Lint should still be Waiting (doesn't require build success, just finish)
+    // Its wait_finished was decremented but it hasn't transitioned yet
+    let get_lint = test::TestRequest::get()
+        .uri(&format!("/task/{}", lint_id))
+        .to_request();
+    let lint_resp = test::call_service(&app, get_lint).await;
+    let lint: TaskDto = test::read_body_json(lint_resp).await;
+    assert_eq!(
+        lint.status,
+        StatusKind::Pending,
+        "Lint should be Pending (build finished, doesn't require success)"
+    );
+
+    // Deploy should be Failure because Unit and Integration failed (and it required their success)
+    let get_deploy = test::TestRequest::get()
+        .uri(&format!("/task/{}", deploy_id))
+        .to_request();
+    let deploy_resp = test::call_service(&app, get_deploy).await;
+    let deploy: TaskDto = test::read_body_json(deploy_resp).await;
+    assert_eq!(
+        deploy.status,
+        StatusKind::Failure,
+        "Deploy should fail via cascading: build failed -> unit/integration failed -> deploy failed"
+    );
+    assert!(
+        deploy.failure_reason.is_some(),
+        "Deploy should have failure reason"
     );
 }
 
@@ -1713,7 +1853,12 @@ async fn test_pagination_basic() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Note: The db_operation uses hardcoded page_size=50, so create enough tasks
     // to test pagination works by checking offset between pages
@@ -1730,6 +1875,7 @@ async fn test_pagination_basic() {
 
     let create_req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
     test::call_service(&app, create_req).await;
@@ -1770,7 +1916,12 @@ async fn test_pagination_last_page() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create 55 tasks to test partial last page with hardcoded page_size=50
     let tasks: Vec<serde_json::Value> = (1..=55)
@@ -1785,6 +1936,7 @@ async fn test_pagination_last_page() {
 
     let create_req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
     test::call_service(&app, create_req).await;
@@ -1803,7 +1955,12 @@ async fn test_pagination_empty_page() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Request page with no data
     let empty_req = test::TestRequest::get()
@@ -1823,7 +1980,12 @@ async fn test_cancel_task_with_waiting_children() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create parent with two children
     let tasks = vec![
@@ -1844,6 +2006,7 @@ async fn test_cancel_task_with_waiting_children() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -1874,18 +2037,21 @@ async fn test_cancel_task_with_waiting_children() {
     let parent: TaskDto = test::read_body_json(parent_resp).await;
     assert_eq!(parent.status, StatusKind::Canceled);
 
-    // Children should be either Waiting (impossible dep) or Failure/Canceled
+    // Children with requires_success=true should be marked as Failure
+    // because their required parent was canceled (treated like failure)
     let get_child1 = test::TestRequest::get()
         .uri(&format!("/task/{}", child1_id))
         .to_request();
     let child1_resp = test::call_service(&app, get_child1).await;
     let child1: TaskDto = test::read_body_json(child1_resp).await;
+    assert_eq!(
+        child1.status,
+        StatusKind::Failure,
+        "Child 1 should be Failure because required parent was canceled"
+    );
     assert!(
-        matches!(
-            child1.status,
-            StatusKind::Waiting | StatusKind::Failure | StatusKind::Canceled
-        ),
-        "Child 1 status should be Waiting, Failure, or Canceled"
+        child1.failure_reason.is_some(),
+        "Child 1 should have a failure reason"
     );
 
     let get_child2 = test::TestRequest::get()
@@ -1893,12 +2059,14 @@ async fn test_cancel_task_with_waiting_children() {
         .to_request();
     let child2_resp = test::call_service(&app, get_child2).await;
     let child2: TaskDto = test::read_body_json(child2_resp).await;
+    assert_eq!(
+        child2.status,
+        StatusKind::Failure,
+        "Child 2 should be Failure because required parent was canceled"
+    );
     assert!(
-        matches!(
-            child2.status,
-            StatusKind::Waiting | StatusKind::Failure | StatusKind::Canceled
-        ),
-        "Child 2 status should be Waiting, Failure, or Canceled"
+        child2.failure_reason.is_some(),
+        "Child 2 should have a failure reason"
     );
 }
 
@@ -1911,12 +2079,18 @@ async fn test_update_task_status_via_api() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create a task
     let task = task_json("updatable", "Updatable Task", "update-test");
     let create_req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task])
         .to_request();
 
@@ -1947,12 +2121,18 @@ async fn test_update_task_with_failure_reason() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     // Create a task
     let task = task_json("fail-reason", "Fail Reason Task", "fail-reason-test");
     let create_req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&vec![task])
         .to_request();
 
@@ -1985,16 +2165,17 @@ async fn test_update_task_with_failure_reason() {
     );
 }
 
-// =============================================================================
-// Concurrency Rules Tests (Extended)
-// =============================================================================
-
 #[tokio::test]
-async fn test_concurrency_rules_per_project() {
+async fn test_concurrency_rules_stored_per_project() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
     let project_id = 12345;
 
@@ -2039,6 +2220,7 @@ async fn test_concurrency_rules_per_project() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -2048,24 +2230,28 @@ async fn test_concurrency_rules_per_project() {
     let created: Vec<TaskDto> = test::read_body_json(resp).await;
     assert_eq!(created.len(), 2);
 
-    // Both should be Pending initially (concurrency checked at runtime)
+    // Both tasks created with Pending status and have rules stored
+    // NOTE: Actual enforcement of max_concurency=1 happens in worker loop
     assert_eq!(created[0].status, StatusKind::Pending);
     assert_eq!(created[1].status, StatusKind::Pending);
-
-    // Verify both have concurrency rules
     assert!(!created[0].rules.0.is_empty());
     assert!(!created[1].rules.0.is_empty());
 }
 
 #[tokio::test]
-async fn test_concurrency_different_projects_parallel() {
+async fn test_concurrency_rules_stored_different_projects() {
     let test_app = setup_test_db().await;
     let state = create_test_state(test_app.pool.clone());
 
-    let app = test::init_service(App::new().configure(|cfg| configure_test_app(cfg, state))).await;
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
 
-    // Create tasks for two different projects
-    // Rules use serde tag = "type", so format is {"type": "Concurency", ...}
+    // Verify tasks with different project IDs can both have concurrency rules stored
+    // NOTE: This only tests storage, not runtime enforcement
     let tasks = vec![
         json!({
             "id": "diff-proj-1",
@@ -2105,6 +2291,7 @@ async fn test_concurrency_different_projects_parallel() {
 
     let req = test::TestRequest::post()
         .uri("/task")
+        .insert_header(("requester", "test"))
         .set_json(&tasks)
         .to_request();
 
@@ -2114,7 +2301,166 @@ async fn test_concurrency_different_projects_parallel() {
     let created: Vec<TaskDto> = test::read_body_json(resp).await;
     assert_eq!(created.len(), 2);
 
-    // Both can run in parallel since different projects
+    // Both tasks created with Pending status and have rules stored
     assert_eq!(created[0].status, StatusKind::Pending);
     assert_eq!(created[1].status, StatusKind::Pending);
+    assert!(!created[0].rules.0.is_empty());
+    assert!(!created[1].rules.0.is_empty());
+}
+
+// =============================================================================
+// Batch Update Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_batch_update_increments_counters() {
+    let test_app = setup_test_db().await;
+    let state = create_test_state_with_batch_updater(test_app.pool.clone());
+
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
+
+    // Create a task
+    let task = task_json("batch-test", "Batch Update Test", "batch-test");
+    let create_req = test::TestRequest::post()
+        .uri("/task")
+        .insert_header(("requester", "test"))
+        .set_json(&vec![task])
+        .to_request();
+    let create_resp = test::call_service(&app, create_req).await;
+    let created: Vec<TaskDto> = test::read_body_json(create_resp).await;
+    let task_id = created[0].id;
+
+    // Verify initial counters are 0
+    assert_eq!(created[0].success, 0);
+    assert_eq!(created[0].failures, 0);
+
+    // Send batch update via PUT endpoint
+    let update_req = test::TestRequest::put()
+        .uri(&format!("/task/{}", task_id))
+        .set_json(&json!({
+            "new_success": 5,
+            "new_failures": 2
+        }))
+        .to_request();
+    let update_resp = test::call_service(&app, update_req).await;
+    assert_eq!(
+        update_resp.status(),
+        actix_web::http::StatusCode::ACCEPTED,
+        "Batch update should be accepted"
+    );
+
+    // Wait for batch updater to process (runs every 100ms)
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    // Verify counters were updated
+    let get_req = test::TestRequest::get()
+        .uri(&format!("/task/{}", task_id))
+        .to_request();
+    let get_resp = test::call_service(&app, get_req).await;
+    let updated: TaskDto = test::read_body_json(get_resp).await;
+
+    assert_eq!(
+        updated.success, 5,
+        "Success counter should be incremented to 5"
+    );
+    assert_eq!(
+        updated.failures, 2,
+        "Failures counter should be incremented to 2"
+    );
+}
+
+#[tokio::test]
+async fn test_batch_update_accumulates_multiple_updates() {
+    let test_app = setup_test_db().await;
+    let state = create_test_state_with_batch_updater(test_app.pool.clone());
+
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
+
+    // Create a task
+    let task = task_json("batch-multi", "Batch Multi Test", "batch-test");
+    let create_req = test::TestRequest::post()
+        .uri("/task")
+        .insert_header(("requester", "test"))
+        .set_json(&vec![task])
+        .to_request();
+    let create_resp = test::call_service(&app, create_req).await;
+    let created: Vec<TaskDto> = test::read_body_json(create_resp).await;
+    let task_id = created[0].id;
+
+    // Send multiple rapid updates
+    for _ in 0..10 {
+        let update_req = test::TestRequest::put()
+            .uri(&format!("/task/{}", task_id))
+            .set_json(&json!({
+                "new_success": 1,
+                "new_failures": 0
+            }))
+            .to_request();
+        test::call_service(&app, update_req).await;
+    }
+
+    // Wait for batch updater to process
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    // Verify all updates were accumulated
+    let get_req = test::TestRequest::get()
+        .uri(&format!("/task/{}", task_id))
+        .to_request();
+    let get_resp = test::call_service(&app, get_req).await;
+    let updated: TaskDto = test::read_body_json(get_resp).await;
+
+    assert_eq!(
+        updated.success, 10,
+        "Success counter should accumulate to 10 from 10 updates of +1 each"
+    );
+}
+
+#[tokio::test]
+async fn test_batch_update_rejects_zero_counters() {
+    let test_app = setup_test_db().await;
+    let state = create_test_state(test_app.pool.clone()); // Don't need batch updater for this
+
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(state))
+            .configure(configure_routes),
+    )
+    .await;
+
+    // Create a task
+    let task = task_json("batch-reject", "Batch Reject Test", "batch-test");
+    let create_req = test::TestRequest::post()
+        .uri("/task")
+        .insert_header(("requester", "test"))
+        .set_json(&vec![task])
+        .to_request();
+    let create_resp = test::call_service(&app, create_req).await;
+    let created: Vec<TaskDto> = test::read_body_json(create_resp).await;
+    let task_id = created[0].id;
+
+    // Try to send update with zero counters
+    let update_req = test::TestRequest::put()
+        .uri(&format!("/task/{}", task_id))
+        .set_json(&json!({
+            "new_success": 0,
+            "new_failures": 0
+        }))
+        .to_request();
+    let update_resp = test::call_service(&app, update_req).await;
+
+    assert_eq!(
+        update_resp.status(),
+        actix_web::http::StatusCode::BAD_REQUEST,
+        "Should reject updates with all zero counters"
+    );
 }

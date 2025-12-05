@@ -146,6 +146,28 @@ pub static TASKS_FAILED_BY_DEPENDENCY: Lazy<IntCounter> = Lazy::new(|| {
     counter
 });
 
+/// Tasks where DB save failed after retries
+pub static TASKS_DB_SAVE_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
+    let counter = IntCounter::new(
+        "tasks_db_save_failures_total",
+        "Total number of tasks where database save failed after max retries",
+    )
+    .expect("metric can be created");
+    REGISTRY.register(Box::new(counter.clone())).unwrap();
+    counter
+});
+
+/// Batch update failures (re-queued for retry)
+pub static BATCH_UPDATE_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
+    let counter = IntCounter::new(
+        "batch_update_failures_total",
+        "Total number of batch update failures (counts re-queued for retry)",
+    )
+    .expect("metric can be created");
+    REGISTRY.register(Box::new(counter.clone())).unwrap();
+    counter
+});
+
 // ============================================================================
 // Action Metrics
 // ============================================================================
@@ -290,6 +312,35 @@ pub static DB_QUERY_DURATION_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
 });
 
 // ============================================================================
+// Circuit Breaker Metrics
+// ============================================================================
+
+/// Circuit breaker state transitions
+pub static CIRCUIT_BREAKER_STATE_TRANSITIONS: Lazy<IntCounterVec> = Lazy::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "circuit_breaker_state_transitions_total",
+            "Number of circuit breaker state transitions",
+        ),
+        &["to_state"],
+    )
+    .expect("metric can be created");
+    REGISTRY.register(Box::new(counter.clone())).unwrap();
+    counter
+});
+
+/// Requests rejected by circuit breaker
+pub static CIRCUIT_BREAKER_REJECTIONS: Lazy<IntCounter> = Lazy::new(|| {
+    let counter = IntCounter::new(
+        "circuit_breaker_rejections_total",
+        "Total number of requests rejected by circuit breaker",
+    )
+    .expect("metric can be created");
+    REGISTRY.register(Box::new(counter.clone())).unwrap();
+    counter
+});
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -342,6 +393,16 @@ pub fn record_task_failed_by_dependency() {
     TASKS_FAILED_BY_DEPENDENCY.inc();
 }
 
+/// Record task DB save failure
+pub fn record_task_db_save_failure() {
+    TASKS_DB_SAVE_FAILURES.inc();
+}
+
+/// Record batch update failure (re-queued for retry)
+pub fn record_batch_update_failure() {
+    BATCH_UPDATE_FAILURES.inc();
+}
+
 /// Record webhook execution
 pub fn record_webhook_execution(trigger: &str, outcome: &str, duration_secs: f64) {
     WEBHOOK_EXECUTIONS
@@ -388,6 +449,53 @@ pub fn record_db_query(query_name: &str, duration_secs: f64) {
         .observe(duration_secs);
 }
 
+/// Record database query duration with slow query warning.
+///
+/// If the query duration exceeds the threshold, a warning is logged.
+/// This helps operators identify performance issues in production.
+pub fn record_db_query_with_slow_warning(query_name: &str, duration_secs: f64, threshold_ms: u64) {
+    DB_QUERY_DURATION_SECONDS
+        .with_label_values(&[query_name])
+        .observe(duration_secs);
+
+    let duration_ms = (duration_secs * 1000.0) as u64;
+    if duration_ms > threshold_ms {
+        log::warn!(
+            "Slow query detected: {} took {}ms (threshold: {}ms)",
+            query_name,
+            duration_ms,
+            threshold_ms
+        );
+        SLOW_QUERIES_TOTAL.with_label_values(&[query_name]).inc();
+    }
+}
+
+/// Total number of slow queries
+pub static SLOW_QUERIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "slow_queries_total",
+            "Total number of queries exceeding slow query threshold",
+        ),
+        &["query"],
+    )
+    .expect("metric can be created");
+    REGISTRY.register(Box::new(counter.clone())).unwrap();
+    counter
+});
+
+/// Record circuit breaker state transition
+pub fn record_circuit_breaker_state(to_state: &str) {
+    CIRCUIT_BREAKER_STATE_TRANSITIONS
+        .with_label_values(&[to_state])
+        .inc();
+}
+
+/// Record request rejected by circuit breaker
+pub fn record_circuit_breaker_rejection() {
+    CIRCUIT_BREAKER_REJECTIONS.inc();
+}
+
 /// Initialize all metrics (call at startup to register them)
 pub fn init_metrics() {
     // Force lazy initialization of all metrics
@@ -402,6 +510,8 @@ pub fn init_metrics() {
     let _ = &*DEPENDENCY_PROPAGATIONS;
     let _ = &*TASKS_UNBLOCKED;
     let _ = &*TASKS_FAILED_BY_DEPENDENCY;
+    let _ = &*TASKS_DB_SAVE_FAILURES;
+    let _ = &*BATCH_UPDATE_FAILURES;
     let _ = &*WEBHOOK_EXECUTIONS;
     let _ = &*WEBHOOK_DURATION_SECONDS;
     let _ = &*TASKS_BLOCKED_BY_CONCURRENCY;
@@ -411,4 +521,7 @@ pub fn init_metrics() {
     let _ = &*WORKER_LOOP_DURATION_SECONDS;
     let _ = &*TASKS_PROCESSED_PER_LOOP;
     let _ = &*DB_QUERY_DURATION_SECONDS;
+    let _ = &*SLOW_QUERIES_TOTAL;
+    let _ = &*CIRCUIT_BREAKER_STATE_TRANSITIONS;
+    let _ = &*CIRCUIT_BREAKER_REJECTIONS;
 }

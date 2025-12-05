@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::rule::Rules;
 
-#[derive(Identifiable, Queryable, Selectable, Serialize, Debug)]
+#[derive(Identifiable, Queryable, Selectable, Serialize, Debug, Clone)]
 #[diesel(table_name = crate::schema::task)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Task {

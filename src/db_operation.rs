@@ -1,9 +1,9 @@
 use crate::{
     Conn,
-    action::{ActionExecutor, WebhookParams},
-    dtos::{self, ActionDto, NewTaskDto, TaskDto},
+    action::ActionExecutor,
+    dtos::{self, ActionDto, TaskDto},
     metrics,
-    models::{self, Action, ActionKindEnum, Link, NewAction, StatusKind, Task},
+    models::{self, Action, Link, NewAction, StatusKind, Task},
     rule::Matcher,
     workers::end_task,
 };
@@ -44,44 +44,6 @@ impl TaskDto {
                 .collect(),
         }
     }
-}
-
-fn validate_params(kind: &ActionKindEnum, params: Value) -> bool {
-    match kind {
-        ActionKindEnum::Webhook => {
-            let r: Option<WebhookParams> = serde_json::from_value(params).ok();
-            if r.is_some() {
-                return true;
-            }
-            return false;
-        }
-    }
-}
-
-pub fn validate_form(dto: &NewTaskDto) -> bool {
-    // Validate on_start action
-    if !validate_params(&dto.on_start.kind, dto.on_start.params.clone()) {
-        return false;
-    }
-    // Validate on_failure actions
-    if let Some(actions) = &dto.on_failure {
-        if !actions
-            .iter()
-            .all(|e| validate_params(&e.kind, e.params.clone()))
-        {
-            return false;
-        }
-    }
-    // Validate on_success actions
-    if let Some(actions) = &dto.on_success {
-        if !actions
-            .iter()
-            .all(|e| validate_params(&e.kind, e.params.clone()))
-        {
-            return false;
-        }
-    }
-    true
 }
 
 /// Update all tasks with status running and last_updated older than timeout to failed and update
@@ -147,6 +109,15 @@ pub async fn update_running_task<'a>(
     if dto.failure_reason.is_some() && !is_failed {
         return Ok(2);
     }
+
+    // Fetch task kind for metrics before updating
+    let task_kind = task
+        .filter(id.eq(task_id))
+        .select(kind)
+        .first::<String>(conn)
+        .await
+        .ok();
+
     let res = diesel::update(
         task.filter(
             id.eq(task_id)
@@ -169,15 +140,14 @@ pub async fn update_running_task<'a>(
     .await?;
 
     if let Some(ref final_status) = dto.status {
-        // Record completion metrics
+        // Record completion metrics with task kind
         let outcome = match final_status {
             models::StatusKind::Success => "success",
             models::StatusKind::Failure => "failure",
             _ => "other",
         };
         metrics::record_status_transition("Running", outcome);
-        // Note: We don't have task.kind here, so we use "unknown" - a refactor could improve this
-        metrics::record_task_completed(outcome, "unknown");
+        metrics::record_task_completed(outcome, task_kind.as_deref().unwrap_or("unknown"));
 
         // TODO: execute on end action triggers
         match end_task(evaluator, &task_id, dto.status.clone().unwrap(), conn).await {
@@ -189,26 +159,31 @@ pub async fn update_running_task<'a>(
     Ok(res)
 }
 
-/// Run query using Diesel to find user by uid and return it.
+/// Find a task by ID with all its actions using a single LEFT JOIN query.
+/// Returns None if the task doesn't exist.
 pub async fn find_detailed_task_by_id<'a>(
     conn: &mut Conn<'a>,
     task_id: Uuid,
 ) -> Result<Option<dtos::TaskDto>, DbError> {
+    use crate::schema::action::dsl as action_dsl;
     use crate::schema::task::dsl::*;
 
-    let t = task
+    // Use LEFT JOIN to fetch task and actions in a single query
+    let results: Vec<(models::Task, Option<Action>)> = task
+        .left_join(action_dsl::action)
         .filter(id.eq(task_id))
-        .first::<models::Task>(conn)
-        .await;
-    match t {
-        Err(_) => Ok(None),
-        Ok(base_task) => {
-            let actions = Action::belonging_to(&base_task)
-                .load::<Action>(conn)
-                .await?;
-            Ok(Some(TaskDto::new(base_task, actions)))
-        }
+        .load::<(models::Task, Option<Action>)>(conn)
+        .await?;
+
+    if results.is_empty() {
+        return Ok(None);
     }
+
+    // All rows have the same task, collect actions
+    let base_task = results[0].0.clone();
+    let actions: Vec<Action> = results.into_iter().filter_map(|(_, a)| a).collect();
+
+    Ok(Some(TaskDto::new(base_task, actions)))
 }
 
 pub async fn list_task_filtered_paged<'a>(
@@ -221,7 +196,7 @@ pub async fn list_task_filtered_paged<'a>(
         .metadata
         .map(|f| serde_json::from_str::<Value>(&f).ok())
         .flatten();
-    let page_size = 50;
+    let page_size = pagination.page_size.unwrap_or(50);
     let offset = pagination.page.unwrap_or(0) * page_size;
 
     // Build base filter
@@ -551,4 +526,62 @@ pub async fn pause_task<'a>(task_id: &uuid::Uuid, conn: &mut Conn<'a>) -> Result
         .execute(conn)
         .await?;
     Ok(())
+}
+
+/// Get DAG data for a batch: all tasks and their links
+pub async fn get_dag_for_batch<'a>(
+    conn: &mut Conn<'a>,
+    bid: Uuid,
+) -> Result<dtos::DagDto, DbError> {
+    use crate::schema::link::dsl::link;
+    use crate::schema::task::dsl::*;
+
+    // Get all tasks in the batch
+    let tasks_result = task
+        .filter(batch_id.eq(bid))
+        .order(created_at.asc())
+        .load::<models::Task>(conn)
+        .await?;
+
+    let task_ids: Vec<Uuid> = tasks_result.iter().map(|t| t.id).collect();
+
+    // Get all links where both parent and child are in this batch
+    let links_result = link
+        .filter(
+            crate::schema::link::dsl::parent_id
+                .eq_any(&task_ids)
+                .and(crate::schema::link::dsl::child_id.eq_any(&task_ids)),
+        )
+        .load::<Link>(conn)
+        .await?;
+
+    let tasks_dto: Vec<dtos::BasicTaskDto> = tasks_result
+        .into_iter()
+        .map(|t| dtos::BasicTaskDto {
+            id: t.id,
+            name: t.name,
+            kind: t.kind,
+            status: t.status,
+            created_at: t.created_at,
+            ended_at: t.ended_at,
+            started_at: t.started_at,
+            success: t.success,
+            failures: t.failures,
+            batch_id: t.batch_id,
+        })
+        .collect();
+
+    let links_dto: Vec<dtos::LinkDto> = links_result
+        .into_iter()
+        .map(|l| dtos::LinkDto {
+            parent_id: l.parent_id,
+            child_id: l.child_id,
+            requires_success: l.requires_success,
+        })
+        .collect();
+
+    Ok(dtos::DagDto {
+        tasks: tasks_dto,
+        links: links_dto,
+    })
 }

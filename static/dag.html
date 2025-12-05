@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task DAG Viewer</title>
+    <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+    <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            padding: 12px 20px;
+            background: #16213e;
+            border-bottom: 1px solid #0f3460;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        h1 {
+            font-size: 1.2rem;
+            font-weight: 500;
+            color: #e94560;
+        }
+        .controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        input, button, select {
+            padding: 8px 12px;
+            border: 1px solid #0f3460;
+            border-radius: 4px;
+            background: #1a1a2e;
+            color: #eee;
+            font-size: 0.9rem;
+        }
+        input {
+            width: 320px;
+        }
+        button {
+            background: #e94560;
+            border-color: #e94560;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        button:hover {
+            background: #ff6b6b;
+        }
+        button:disabled {
+            background: #555;
+            border-color: #555;
+            cursor: not-allowed;
+        }
+        .auto-refresh {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+        }
+        .auto-refresh input[type="checkbox"] {
+            width: auto;
+        }
+        #cy {
+            flex: 1;
+            background: #1a1a2e;
+        }
+        .legend {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: #16213e;
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid #0f3460;
+            font-size: 0.8rem;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 4px 0;
+        }
+        .legend-color {
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+        }
+        .info-panel {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            background: #16213e;
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid #0f3460;
+            min-width: 280px;
+            max-width: 400px;
+            display: none;
+            font-size: 0.85rem;
+        }
+        .info-panel.visible {
+            display: block;
+        }
+        .info-panel h3 {
+            color: #e94560;
+            margin-bottom: 12px;
+            font-size: 1rem;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #0f3460;
+        }
+        .info-row:last-child {
+            border-bottom: none;
+        }
+        .info-label {
+            color: #888;
+        }
+        .info-value {
+            font-family: monospace;
+            word-break: break-all;
+        }
+        .status-badge {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .status-Waiting { background: #666; }
+        .status-Pending { background: #f39c12; color: #000; }
+        .status-Running { background: #3498db; }
+        .status-Success { background: #27ae60; }
+        .status-Failure { background: #e74c3c; }
+        .status-Paused { background: #9b59b6; }
+        .status-Canceled { background: #95a5a6; }
+        .close-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: transparent;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            font-size: 1.2rem;
+        }
+        .batch-list {
+            position: fixed;
+            top: 80px;
+            left: 20px;
+            background: #16213e;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #0f3460;
+            max-height: 300px;
+            overflow-y: auto;
+            display: none;
+            font-size: 0.85rem;
+            min-width: 200px;
+        }
+        .batch-list.visible {
+            display: block;
+        }
+        .batch-list h3 {
+            color: #e94560;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        .batch-item {
+            padding: 6px 8px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.75rem;
+        }
+        .batch-item:hover {
+            background: #0f3460;
+        }
+        .message {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #888;
+            font-size: 1.1rem;
+        }
+        .stats {
+            font-size: 0.8rem;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Task DAG Viewer</h1>
+        <div class="controls">
+            <input type="text" id="batchId" placeholder="Enter batch ID (UUID)...">
+            <button id="loadBtn">Load DAG</button>
+            <button id="listBatchesBtn">List Batches</button>
+            <button id="fitBtn" disabled>Fit View</button>
+            <div class="auto-refresh">
+                <input type="checkbox" id="autoRefresh">
+                <label for="autoRefresh">Auto-refresh (5s)</label>
+            </div>
+            <span class="stats" id="stats"></span>
+        </div>
+    </header>
+
+    <div id="cy"></div>
+    <div class="message" id="message">Enter a batch ID to visualize the task DAG</div>
+
+    <div class="legend">
+        <div class="legend-item"><div class="legend-color" style="background:#666"></div> Waiting</div>
+        <div class="legend-item"><div class="legend-color" style="background:#f39c12"></div> Pending</div>
+        <div class="legend-item"><div class="legend-color" style="background:#3498db"></div> Running</div>
+        <div class="legend-item"><div class="legend-color" style="background:#27ae60"></div> Success</div>
+        <div class="legend-item"><div class="legend-color" style="background:#e74c3c"></div> Failure</div>
+        <div class="legend-item"><div class="legend-color" style="background:#9b59b6"></div> Paused</div>
+        <div class="legend-item"><div class="legend-color" style="background:#95a5a6"></div> Canceled</div>
+    </div>
+
+    <div class="info-panel" id="infoPanel">
+        <button class="close-btn" id="closeInfo">&times;</button>
+        <h3>Task Details</h3>
+        <div id="infoContent"></div>
+    </div>
+
+    <div class="batch-list" id="batchList">
+        <h3>Recent Batches</h3>
+        <div id="batchListContent"></div>
+    </div>
+
+    <script>
+        const statusColors = {
+            Waiting: '#666',
+            Pending: '#f39c12',
+            Running: '#3498db',
+            Success: '#27ae60',
+            Failure: '#e74c3c',
+            Paused: '#9b59b6',
+            Canceled: '#95a5a6'
+        };
+
+        let cy = null;
+        let refreshInterval = null;
+
+        function initCytoscape(elements) {
+            if (cy) {
+                cy.destroy();
+            }
+
+            cy = cytoscape({
+                container: document.getElementById('cy'),
+                elements: elements,
+                style: [
+                    {
+                        selector: 'node',
+                        style: {
+                            'label': 'data(label)',
+                            'text-valign': 'center',
+                            'text-halign': 'center',
+                            'background-color': 'data(color)',
+                            'color': '#fff',
+                            'font-size': '11px',
+                            'text-wrap': 'wrap',
+                            'text-max-width': '100px',
+                            'width': 'label',
+                            'height': 'label',
+                            'padding': '12px',
+                            'shape': 'round-rectangle',
+                            'border-width': 2,
+                            'border-color': 'data(borderColor)'
+                        }
+                    },
+                    {
+                        selector: 'edge',
+                        style: {
+                            'width': 2,
+                            'line-color': 'data(color)',
+                            'target-arrow-color': 'data(color)',
+                            'target-arrow-shape': 'triangle',
+                            'curve-style': 'bezier',
+                            'arrow-scale': 1.2
+                        }
+                    },
+                    {
+                        selector: 'node:selected',
+                        style: {
+                            'border-width': 3,
+                            'border-color': '#fff'
+                        }
+                    }
+                ],
+                layout: {
+                    name: 'dagre',
+                    rankDir: 'TB',
+                    nodeSep: 50,
+                    rankSep: 80,
+                    padding: 30
+                },
+                minZoom: 0.2,
+                maxZoom: 3
+            });
+
+            cy.on('tap', 'node', function(evt) {
+                const node = evt.target;
+                showTaskInfo(node.data());
+            });
+
+            cy.on('tap', function(evt) {
+                if (evt.target === cy) {
+                    hideTaskInfo();
+                }
+            });
+
+            document.getElementById('fitBtn').disabled = false;
+        }
+
+        function showTaskInfo(data) {
+            const panel = document.getElementById('infoPanel');
+            const content = document.getElementById('infoContent');
+
+            const formatDate = (dateStr) => {
+                if (!dateStr) return '-';
+                return new Date(dateStr).toLocaleString();
+            };
+
+            content.innerHTML = `
+                <div class="info-row">
+                    <span class="info-label">ID</span>
+                    <span class="info-value">${data.taskId}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Name</span>
+                    <span class="info-value">${data.name}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Kind</span>
+                    <span class="info-value">${data.kind}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Status</span>
+                    <span class="status-badge status-${data.status}">${data.status}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Created</span>
+                    <span class="info-value">${formatDate(data.created_at)}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Started</span>
+                    <span class="info-value">${formatDate(data.started_at)}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Ended</span>
+                    <span class="info-value">${formatDate(data.ended_at)}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Success</span>
+                    <span class="info-value">${data.success}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Failures</span>
+                    <span class="info-value">${data.failures}</span>
+                </div>
+            `;
+            panel.classList.add('visible');
+        }
+
+        function hideTaskInfo() {
+            document.getElementById('infoPanel').classList.remove('visible');
+        }
+
+        async function loadDag(batchId) {
+            if (!batchId) {
+                alert('Please enter a batch ID');
+                return;
+            }
+
+            document.getElementById('message').style.display = 'none';
+            document.getElementById('loadBtn').disabled = true;
+            document.getElementById('loadBtn').textContent = 'Loading...';
+
+            try {
+                const response = await fetch(`/dag/${batchId}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                const data = await response.json();
+
+                if (data.tasks.length === 0) {
+                    document.getElementById('message').textContent = 'No tasks found for this batch';
+                    document.getElementById('message').style.display = 'block';
+                    document.getElementById('stats').textContent = '';
+                    if (cy) cy.destroy();
+                    cy = null;
+                    document.getElementById('fitBtn').disabled = true;
+                    return;
+                }
+
+                const elements = [];
+
+                // Add nodes
+                data.tasks.forEach(task => {
+                    const color = statusColors[task.status] || '#666';
+                    elements.push({
+                        data: {
+                            id: task.id,
+                            taskId: task.id,
+                            label: task.name,
+                            name: task.name,
+                            kind: task.kind,
+                            status: task.status,
+                            color: color,
+                            borderColor: color,
+                            created_at: task.created_at,
+                            started_at: task.started_at,
+                            ended_at: task.ended_at,
+                            success: task.success,
+                            failures: task.failures
+                        }
+                    });
+                });
+
+                // Add edges
+                data.links.forEach(link => {
+                    elements.push({
+                        data: {
+                            id: `${link.parent_id}-${link.child_id}`,
+                            source: link.parent_id,
+                            target: link.child_id,
+                            color: link.requires_success ? '#27ae60' : '#666'
+                        }
+                    });
+                });
+
+                initCytoscape(elements);
+
+                // Update stats
+                const statusCounts = {};
+                data.tasks.forEach(t => {
+                    statusCounts[t.status] = (statusCounts[t.status] || 0) + 1;
+                });
+                const statsStr = Object.entries(statusCounts)
+                    .map(([s, c]) => `${s}: ${c}`)
+                    .join(' | ');
+                document.getElementById('stats').textContent = `${data.tasks.length} tasks, ${data.links.length} links | ${statsStr}`;
+
+            } catch (error) {
+                document.getElementById('message').textContent = `Error: ${error.message}`;
+                document.getElementById('message').style.display = 'block';
+                console.error('Failed to load DAG:', error);
+            } finally {
+                document.getElementById('loadBtn').disabled = false;
+                document.getElementById('loadBtn').textContent = 'Load DAG';
+            }
+        }
+
+        async function listBatches() {
+            const listEl = document.getElementById('batchList');
+            const contentEl = document.getElementById('batchListContent');
+
+            if (listEl.classList.contains('visible')) {
+                listEl.classList.remove('visible');
+                return;
+            }
+
+            contentEl.innerHTML = 'Loading...';
+            listEl.classList.add('visible');
+
+            try {
+                const response = await fetch('/task?page=0&page_size=50');
+                const tasks = await response.json();
+
+                // Get unique batch IDs
+                const batches = [...new Set(tasks.filter(t => t.batch_id).map(t => t.batch_id))];
+
+                if (batches.length === 0) {
+                    contentEl.innerHTML = '<div style="color:#888">No batches found</div>';
+                    return;
+                }
+
+                contentEl.innerHTML = batches.map(bid =>
+                    `<div class="batch-item" data-batch="${bid}">${bid.substring(0, 8)}...</div>`
+                ).join('');
+
+                // Add click handlers
+                contentEl.querySelectorAll('.batch-item').forEach(el => {
+                    el.addEventListener('click', () => {
+                        document.getElementById('batchId').value = el.dataset.batch;
+                        listEl.classList.remove('visible');
+                        loadDag(el.dataset.batch);
+                    });
+                });
+
+            } catch (error) {
+                contentEl.innerHTML = `<div style="color:#e74c3c">Error: ${error.message}</div>`;
+            }
+        }
+
+        // Event listeners
+        document.getElementById('loadBtn').addEventListener('click', () => {
+            loadDag(document.getElementById('batchId').value.trim());
+        });
+
+        document.getElementById('batchId').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                loadDag(document.getElementById('batchId').value.trim());
+            }
+        });
+
+        document.getElementById('fitBtn').addEventListener('click', () => {
+            if (cy) cy.fit(50);
+        });
+
+        document.getElementById('closeInfo').addEventListener('click', hideTaskInfo);
+
+        document.getElementById('listBatchesBtn').addEventListener('click', listBatches);
+
+        document.getElementById('autoRefresh').addEventListener('change', (e) => {
+            if (e.target.checked) {
+                const batchId = document.getElementById('batchId').value.trim();
+                if (batchId) {
+                    refreshInterval = setInterval(() => loadDag(batchId), 5000);
+                }
+            } else {
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                    refreshInterval = null;
+                }
+            }
+        });
+
+        // Check URL params for batch ID
+        const urlParams = new URLSearchParams(window.location.search);
+        const batchIdParam = urlParams.get('batch');
+        if (batchIdParam) {
+            document.getElementById('batchId').value = batchIdParam;
+            loadDag(batchIdParam);
+        }
+    </script>
+</body>
+</html>

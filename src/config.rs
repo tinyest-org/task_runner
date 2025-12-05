@@ -24,6 +24,12 @@ pub struct Config {
 
     /// Worker settings
     pub worker: WorkerConfig,
+
+    /// Circuit breaker settings for connection pool resilience
+    pub circuit_breaker: CircuitBreakerConfig,
+
+    /// Observability settings
+    pub observability: ObservabilityConfig,
 }
 
 /// Database connection pool configuration.
@@ -77,6 +83,44 @@ pub struct WorkerConfig {
     pub batch_channel_capacity: usize,
 }
 
+/// Circuit breaker configuration for connection pool resilience.
+#[derive(Debug, Clone)]
+pub struct CircuitBreakerConfig {
+    /// Whether the circuit breaker is enabled
+    pub enabled: bool,
+
+    /// Number of failures before circuit opens
+    pub failure_threshold: u32,
+
+    /// Time window for counting failures (in seconds)
+    pub failure_window_secs: u64,
+
+    /// How long to wait before trying half-open (in seconds)
+    pub recovery_timeout_secs: u64,
+
+    /// Number of successes in half-open state to close circuit
+    pub success_threshold: u32,
+}
+
+/// Observability configuration for logging and metrics.
+#[derive(Debug, Clone)]
+pub struct ObservabilityConfig {
+    /// Threshold in milliseconds for slow query warnings
+    pub slow_query_threshold_ms: u64,
+
+    /// Whether distributed tracing is enabled
+    pub tracing_enabled: bool,
+
+    /// OTLP endpoint for trace export
+    pub otlp_endpoint: Option<String>,
+
+    /// Service name for traces
+    pub service_name: String,
+
+    /// Sampling ratio (0.0 to 1.0)
+    pub sampling_ratio: f64,
+}
+
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
@@ -107,6 +151,30 @@ impl Default for WorkerConfig {
             timeout_check_interval: Duration::from_secs(1),
             batch_flush_interval: Duration::from_millis(100),
             batch_channel_capacity: 100,
+        }
+    }
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            failure_threshold: 5,
+            failure_window_secs: 10,
+            recovery_timeout_secs: 30,
+            success_threshold: 2,
+        }
+    }
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            slow_query_threshold_ms: 100, // 100ms default threshold
+            tracing_enabled: false,
+            otlp_endpoint: None,
+            service_name: "task-runner".to_string(),
+            sampling_ratio: 1.0,
         }
     }
 }
@@ -146,6 +214,16 @@ impl Config {
     /// - `PAGINATION_MAX`: Max items per page (default: 100)
     /// - `WORKER_LOOP_INTERVAL_MS`: Worker loop interval in ms (default: 1000)
     /// - `BATCH_CHANNEL_CAPACITY`: Batch update channel size (default: 100)
+    /// - `CIRCUIT_BREAKER_ENABLED`: Enable circuit breaker (default: true)
+    /// - `CIRCUIT_BREAKER_FAILURE_THRESHOLD`: Failures before opening (default: 5)
+    /// - `CIRCUIT_BREAKER_FAILURE_WINDOW_SECS`: Failure counting window (default: 10)
+    /// - `CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS`: Time before half-open (default: 30)
+    /// - `CIRCUIT_BREAKER_SUCCESS_THRESHOLD`: Successes to close (default: 2)
+    /// - `SLOW_QUERY_THRESHOLD_MS`: Threshold for slow query warnings in ms (default: 100)
+    /// - `TRACING_ENABLED`: Enable distributed tracing (default: false)
+    /// - `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP endpoint URL for trace export
+    /// - `OTEL_SERVICE_NAME`: Service name for traces (default: task-runner)
+    /// - `OTEL_SAMPLING_RATIO`: Sampling ratio 0.0-1.0 (default: 1.0)
     pub fn from_env() -> Result<Self, ConfigError> {
         let database_url = std::env::var("DATABASE_URL").map_err(|_| ConfigError {
             field: "DATABASE_URL".to_string(),
@@ -178,6 +256,23 @@ impl Config {
             ..Default::default()
         };
 
+        let circuit_breaker = CircuitBreakerConfig {
+            enabled: parse_env_or("CIRCUIT_BREAKER_ENABLED", 1)? != 0,
+            failure_threshold: parse_env_or("CIRCUIT_BREAKER_FAILURE_THRESHOLD", 5)?,
+            failure_window_secs: parse_env_or("CIRCUIT_BREAKER_FAILURE_WINDOW_SECS", 10)?,
+            recovery_timeout_secs: parse_env_or("CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS", 30)?,
+            success_threshold: parse_env_or("CIRCUIT_BREAKER_SUCCESS_THRESHOLD", 2)?,
+        };
+
+        let observability = ObservabilityConfig {
+            slow_query_threshold_ms: parse_env_or("SLOW_QUERY_THRESHOLD_MS", 100)?,
+            tracing_enabled: parse_env_or("TRACING_ENABLED", 0)? != 0,
+            otlp_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
+            service_name: std::env::var("OTEL_SERVICE_NAME")
+                .unwrap_or_else(|_| "task-runner".to_string()),
+            sampling_ratio: parse_env_or_f64("OTEL_SAMPLING_RATIO", 1.0)?,
+        };
+
         let config = Self {
             database_url,
             host_url,
@@ -185,6 +280,8 @@ impl Config {
             pool,
             pagination,
             worker,
+            circuit_breaker,
+            observability,
         };
 
         config.validate()?;
@@ -252,6 +349,17 @@ fn parse_env_or<T: std::str::FromStr>(name: &str, default: T) -> Result<T, Confi
         Ok(val) => val.parse().map_err(|_| ConfigError {
             field: name.to_string(),
             message: format!("Invalid value '{}', expected a valid number", val),
+        }),
+        Err(_) => Ok(default),
+    }
+}
+
+/// Parse a floating-point environment variable or return a default value.
+fn parse_env_or_f64(name: &str, default: f64) -> Result<f64, ConfigError> {
+    match std::env::var(name) {
+        Ok(val) => val.parse().map_err(|_| ConfigError {
+            field: name.to_string(),
+            message: format!("Invalid value '{}', expected a valid decimal number", val),
         }),
         Err(_) => Ok(default),
     }

@@ -106,3 +106,18 @@ pub struct FilterDto {
 // on_start -> one
 // on_success -> many
 // on_failure -> many
+
+/// Link between tasks for DAG visualization
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LinkDto {
+    pub parent_id: uuid::Uuid,
+    pub child_id: uuid::Uuid,
+    pub requires_success: bool,
+}
+
+/// DAG response containing tasks and their links for visualization
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DagDto {
+    pub tasks: Vec<BasicTaskDto>,
+    pub links: Vec<LinkDto>,
+}

@@ -76,7 +76,8 @@ impl ActionExecutor {
                     .send()
                     .await
                     .map_err(|e| format!("Failed to send request: {}", e))?;
-                if response.status().is_success() {
+                let status = response.status();
+                if status.is_success() {
                     // try to parse cancel
                     Ok(match response.text().await {
                         Ok(body) => {
@@ -89,9 +90,9 @@ impl ActionExecutor {
                         }
                     })
                 } else {
-                    let t = response.text().await.unwrap();
-                    log::error!("Reponse: {}", t);
-                    Err(format!("Request failed with status: {}", "e"))
+                    let body = response.text().await.unwrap_or_default();
+                    log::error!("Response ({}): {}", status, body);
+                    Err(format!("Request failed with status: {}", status))
                 }
             }
         }
