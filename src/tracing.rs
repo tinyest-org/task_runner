@@ -148,10 +148,10 @@ pub fn init_tracing(config: &TracingConfig) -> Option<TracerProvider> {
 
 /// Shutdown the tracer provider gracefully.
 pub fn shutdown_tracing(provider: Option<TracerProvider>) {
-    if let Some(provider) = provider {
-        if let Err(e) = provider.shutdown() {
-            log::error!("Error shutting down tracer provider: {:?}", e);
-        }
+    if let Some(provider) = provider
+        && let Err(e) = provider.shutdown()
+    {
+        log::error!("Error shutting down tracer provider: {:?}", e);
     }
 }
 
@@ -199,10 +199,10 @@ struct HeaderInjector<'a>(&'a mut reqwest::header::HeaderMap);
 
 impl opentelemetry::propagation::Injector for HeaderInjector<'_> {
     fn set(&mut self, key: &str, value: String) {
-        if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
-            if let Ok(header_value) = reqwest::header::HeaderValue::from_str(&value) {
-                self.0.insert(header_name, header_value);
-            }
+        if let Ok(header_name) = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+            && let Ok(header_value) = reqwest::header::HeaderValue::from_str(&value)
+        {
+            self.0.insert(header_name, header_value);
         }
     }
 }

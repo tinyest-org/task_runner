@@ -271,13 +271,13 @@ fn validate_webhook_url_with_config(url_str: &str, config: &SecurityConfig) -> R
     }
 
     // Try to parse as IP address and check for internal ranges
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_internal_ip(&ip) {
-            return Err(format!(
-                "URL points to internal IP address '{}' which is not allowed",
-                ip
-            ));
-        }
+    if let Ok(ip) = host.parse::<IpAddr>()
+        && is_internal_ip(&ip)
+    {
+        return Err(format!(
+            "URL points to internal IP address '{}' which is not allowed",
+            ip
+        ));
     }
 
     // Check against configurable blocked hostname suffixes
@@ -362,32 +362,33 @@ pub fn validate_update_task(dto: &UpdateTaskDto) -> ValidationResult {
     }
 
     // Validate counters are non-negative
-    if let Some(success) = dto.new_success {
-        if success < 0 {
-            errors.push(ValidationError {
-                field: "new_success".to_string(),
-                message: "new_success cannot be negative".to_string(),
-            });
-        }
+    if let Some(success) = dto.new_success
+        && success < 0
+    {
+        errors.push(ValidationError {
+            field: "new_success".to_string(),
+            message: "new_success cannot be negative".to_string(),
+        });
     }
 
-    if let Some(failures) = dto.new_failures {
-        if failures < 0 {
-            errors.push(ValidationError {
-                field: "new_failures".to_string(),
-                message: "new_failures cannot be negative".to_string(),
-            });
-        }
+    if let Some(failures) = dto.new_failures
+        && failures < 0
+    {
+        errors.push(ValidationError {
+            field: "new_failures".to_string(),
+            message: "new_failures cannot be negative".to_string(),
+        });
     }
 
     // Validate failure_reason is provided when status is Failure
-    if let Some(ref status) = dto.status {
-        if *status == StatusKind::Failure && dto.failure_reason.is_none() {
-            errors.push(ValidationError {
-                field: "failure_reason".to_string(),
-                message: "failure_reason is required when status is Failure".to_string(),
-            });
-        }
+    if let Some(ref status) = dto.status
+        && *status == StatusKind::Failure
+        && dto.failure_reason.is_none()
+    {
+        errors.push(ValidationError {
+            field: "failure_reason".to_string(),
+            message: "failure_reason is required when status is Failure".to_string(),
+        });
     }
 
     if errors.is_empty() {

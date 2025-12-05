@@ -28,13 +28,8 @@ pub enum Strategy {
 
 #[derive(AsExpression, FromSqlRow, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[diesel(sql_type = Jsonb)]
+#[derive(Default)]
 pub struct Rules(pub Vec<Strategy>);
-
-impl Default for Rules {
-    fn default() -> Self {
-        Rules(Vec::new())
-    }
-}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq)]
 pub struct ConcurencyRule {

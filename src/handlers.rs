@@ -15,9 +15,7 @@ use crate::{
     action::ActionExecutor,
     circuit_breaker::CircuitBreaker,
     config::Config,
-    db_operation, dtos,
-    helper::Requester,
-    metrics, validation,
+    db_operation, dtos, metrics, validation,
     workers::{self, UpdateEvent},
 };
 
@@ -186,10 +184,10 @@ pub fn enforce_pagination_limits(
     }
 
     // Ensure page is non-negative
-    if let Some(page) = pagination.page {
-        if page < 0 {
-            pagination.page = Some(0);
-        }
+    if let Some(page) = pagination.page
+        && page < 0
+    {
+        pagination.page = Some(0);
     }
 
     pagination

@@ -194,8 +194,7 @@ pub async fn list_task_filtered_paged<'a>(
     use crate::schema::task::dsl::*;
     let m = filter
         .metadata
-        .map(|f| serde_json::from_str::<Value>(&f).ok())
-        .flatten();
+        .and_then(|f| serde_json::from_str::<Value>(&f).ok());
     let page_size = pagination.page_size.unwrap_or(50);
     let offset = pagination.page.unwrap_or(0) * page_size;
 
