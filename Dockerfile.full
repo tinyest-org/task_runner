@@ -15,6 +15,9 @@ RUN cargo build --release --bin cache
 
 COPY ./migrations /app/migrations
 COPY ./src /app/src
+COPY ./static /app/static
+
+
 # do a release build
 RUN cargo build --release --bin server
 
