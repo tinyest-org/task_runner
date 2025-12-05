@@ -80,8 +80,8 @@ jobs:
       - name: Run integration tests
         run: cargo test --test integration_tests -- --test-threads=1
 
-  # Docker build and push job - only on master/main push or tags
-  docker:
+  # Build AMD64 image natively on x86 runner
+  docker-amd64:
     runs-on: ubuntu-latest
     needs: [ci, integration-tests]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
@@ -89,6 +89,60 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push AMD64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          file: Dockerfile.full
+          tags: plawn/task-runner:${{ github.sha }}-amd64
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,mode=max,scope=amd64
+          platforms: linux/amd64
+
+  # Build ARM64 image natively on ARM runner (no QEMU emulation)
+  docker-arm64:
+    runs-on: ubuntu-24.04-arm
+    needs: [ci, integration-tests]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push ARM64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          file: Dockerfile.full
+          tags: plawn/task-runner:${{ github.sha }}-arm64
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,mode=max,scope=arm64
+          platforms: linux/arm64
+
+  # Merge architectures into multi-arch manifest
+  docker-manifest:
+    runs-on: ubuntu-latest
+    needs: [docker-amd64, docker-arm64]
+    steps:
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
@@ -101,9 +155,6 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -113,14 +164,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          file: Dockerfile.full
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
+      - name: Create and push manifest
+        run: |
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            docker buildx imagetools create -t "$tag" \
+              plawn/task-runner:${{ github.sha }}-amd64 \
+              plawn/task-runner:${{ github.sha }}-arm64
+          done
