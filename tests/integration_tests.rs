@@ -16,7 +16,7 @@ use serde_json::json;
 use std::sync::Arc;
 use task_runner::DbPool;
 use task_runner::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-use task_runner::config::Config;
+use task_runner::config::{Config, SecurityConfig};
 use task_runner::dtos::{BasicTaskDto, TaskDto};
 use task_runner::handlers::{AppState, configure_routes};
 use task_runner::models::StatusKind;
@@ -242,6 +242,7 @@ fn test_config() -> Arc<Config> {
             service_name: "task-runner-test".to_string(),
             sampling_ratio: 1.0,
         },
+        security: SecurityConfig::default(),
     })
 }
 
