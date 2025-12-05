@@ -298,7 +298,7 @@ pub async fn batch_task_updater(
 pub async fn add_task(
     state: web::Data<AppState>,
     form: web::Json<Vec<dtos::NewTaskDto>>,
-    requester: web::Header<Requester>,
+    // requester: web::Header<Requester>,
 ) -> actix_web::Result<HttpResponse> {
     use diesel_async::RunQueryDsl;
     use std::collections::HashMap;
@@ -309,7 +309,7 @@ pub async fn add_task(
     log::info!(
         "[batch_id={}] Creating task batch from requester={}, task_count={}",
         batch_id,
-        requester.0,
+        "",
         form.len()
     );
 

@@ -6,6 +6,8 @@ use crate::{
     rule::{Matcher, Rules},
 };
 
+// Note: TriggerKind is only used in ActionDto (output), not NewActionDto (input)
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewTaskDto {
     // Local id used in order to handle dependencies
@@ -22,12 +24,12 @@ pub struct NewTaskDto {
 
     pub rules: Option<Rules>,
 
-    pub on_start: ActionDto,
+    pub on_start: NewActionDto,
 
     pub dependencies: Option<Vec<Dependency>>,
 
-    pub on_failure: Option<Vec<ActionDto>>,
-    pub on_success: Option<Vec<ActionDto>>,
+    pub on_failure: Option<Vec<NewActionDto>>,
+    pub on_success: Option<Vec<NewActionDto>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -61,6 +63,14 @@ pub struct UpdateTaskDto {
     pub failure_reason: Option<String>,
 }
 
+/// Input DTO for creating actions - trigger is determined by context (on_start, on_success, etc.)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NewActionDto {
+    pub kind: ActionKindEnum,
+    pub params: serde_json::Value,
+}
+
+/// Output DTO for returning actions - includes trigger from database
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ActionDto {
     pub kind: ActionKindEnum,

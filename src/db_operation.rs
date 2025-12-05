@@ -1,7 +1,7 @@
 use crate::{
     Conn,
     action::ActionExecutor,
-    dtos::{self, ActionDto, TaskDto},
+    dtos::{self, TaskDto},
     metrics,
     models::{self, Action, Link, NewAction, StatusKind, Task},
     rule::Matcher,
@@ -314,7 +314,7 @@ async fn handle_dedupe<'a>(
 
 async fn insert_actions<'a>(
     task_id: Uuid,
-    actions: &[ActionDto],
+    actions: &[dtos::NewActionDto],
     trigger: &models::TriggerKind,
     condition: &models::TriggerCondition,
     conn: &mut Conn<'a>,
@@ -485,7 +485,7 @@ pub async fn insert_new_task<'a>(
 pub async fn set_started_task<'a>(
     conn: &mut Conn<'a>,
     t: &Task,
-    cancel_tasks: &[ActionDto],
+    cancel_tasks: &[dtos::NewActionDto],
 ) -> Result<(), DbError> {
     use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::RunQueryDsl;

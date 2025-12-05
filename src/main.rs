@@ -15,6 +15,7 @@ use task_runner::{
     handlers::{self, AppState},
     initialize_db_pool, metrics,
     tracing::{TracingConfig, init_tracing, shutdown_tracing},
+    validation,
     workers::UpdateEvent,
 };
 use tokio::sync::mpsc;
@@ -47,6 +48,12 @@ async fn main() -> std::io::Result<()> {
     log::info!("Configuration loaded successfully");
     log::info!("Starting HTTP server at http://0.0.0.0:{}", config.port);
     log::info!("Using public url {}", &config.host_url);
+
+    // Initialize security config for validation
+    validation::init_security_config(config.security.clone());
+    if config.security.skip_ssrf_validation {
+        log::warn!("SSRF validation is disabled - this should only be used in development!");
+    }
 
     // Setup crypto provider
     rustls::crypto::ring::default_provider()

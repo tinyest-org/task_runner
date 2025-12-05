@@ -2,7 +2,7 @@ use crate::{
     Conn, DbPool,
     action::ActionExecutor,
     db_operation::{self, DbError},
-    dtos::ActionDto,
+    dtos::NewActionDto,
     metrics,
     models::{self, Action, StatusKind, Task, TriggerKind},
     rule::Strategy,
@@ -243,7 +243,7 @@ async fn start_task<'a>(
     evaluator: &ActionExecutor,
     task: &Task,
     conn: &mut Conn<'a>,
-) -> Result<Vec<ActionDto>, diesel::result::Error> {
+) -> Result<Vec<NewActionDto>, diesel::result::Error> {
     use crate::schema::action::dsl::*;
     let actions = Action::belonging_to(&task)
         .filter(trigger.eq(TriggerKind::Start))

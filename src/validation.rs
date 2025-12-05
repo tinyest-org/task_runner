@@ -3,11 +3,34 @@
 //! This module provides validation functions for DTOs before they are processed.
 
 use crate::action::WebhookParams;
+use crate::config::SecurityConfig;
 use crate::dtos::{NewTaskDto, UpdateTaskDto};
 use crate::models::{ActionKindEnum, StatusKind};
 use serde_json::Value;
 use std::net::IpAddr;
+use std::sync::OnceLock;
 use url::Url;
+
+/// Global security configuration for validation.
+/// Must be initialized before validation is used.
+static SECURITY_CONFIG: OnceLock<SecurityConfig> = OnceLock::new();
+
+/// Initialize the security configuration for validation.
+/// Should be called once at application startup.
+pub fn init_security_config(config: SecurityConfig) {
+    SECURITY_CONFIG
+        .set(config)
+        .expect("Security config already initialized");
+}
+
+/// Get the current security configuration.
+/// Returns the default config if not initialized (useful for tests).
+fn get_security_config() -> SecurityConfig {
+    SECURITY_CONFIG
+        .get()
+        .cloned()
+        .unwrap_or_else(SecurityConfig::default)
+}
 
 /// Validation error with details about what failed.
 #[derive(Debug, Clone)]
@@ -200,7 +223,21 @@ fn validate_action_params(kind: &ActionKindEnum, params: &Value) -> Result<(), S
 
 /// Validates a webhook URL for security (SSRF prevention).
 /// Blocks internal IP ranges, localhost, and non-HTTP schemes.
+/// Can be skipped in debug builds via configuration.
 fn validate_webhook_url(url_str: &str) -> Result<(), String> {
+    validate_webhook_url_with_config(url_str, &get_security_config())
+}
+
+/// Validates a webhook URL with a specific security configuration.
+/// Used internally and for testing.
+fn validate_webhook_url_with_config(url_str: &str, config: &SecurityConfig) -> Result<(), String> {
+    // Skip SSRF validation if configured (e.g., in debug builds)
+    if config.skip_ssrf_validation {
+        // Still validate URL format even when skipping SSRF checks
+        Url::parse(url_str).map_err(|e| format!("Invalid URL format: {}", e))?;
+        return Ok(());
+    }
+
     // Parse the URL
     let url = Url::parse(url_str).map_err(|e| format!("Invalid URL format: {}", e))?;
 
@@ -220,22 +257,12 @@ fn validate_webhook_url(url_str: &str) -> Result<(), String> {
         .host_str()
         .ok_or_else(|| "URL must have a host".to_string())?;
 
-    // Block localhost and common local hostnames
-    let blocked_hostnames = [
-        "localhost",
-        "127.0.0.1",
-        "::1",
-        "0.0.0.0",
-        "local",
-        "internal",
-        "metadata.google.internal", // GCP metadata
-        "169.254.169.254",          // Cloud metadata endpoint
-        "metadata.google.internal.",
-    ];
-
     let host_lower = host.to_lowercase();
-    for blocked in &blocked_hostnames {
-        if host_lower == *blocked || host_lower.ends_with(&format!(".{}", blocked)) {
+
+    // Check against configurable blocked hostnames
+    for blocked in &config.blocked_hostnames {
+        let blocked_lower = blocked.to_lowercase();
+        if host_lower == blocked_lower || host_lower.ends_with(&format!(".{}", blocked_lower)) {
             return Err(format!(
                 "URL host '{}' is not allowed (internal/reserved)",
                 host
@@ -253,14 +280,11 @@ fn validate_webhook_url(url_str: &str) -> Result<(), String> {
         }
     }
 
-    // Also check if hostname could resolve to internal IP
-    // (Note: We can't do DNS resolution at validation time, but we block obvious cases)
-    if host_lower.ends_with(".local")
-        || host_lower.ends_with(".internal")
-        || host_lower.ends_with(".localdomain")
-        || host_lower.ends_with(".localhost")
-    {
-        return Err(format!("URL host '{}' appears to be internal", host));
+    // Check against configurable blocked hostname suffixes
+    for suffix in &config.blocked_hostname_suffixes {
+        if host_lower.ends_with(suffix) {
+            return Err(format!("URL host '{}' appears to be internal", host));
+        }
     }
 
     Ok(())
@@ -478,13 +502,25 @@ pub fn validate_task_batch(tasks: &[NewTaskDto]) -> ValidationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dtos::{ActionDto, Dependency};
-    use crate::models::TriggerKind;
+    use crate::dtos::{Dependency, NewActionDto};
 
-    fn make_valid_action() -> ActionDto {
-        ActionDto {
+    /// Creates a strict security config for testing SSRF protection.
+    /// Always validates URLs regardless of debug/release mode.
+    fn strict_security_config() -> SecurityConfig {
+        SecurityConfig {
+            skip_ssrf_validation: false,
+            ..SecurityConfig::default()
+        }
+    }
+
+    /// Helper to validate webhook URL with strict config for tests.
+    fn validate_url_strict(url: &str) -> Result<(), String> {
+        validate_webhook_url_with_config(url, &strict_security_config())
+    }
+
+    fn make_valid_action() -> NewActionDto {
+        NewActionDto {
             kind: ActionKindEnum::Webhook,
-            trigger: TriggerKind::Start,
             params: serde_json::json!({
                 "url": "https://example.com/webhook",
                 "verb": "Post"
@@ -630,67 +666,97 @@ mod tests {
         );
     }
 
-    // SSRF prevention tests
+    // SSRF prevention tests (use validate_url_strict to ensure SSRF checks run regardless of build mode)
     #[test]
     fn test_ssrf_localhost_blocked() {
-        assert!(validate_webhook_url("http://localhost/api").is_err());
-        assert!(validate_webhook_url("http://localhost:8080/api").is_err());
-        assert!(validate_webhook_url("https://localhost/api").is_err());
+        assert!(validate_url_strict("http://localhost/api").is_err());
+        assert!(validate_url_strict("http://localhost:8080/api").is_err());
+        assert!(validate_url_strict("https://localhost/api").is_err());
     }
 
     #[test]
     fn test_ssrf_loopback_ip_blocked() {
-        assert!(validate_webhook_url("http://127.0.0.1/api").is_err());
-        assert!(validate_webhook_url("http://127.0.0.1:8080/api").is_err());
-        assert!(validate_webhook_url("http://127.1.2.3/api").is_err());
+        assert!(validate_url_strict("http://127.0.0.1/api").is_err());
+        assert!(validate_url_strict("http://127.0.0.1:8080/api").is_err());
+        assert!(validate_url_strict("http://127.1.2.3/api").is_err());
     }
 
     #[test]
     fn test_ssrf_private_ip_10_blocked() {
-        assert!(validate_webhook_url("http://10.0.0.1/api").is_err());
-        assert!(validate_webhook_url("http://10.255.255.255/api").is_err());
+        assert!(validate_url_strict("http://10.0.0.1/api").is_err());
+        assert!(validate_url_strict("http://10.255.255.255/api").is_err());
     }
 
     #[test]
     fn test_ssrf_private_ip_172_blocked() {
-        assert!(validate_webhook_url("http://172.16.0.1/api").is_err());
-        assert!(validate_webhook_url("http://172.31.255.255/api").is_err());
+        assert!(validate_url_strict("http://172.16.0.1/api").is_err());
+        assert!(validate_url_strict("http://172.31.255.255/api").is_err());
         // 172.15.x.x and 172.32.x.x should be allowed (not in private range)
-        assert!(validate_webhook_url("http://172.15.0.1/api").is_ok());
-        assert!(validate_webhook_url("http://172.32.0.1/api").is_ok());
+        assert!(validate_url_strict("http://172.15.0.1/api").is_ok());
+        assert!(validate_url_strict("http://172.32.0.1/api").is_ok());
     }
 
     #[test]
     fn test_ssrf_private_ip_192_168_blocked() {
-        assert!(validate_webhook_url("http://192.168.0.1/api").is_err());
-        assert!(validate_webhook_url("http://192.168.255.255/api").is_err());
+        assert!(validate_url_strict("http://192.168.0.1/api").is_err());
+        assert!(validate_url_strict("http://192.168.255.255/api").is_err());
     }
 
     #[test]
     fn test_ssrf_cloud_metadata_blocked() {
-        assert!(validate_webhook_url("http://169.254.169.254/latest/meta-data/").is_err());
+        assert!(validate_url_strict("http://169.254.169.254/latest/meta-data/").is_err());
         assert!(
-            validate_webhook_url("http://metadata.google.internal/computeMetadata/v1/").is_err()
+            validate_url_strict("http://metadata.google.internal/computeMetadata/v1/").is_err()
         );
     }
 
     #[test]
     fn test_ssrf_file_scheme_blocked() {
-        assert!(validate_webhook_url("file:///etc/passwd").is_err());
+        assert!(validate_url_strict("file:///etc/passwd").is_err());
     }
 
     #[test]
     fn test_ssrf_internal_domains_blocked() {
-        assert!(validate_webhook_url("http://service.local/api").is_err());
-        assert!(validate_webhook_url("http://app.internal/api").is_err());
-        assert!(validate_webhook_url("http://host.localdomain/api").is_err());
+        assert!(validate_url_strict("http://service.local/api").is_err());
+        assert!(validate_url_strict("http://app.internal/api").is_err());
+        assert!(validate_url_strict("http://host.localdomain/api").is_err());
     }
 
     #[test]
     fn test_valid_external_urls() {
-        assert!(validate_webhook_url("https://example.com/webhook").is_ok());
-        assert!(validate_webhook_url("https://api.github.com/repos").is_ok());
-        assert!(validate_webhook_url("http://httpbin.org/post").is_ok());
-        assert!(validate_webhook_url("https://8.8.8.8/api").is_ok());
+        assert!(validate_url_strict("https://example.com/webhook").is_ok());
+        assert!(validate_url_strict("https://api.github.com/repos").is_ok());
+        assert!(validate_url_strict("http://httpbin.org/post").is_ok());
+        assert!(validate_url_strict("https://8.8.8.8/api").is_ok());
+    }
+
+    #[test]
+    fn test_skip_ssrf_validation_allows_localhost() {
+        let config = SecurityConfig {
+            skip_ssrf_validation: true,
+            ..SecurityConfig::default()
+        };
+        // With skip_ssrf_validation=true, localhost should be allowed
+        assert!(validate_webhook_url_with_config("http://localhost/api", &config).is_ok());
+        assert!(validate_webhook_url_with_config("http://127.0.0.1/api", &config).is_ok());
+        // But invalid URLs should still fail
+        assert!(validate_webhook_url_with_config("not-a-url", &config).is_err());
+    }
+
+    #[test]
+    fn test_custom_blocked_hostnames() {
+        let config = SecurityConfig {
+            skip_ssrf_validation: false,
+            blocked_hostnames: vec!["myblocked.com".to_string()],
+            blocked_hostname_suffixes: vec![".blocked".to_string()],
+        };
+        // Custom blocked hostname
+        assert!(validate_webhook_url_with_config("http://myblocked.com/api", &config).is_err());
+        // Custom blocked suffix
+        assert!(validate_webhook_url_with_config("http://service.blocked/api", &config).is_err());
+        // Default blocked hostnames should not be blocked with custom config
+        assert!(validate_webhook_url_with_config("http://localhost/api", &config).is_ok());
+        // But internal IPs are still blocked (hardcoded check)
+        assert!(validate_webhook_url_with_config("http://10.0.0.1/api", &config).is_err());
     }
 }

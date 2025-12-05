@@ -30,6 +30,9 @@ pub struct Config {
 
     /// Observability settings
     pub observability: ObservabilityConfig,
+
+    /// Security settings
+    pub security: SecurityConfig,
 }
 
 /// Database connection pool configuration.
@@ -121,6 +124,20 @@ pub struct ObservabilityConfig {
     pub sampling_ratio: f64,
 }
 
+/// Security configuration for SSRF protection and validation.
+#[derive(Debug, Clone)]
+pub struct SecurityConfig {
+    /// Skip SSRF validation (useful for development/testing)
+    /// In debug builds, this defaults to true
+    pub skip_ssrf_validation: bool,
+
+    /// List of blocked hostnames for webhook URLs
+    pub blocked_hostnames: Vec<String>,
+
+    /// List of blocked hostname suffixes (e.g., ".local", ".internal")
+    pub blocked_hostname_suffixes: Vec<String>,
+}
+
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
@@ -179,6 +196,29 @@ impl Default for ObservabilityConfig {
     }
 }
 
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            // In debug builds, skip SSRF validation by default for easier local development
+            skip_ssrf_validation: cfg!(debug_assertions),
+            blocked_hostnames: vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+                "0.0.0.0".to_string(),
+                "local".to_string(),
+                "internal".to_string(),
+            ],
+            blocked_hostname_suffixes: vec![
+                ".local".to_string(),
+                ".internal".to_string(),
+                ".localdomain".to_string(),
+                ".localhost".to_string(),
+            ],
+        }
+    }
+}
+
 /// Configuration loading error.
 #[derive(Debug)]
 pub struct ConfigError {
@@ -224,6 +264,9 @@ impl Config {
     /// - `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP endpoint URL for trace export
     /// - `OTEL_SERVICE_NAME`: Service name for traces (default: task-runner)
     /// - `OTEL_SAMPLING_RATIO`: Sampling ratio 0.0-1.0 (default: 1.0)
+    /// - `SKIP_SSRF_VALIDATION`: Skip SSRF validation (default: 1 in debug, 0 in release)
+    /// - `BLOCKED_HOSTNAMES`: Comma-separated list of blocked hostnames (default: localhost,127.0.0.1,::1,0.0.0.0,local,internal)
+    /// - `BLOCKED_HOSTNAME_SUFFIXES`: Comma-separated list of blocked hostname suffixes (default: .local,.internal,.localdomain,.localhost)
     pub fn from_env() -> Result<Self, ConfigError> {
         let database_url = std::env::var("DATABASE_URL").map_err(|_| ConfigError {
             field: "DATABASE_URL".to_string(),
@@ -273,6 +316,21 @@ impl Config {
             sampling_ratio: parse_env_or_f64("OTEL_SAMPLING_RATIO", 1.0)?,
         };
 
+        let security = SecurityConfig {
+            // In debug builds default to true, in release default to false
+            // Can be overridden via SKIP_SSRF_VALIDATION=1
+            skip_ssrf_validation: parse_env_or(
+                "SKIP_SSRF_VALIDATION",
+                if cfg!(debug_assertions) { 1 } else { 0 },
+            )? != 0,
+            blocked_hostnames: std::env::var("BLOCKED_HOSTNAMES")
+                .map(|s| s.split(',').map(|h| h.trim().to_string()).collect())
+                .unwrap_or_else(|_| SecurityConfig::default().blocked_hostnames),
+            blocked_hostname_suffixes: std::env::var("BLOCKED_HOSTNAME_SUFFIXES")
+                .map(|s| s.split(',').map(|h| h.trim().to_string()).collect())
+                .unwrap_or_else(|_| SecurityConfig::default().blocked_hostname_suffixes),
+        };
+
         let config = Self {
             database_url,
             host_url,
@@ -282,6 +340,7 @@ impl Config {
             worker,
             circuit_breaker,
             observability,
+            security,
         };
 
         config.validate()?;

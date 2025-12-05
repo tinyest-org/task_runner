@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    dtos::ActionDto,
+    dtos::NewActionDto,
     models::{Action, ActionKindEnum, Task},
 };
 
@@ -53,7 +53,11 @@ pub struct ActionExecutor {
 }
 
 impl ActionExecutor {
-    pub async fn execute(&self, action: &Action, task: &Task) -> Result<Option<ActionDto>, String> {
+    pub async fn execute(
+        &self,
+        action: &Action,
+        task: &Task,
+    ) -> Result<Option<NewActionDto>, String> {
         match action.kind {
             ActionKindEnum::Webhook => {
                 let my_address = &self.ctx.host_address;
