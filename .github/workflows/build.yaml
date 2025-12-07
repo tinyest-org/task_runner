@@ -149,10 +149,17 @@ jobs:
         with:
           images: plawn/task-runner
           tags: |
+            # Git branch (e.g., master, main, feature-branch)
             type=ref,event=branch
+            # Full semver from tag (v1.2.3 -> 1.2.3)
             type=semver,pattern={{version}}
+            # Major.minor from tag (v1.2.3 -> 1.2)
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
+            # Major only from tag (v1.2.3 -> 1)
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            # Short SHA (e.g., sha-abc1234)
+            type=sha,prefix=sha-
+            # Latest tag for main/master branch
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Set up Docker Buildx
@@ -168,10 +175,32 @@ jobs:
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
+          echo "Tags to create:"
+          echo "$TAGS"
+          echo ""
           echo "$TAGS" | while IFS= read -r tag; do
             [ -z "$tag" ] && continue
             echo "Creating manifest for: $tag"
             docker buildx imagetools create -t "$tag" \
               plawn/task-runner:${{ github.sha }}-amd64 \
               plawn/task-runner:${{ github.sha }}-arm64
+          done
+
+      - name: Delete intermediate architecture tags
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          # Get DockerHub token
+          TOKEN=$(curl -s -H "Content-Type: application/json" \
+            -X POST -d '{"username": "'$DOCKERHUB_USERNAME'", "password": "'$DOCKERHUB_TOKEN'"}' \
+            https://hub.docker.com/v2/users/login/ | jq -r .token)
+
+          # Delete intermediate tags
+          for arch in amd64 arm64; do
+            echo "Deleting intermediate tag: ${{ github.sha }}-${arch}"
+            curl -s -X DELETE \
+              -H "Authorization: JWT ${TOKEN}" \
+              "https://hub.docker.com/v2/repositories/plawn/task-runner/tags/${{ github.sha }}-${arch}/" || true
           done

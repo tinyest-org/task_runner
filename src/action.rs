@@ -36,7 +36,7 @@ pub struct WebhookParams {
     pub headers: Option<HashMap<String, String>>,
 }
 
-pub fn get_http_client() -> reqwest::Client {
+fn get_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()

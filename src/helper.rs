@@ -5,6 +5,8 @@ use actix_web::{
 };
 use std::fmt;
 
+// Note: Requester is defined for potential future use as a custom header
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Requester(String);
 

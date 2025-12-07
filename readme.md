@@ -322,6 +322,33 @@ bun test.ts update <task_id> Failure
 bun test.ts view <batch_id>
 ```
 
+## Releasing
+
+Create a new release by pushing a Git tag:
+
+```bash
+# Create and push a version tag
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+This triggers the CI pipeline which builds multi-arch Docker images (amd64 + arm64) and pushes them to DockerHub with the following tags:
+
+| Tag | Example | Description |
+|-----|---------|-------------|
+| `{version}` | `1.0.0` | Full semantic version |
+| `{major}.{minor}` | `1.0` | Major.minor version |
+| `{major}` | `1` | Major version (not created for v0.x) |
+| `sha-{commit}` | `sha-abc1234` | Git commit SHA |
+| `latest` | `latest` | Updated on main/master branch pushes |
+
+Pull the image:
+```bash
+docker pull plawn/task-runner:1.0.0
+# or
+docker pull plawn/task-runner:latest
+```
+
 ## Architecture
 
 - **Actix-web**: HTTP server with async handlers

@@ -13,7 +13,7 @@ use diesel_async::RunQueryDsl;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use uuid::Uuid;
-pub type DbError = Box<dyn std::error::Error + Send + Sync>;
+pub(crate) type DbError = Box<dyn std::error::Error + Send + Sync>;
 
 /// TaskDto is a data transfer object that represents a task with its actions.
 impl TaskDto {
@@ -48,7 +48,9 @@ impl TaskDto {
 
 /// Update all tasks with status running and last_updated older than timeout to failed and update
 /// the ended_at field to the current time.
-pub async fn ensure_pending_tasks_timeout<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task>, DbError> {
+pub(crate) async fn ensure_pending_tasks_timeout<'a>(
+    conn: &mut Conn<'a>,
+) -> Result<Vec<Task>, DbError> {
     use {
         crate::schema::task::dsl::*,
         diesel::{dsl::now, pg::data_types::PgInterval},
@@ -75,7 +77,7 @@ pub async fn ensure_pending_tasks_timeout<'a>(conn: &mut Conn<'a>) -> Result<Vec
     Ok(updated)
 }
 
-pub async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task>, DbError> {
+pub(crate) async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task>, DbError> {
     use crate::schema::task::dsl::*;
     let tasks = task
         .filter(status.eq(models::StatusKind::Pending))
@@ -84,7 +86,7 @@ pub async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task>, DbEr
         .await?;
     Ok(tasks)
 }
-pub async fn update_running_task<'a>(
+pub(crate) async fn update_running_task<'a>(
     evaluator: &ActionExecutor,
     conn: &mut Conn<'a>,
     task_id: Uuid,
@@ -161,7 +163,7 @@ pub async fn update_running_task<'a>(
 
 /// Find a task by ID with all its actions using a single LEFT JOIN query.
 /// Returns None if the task doesn't exist.
-pub async fn find_detailed_task_by_id<'a>(
+pub(crate) async fn find_detailed_task_by_id<'a>(
     conn: &mut Conn<'a>,
     task_id: Uuid,
 ) -> Result<Option<dtos::TaskDto>, DbError> {
@@ -186,7 +188,7 @@ pub async fn find_detailed_task_by_id<'a>(
     Ok(Some(TaskDto::new(base_task, actions)))
 }
 
-pub async fn list_task_filtered_paged<'a>(
+pub(crate) async fn list_task_filtered_paged<'a>(
     conn: &mut Conn<'a>,
     pagination: dtos::PaginationDto,
     filter: dtos::FilterDto,
@@ -346,7 +348,7 @@ async fn insert_actions<'a>(
 /// `id_mapping` maps local client IDs to database UUIDs for resolving dependencies
 /// within the same batch of tasks.
 /// `batch_id` groups all tasks created in the same request for tracing.
-pub async fn insert_new_task<'a>(
+pub(crate) async fn insert_new_task<'a>(
     conn: &mut Conn<'a>,
     dto: dtos::NewTaskDto,
     id_mapping: &HashMap<String, Uuid>,
@@ -481,7 +483,7 @@ pub async fn insert_new_task<'a>(
     Ok(Some(TaskDto::new(new_task, all_actions)))
 }
 
-pub async fn set_started_task<'a>(
+pub(crate) async fn set_started_task<'a>(
     conn: &mut Conn<'a>,
     t: &Task,
     cancel_tasks: &[dtos::NewActionDto],
@@ -518,7 +520,10 @@ pub async fn set_started_task<'a>(
     Ok(())
 }
 
-pub async fn pause_task<'a>(task_id: &uuid::Uuid, conn: &mut Conn<'a>) -> Result<(), DbError> {
+pub(crate) async fn pause_task<'a>(
+    task_id: &uuid::Uuid,
+    conn: &mut Conn<'a>,
+) -> Result<(), DbError> {
     use crate::schema::task::dsl::{id, status, task};
     diesel::update(task.filter(id.eq(task_id)))
         .set(status.eq(StatusKind::Paused))
@@ -528,7 +533,7 @@ pub async fn pause_task<'a>(task_id: &uuid::Uuid, conn: &mut Conn<'a>) -> Result
 }
 
 /// Get DAG data for a batch: all tasks and their links
-pub async fn get_dag_for_batch<'a>(
+pub(crate) async fn get_dag_for_batch<'a>(
     conn: &mut Conn<'a>,
     bid: Uuid,
 ) -> Result<dtos::DagDto, DbError> {

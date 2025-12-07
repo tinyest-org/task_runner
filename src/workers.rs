@@ -19,8 +19,12 @@ use std::{
 };
 use tokio::sync::{Mutex, OnceCell, mpsc};
 
-pub static GLOBAL_SENDER: OnceCell<mpsc::Sender<UpdateEvent>> = OnceCell::const_new();
-pub static GLOBAL_RECEIVER: OnceCell<Mutex<mpsc::Receiver<UpdateEvent>>> = OnceCell::const_new();
+// Note: These are currently unused but kept for potential future use
+#[allow(dead_code)]
+pub(crate) static GLOBAL_SENDER: OnceCell<mpsc::Sender<UpdateEvent>> = OnceCell::const_new();
+#[allow(dead_code)]
+pub(crate) static GLOBAL_RECEIVER: OnceCell<Mutex<mpsc::Receiver<UpdateEvent>>> =
+    OnceCell::const_new();
 
 /// This ensures the non responding tasks are set to fail
 ///
@@ -76,7 +80,7 @@ pub async fn timeout_loop(pool: DbPool) {
 }
 
 /// In order to cache results and avoid too many db calls
-pub struct EvaluationContext {
+struct EvaluationContext {
     ko: HashSet<Strategy>,
     // ok: HashSet<Strategy>,
 }
@@ -168,7 +172,7 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
     }
 }
 
-pub async fn evaluate_rules<'a>(
+async fn evaluate_rules<'a>(
     _task: &Task,
     conn: &mut Conn<'a>,
     ctx: &mut EvaluationContext,
@@ -497,7 +501,7 @@ pub struct UpdateEvent {
 }
 
 #[derive(Debug, Default)]
-pub struct Entry {
+struct Entry {
     success: AtomicI32,
     failures: AtomicI32,
 }
