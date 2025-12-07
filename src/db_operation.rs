@@ -86,7 +86,7 @@ pub(crate) async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task
         .await?;
     Ok(tasks)
 }
-pub(crate) async fn update_running_task<'a>(
+pub async fn update_running_task<'a>(
     evaluator: &ActionExecutor,
     conn: &mut Conn<'a>,
     task_id: Uuid,
