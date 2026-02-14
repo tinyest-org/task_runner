@@ -2,20 +2,20 @@
 //!
 //! Provides custom metrics for tracking task execution, dependencies, and system health.
 
-use once_cell::sync::Lazy;
 use prometheus::{
     Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec, Opts, Registry,
 };
+use std::sync::LazyLock;
 
 /// Global metrics registry
-pub static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
+pub static REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::new);
 
 // ============================================================================
 // Task Counters
 // ============================================================================
 
 /// Total number of tasks created
-pub static TASKS_CREATED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+pub static TASKS_CREATED_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new("tasks_created_total", "Total number of tasks created")
         .expect("metric can be created");
     REGISTRY.register(Box::new(counter.clone())).unwrap();
@@ -23,7 +23,7 @@ pub static TASKS_CREATED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
 });
 
 /// Total number of tasks by status transition
-pub static TASK_STATUS_TRANSITIONS: Lazy<IntCounterVec> = Lazy::new(|| {
+pub static TASK_STATUS_TRANSITIONS: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let counter = IntCounterVec::new(
         Opts::new(
             "task_status_transitions_total",
@@ -37,7 +37,7 @@ pub static TASK_STATUS_TRANSITIONS: Lazy<IntCounterVec> = Lazy::new(|| {
 });
 
 /// Tasks completed by outcome (success/failure)
-pub static TASKS_COMPLETED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+pub static TASKS_COMPLETED_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let counter = IntCounterVec::new(
         Opts::new("tasks_completed_total", "Total number of tasks completed"),
         &["outcome", "kind"],
@@ -48,7 +48,7 @@ pub static TASKS_COMPLETED_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
 });
 
 /// Tasks cancelled
-pub static TASKS_CANCELLED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+pub static TASKS_CANCELLED_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new("tasks_cancelled_total", "Total number of tasks cancelled")
         .expect("metric can be created");
     REGISTRY.register(Box::new(counter.clone())).unwrap();
@@ -56,7 +56,7 @@ pub static TASKS_CANCELLED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
 });
 
 /// Tasks timed out
-pub static TASKS_TIMED_OUT_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+pub static TASKS_TIMED_OUT_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new(
         "tasks_timed_out_total",
         "Total number of tasks that timed out",
@@ -71,7 +71,7 @@ pub static TASKS_TIMED_OUT_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
 // ============================================================================
 
 /// Current number of tasks by status
-pub static TASKS_BY_STATUS: Lazy<IntGaugeVec> = Lazy::new(|| {
+pub static TASKS_BY_STATUS: LazyLock<IntGaugeVec> = LazyLock::new(|| {
     let gauge = IntGaugeVec::new(
         Opts::new("tasks_by_status", "Current number of tasks by status"),
         &["status"],
@@ -82,7 +82,7 @@ pub static TASKS_BY_STATUS: Lazy<IntGaugeVec> = Lazy::new(|| {
 });
 
 /// Current number of running tasks by kind
-pub static RUNNING_TASKS_BY_KIND: Lazy<IntGaugeVec> = Lazy::new(|| {
+pub static RUNNING_TASKS_BY_KIND: LazyLock<IntGaugeVec> = LazyLock::new(|| {
     let gauge = IntGaugeVec::new(
         Opts::new(
             "running_tasks_by_kind",
@@ -100,7 +100,7 @@ pub static RUNNING_TASKS_BY_KIND: Lazy<IntGaugeVec> = Lazy::new(|| {
 // ============================================================================
 
 /// Tasks with dependencies created
-pub static TASKS_WITH_DEPENDENCIES: Lazy<IntCounter> = Lazy::new(|| {
+pub static TASKS_WITH_DEPENDENCIES: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new(
         "tasks_with_dependencies_total",
         "Total number of tasks created with dependencies",
@@ -111,7 +111,7 @@ pub static TASKS_WITH_DEPENDENCIES: Lazy<IntCounter> = Lazy::new(|| {
 });
 
 /// Dependency propagations (when parent task completes)
-pub static DEPENDENCY_PROPAGATIONS: Lazy<IntCounterVec> = Lazy::new(|| {
+pub static DEPENDENCY_PROPAGATIONS: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let counter = IntCounterVec::new(
         Opts::new(
             "dependency_propagations_total",
@@ -125,7 +125,7 @@ pub static DEPENDENCY_PROPAGATIONS: Lazy<IntCounterVec> = Lazy::new(|| {
 });
 
 /// Tasks unblocked due to dependency completion
-pub static TASKS_UNBLOCKED: Lazy<IntCounter> = Lazy::new(|| {
+pub static TASKS_UNBLOCKED: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new(
         "tasks_unblocked_total",
         "Total number of tasks unblocked after dependencies completed",
@@ -136,7 +136,7 @@ pub static TASKS_UNBLOCKED: Lazy<IntCounter> = Lazy::new(|| {
 });
 
 /// Tasks failed due to dependency failure
-pub static TASKS_FAILED_BY_DEPENDENCY: Lazy<IntCounter> = Lazy::new(|| {
+pub static TASKS_FAILED_BY_DEPENDENCY: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new(
         "tasks_failed_by_dependency_total",
         "Total number of tasks failed due to required dependency failure",
@@ -147,7 +147,7 @@ pub static TASKS_FAILED_BY_DEPENDENCY: Lazy<IntCounter> = Lazy::new(|| {
 });
 
 /// Tasks where DB save failed after retries
-pub static TASKS_DB_SAVE_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
+pub static TASKS_DB_SAVE_FAILURES: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new(
         "tasks_db_save_failures_total",
         "Total number of tasks where database save failed after max retries",
@@ -158,7 +158,7 @@ pub static TASKS_DB_SAVE_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
 });
 
 /// Batch update failures (re-queued for retry)
-pub static BATCH_UPDATE_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
+pub static BATCH_UPDATE_FAILURES: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new(
         "batch_update_failures_total",
         "Total number of batch update failures (counts re-queued for retry)",
@@ -173,7 +173,7 @@ pub static BATCH_UPDATE_FAILURES: Lazy<IntCounter> = Lazy::new(|| {
 // ============================================================================
 
 /// Webhook executions
-pub static WEBHOOK_EXECUTIONS: Lazy<IntCounterVec> = Lazy::new(|| {
+pub static WEBHOOK_EXECUTIONS: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let counter = IntCounterVec::new(
         Opts::new("webhook_executions_total", "Number of webhook executions"),
         &["trigger", "outcome"],
@@ -184,7 +184,7 @@ pub static WEBHOOK_EXECUTIONS: Lazy<IntCounterVec> = Lazy::new(|| {
 });
 
 /// Webhook execution duration in seconds
-pub static WEBHOOK_DURATION_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
+pub static WEBHOOK_DURATION_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
     let histogram = HistogramVec::new(
         HistogramOpts::new(
             "webhook_duration_seconds",
@@ -203,7 +203,7 @@ pub static WEBHOOK_DURATION_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
 // ============================================================================
 
 /// Tasks blocked by concurrency rules
-pub static TASKS_BLOCKED_BY_CONCURRENCY: Lazy<IntCounter> = Lazy::new(|| {
+pub static TASKS_BLOCKED_BY_CONCURRENCY: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new(
         "tasks_blocked_by_concurrency_total",
         "Total number of tasks blocked due to concurrency rules",
@@ -218,7 +218,7 @@ pub static TASKS_BLOCKED_BY_CONCURRENCY: Lazy<IntCounter> = Lazy::new(|| {
 // ============================================================================
 
 /// Task execution duration (from Running to completion)
-pub static TASK_DURATION_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
+pub static TASK_DURATION_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
     let histogram = HistogramVec::new(
         HistogramOpts::new(
             "task_duration_seconds",
@@ -235,7 +235,7 @@ pub static TASK_DURATION_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
 });
 
 /// Task wait time (from Pending to Running)
-pub static TASK_WAIT_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
+pub static TASK_WAIT_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
     let histogram = HistogramVec::new(
         HistogramOpts::new(
             "task_wait_seconds",
@@ -254,7 +254,7 @@ pub static TASK_WAIT_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
 // ============================================================================
 
 /// Worker loop iterations
-pub static WORKER_LOOP_ITERATIONS: Lazy<IntCounter> = Lazy::new(|| {
+pub static WORKER_LOOP_ITERATIONS: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new(
         "worker_loop_iterations_total",
         "Total number of worker loop iterations",
@@ -265,7 +265,7 @@ pub static WORKER_LOOP_ITERATIONS: Lazy<IntCounter> = Lazy::new(|| {
 });
 
 /// Worker loop duration
-pub static WORKER_LOOP_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+pub static WORKER_LOOP_DURATION_SECONDS: LazyLock<Histogram> = LazyLock::new(|| {
     let histogram = Histogram::with_opts(
         HistogramOpts::new(
             "worker_loop_duration_seconds",
@@ -279,7 +279,7 @@ pub static WORKER_LOOP_DURATION_SECONDS: Lazy<Histogram> = Lazy::new(|| {
 });
 
 /// Tasks processed per worker loop
-pub static TASKS_PROCESSED_PER_LOOP: Lazy<Histogram> = Lazy::new(|| {
+pub static TASKS_PROCESSED_PER_LOOP: LazyLock<Histogram> = LazyLock::new(|| {
     let histogram = Histogram::with_opts(
         HistogramOpts::new(
             "tasks_processed_per_loop",
@@ -297,7 +297,7 @@ pub static TASKS_PROCESSED_PER_LOOP: Lazy<Histogram> = Lazy::new(|| {
 // ============================================================================
 
 /// Database query duration
-pub static DB_QUERY_DURATION_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
+pub static DB_QUERY_DURATION_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
     let histogram = HistogramVec::new(
         HistogramOpts::new(
             "db_query_duration_seconds",
@@ -316,7 +316,7 @@ pub static DB_QUERY_DURATION_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
 // ============================================================================
 
 /// Circuit breaker state transitions
-pub static CIRCUIT_BREAKER_STATE_TRANSITIONS: Lazy<IntCounterVec> = Lazy::new(|| {
+pub static CIRCUIT_BREAKER_STATE_TRANSITIONS: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let counter = IntCounterVec::new(
         Opts::new(
             "circuit_breaker_state_transitions_total",
@@ -330,7 +330,7 @@ pub static CIRCUIT_BREAKER_STATE_TRANSITIONS: Lazy<IntCounterVec> = Lazy::new(||
 });
 
 /// Requests rejected by circuit breaker
-pub static CIRCUIT_BREAKER_REJECTIONS: Lazy<IntCounter> = Lazy::new(|| {
+pub static CIRCUIT_BREAKER_REJECTIONS: LazyLock<IntCounter> = LazyLock::new(|| {
     let counter = IntCounter::new(
         "circuit_breaker_rejections_total",
         "Total number of requests rejected by circuit breaker",
@@ -338,6 +338,49 @@ pub static CIRCUIT_BREAKER_REJECTIONS: Lazy<IntCounter> = Lazy::new(|| {
     .expect("metric can be created");
     REGISTRY.register(Box::new(counter.clone())).unwrap();
     counter
+});
+
+// ============================================================================
+// Retention Cleanup Metrics
+// ============================================================================
+
+/// Total number of tasks cleaned up by retention
+pub static RETENTION_TASKS_CLEANED: LazyLock<IntCounter> = LazyLock::new(|| {
+    let counter = IntCounter::new(
+        "retention_tasks_cleaned_total",
+        "Total number of tasks deleted by retention cleanup",
+    )
+    .expect("metric can be created");
+    REGISTRY.register(Box::new(counter.clone())).unwrap();
+    counter
+});
+
+/// Retention cleanup runs by outcome (success/error)
+pub static RETENTION_CLEANUP_RUNS: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "retention_cleanup_runs_total",
+            "Number of retention cleanup runs by outcome",
+        ),
+        &["outcome"],
+    )
+    .expect("metric can be created");
+    REGISTRY.register(Box::new(counter.clone())).unwrap();
+    counter
+});
+
+/// Retention cleanup cycle duration in seconds
+pub static RETENTION_CLEANUP_DURATION: LazyLock<Histogram> = LazyLock::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            "retention_cleanup_duration_seconds",
+            "Duration of retention cleanup cycles in seconds",
+        )
+        .buckets(vec![0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0]),
+    )
+    .expect("metric can be created");
+    REGISTRY.register(Box::new(histogram.clone())).unwrap();
+    histogram
 });
 
 // ============================================================================
@@ -471,7 +514,7 @@ pub fn record_db_query_with_slow_warning(query_name: &str, duration_secs: f64, t
 }
 
 /// Total number of slow queries
-pub static SLOW_QUERIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+pub static SLOW_QUERIES_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let counter = IntCounterVec::new(
         Opts::new(
             "slow_queries_total",
@@ -494,6 +537,15 @@ pub fn record_circuit_breaker_state(to_state: &str) {
 /// Record request rejected by circuit breaker
 pub fn record_circuit_breaker_rejection() {
     CIRCUIT_BREAKER_REJECTIONS.inc();
+}
+
+/// Record retention cleanup cycle
+pub fn record_retention_cleanup(outcome: &str, tasks_deleted: usize, duration_secs: f64) {
+    RETENTION_CLEANUP_RUNS.with_label_values(&[outcome]).inc();
+    RETENTION_CLEANUP_DURATION.observe(duration_secs);
+    if tasks_deleted > 0 {
+        RETENTION_TASKS_CLEANED.inc_by(tasks_deleted as u64);
+    }
 }
 
 /// Initialize all metrics (call at startup to register them)
@@ -524,4 +576,7 @@ pub fn init_metrics() {
     let _ = &*SLOW_QUERIES_TOTAL;
     let _ = &*CIRCUIT_BREAKER_STATE_TRANSITIONS;
     let _ = &*CIRCUIT_BREAKER_REJECTIONS;
+    let _ = &*RETENTION_TASKS_CLEANED;
+    let _ = &*RETENTION_CLEANUP_RUNS;
+    let _ = &*RETENTION_CLEANUP_DURATION;
 }

@@ -1,10 +1,11 @@
 use crate::{
     Conn, DbPool,
     action::ActionExecutor,
+    config::RetentionConfig,
     db_operation::{self, DbError},
     dtos::NewActionDto,
     metrics,
-    models::{self, Action, StatusKind, Task, TriggerKind},
+    models::{self, Action, StatusKind, Task, TriggerCondition, TriggerKind},
     rule::Strategy,
 };
 use actix_web::rt;
@@ -12,24 +13,20 @@ use dashmap::DashMap;
 use diesel::BelongingToDsl;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use serde_json::json;
 use std::{
     collections::HashSet,
     sync::{Arc, atomic::AtomicI32, atomic::Ordering},
 };
-use tokio::sync::{Mutex, OnceCell, mpsc};
-
-// Note: These are currently unused but kept for potential future use
-#[allow(dead_code)]
-pub(crate) static GLOBAL_SENDER: OnceCell<mpsc::Sender<UpdateEvent>> = OnceCell::const_new();
-#[allow(dead_code)]
-pub(crate) static GLOBAL_RECEIVER: OnceCell<Mutex<mpsc::Receiver<UpdateEvent>>> =
-    OnceCell::const_new();
+use tokio::sync::{mpsc, watch};
 
 /// This ensures the non responding tasks are set to fail
 ///
 /// Add the date of failure
-pub async fn timeout_loop(pool: DbPool) {
+pub async fn timeout_loop(
+    pool: DbPool,
+    interval: std::time::Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
     loop {
         // note that obtaining a connection from the pool is also potentially blocking
         let conn = pool.get();
@@ -75,32 +72,35 @@ pub async fn timeout_loop(pool: DbPool) {
                 }
             }
         }
-        rt::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::select! {
+            _ = shutdown.changed() => {
+                log::info!("Timeout worker: shutdown signal received, exiting");
+                return;
+            }
+            _ = rt::time::sleep(interval) => {}
+        }
     }
 }
 
-/// In order to cache results and avoid too many db calls
+/// In order to cache results and avoid too many db calls.
+/// Uses lock keys (i64) instead of Strategy to ensure metadata-sensitive caching:
+/// two tasks with the same rule but different metadata values get different lock keys.
 struct EvaluationContext {
-    ko: HashSet<Strategy>,
-    // ok: HashSet<Strategy>,
+    ko: HashSet<i64>,
 }
 
-async fn sleep_secs(secs: u64) {
-    actix_web::rt::time::sleep(std::time::Duration::from_secs(secs)).await;
-}
-
-async fn sleep_ms(ms: u64) {
-    actix_web::rt::time::sleep(std::time::Duration::from_millis(ms)).await;
-}
-
-pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
+pub async fn start_loop(
+    evaluator: &ActionExecutor,
+    pool: DbPool,
+    interval: std::time::Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
     loop {
         let loop_start = std::time::Instant::now();
         let mut tasks_processed = 0usize;
 
         // note that obtaining a connection from the pool is also potentially blocking
         let conn = pool.get();
-        let max_retries = 10;
         if let Ok(mut conn) = conn.await {
             let res = db_operation::list_all_pending(&mut conn).await;
             match res {
@@ -112,50 +112,92 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
                     // use logger instead of println
                     log::debug!("Start worker: found {} tasks", tasks.len());
                     for t in tasks {
-                        if evaluate_rules(&t, &mut conn, &mut ctx).await {
-                            match start_task(evaluator, &t, &mut conn).await {
-                                Ok(cancel_tasks) => {
-                                    tasks_processed += 1;
-                                    metrics::record_status_transition("Pending", "Running");
-                                    log::debug!("Start worker: task {} started", t.id);
-                                    // update the task status to running
-                                    let mut i = 0;
-                                    while db_operation::set_started_task(
-                                        &mut conn,
-                                        &t,
-                                        &cancel_tasks,
-                                    )
-                                    .await
-                                    .is_err()
-                                    {
-                                        log::warn!("failed to update task in database");
-                                        sleep_secs(1).await;
-                                        i += 1;
-                                        if i == max_retries {
-                                            // Skip this task and continue with others
-                                            // Task will be retried on next loop iteration
-                                            // (it's still in Pending state since DB update failed)
+                        // Pre-filter: if we already know a rule is blocked in this
+                        // iteration, skip the DB call entirely.
+                        if is_prefilter_blocked(&t, &ctx) {
+                            metrics::record_task_blocked_by_concurrency();
+                            log::warn!("Start worker: task {} blocked by cached rule", t.id);
+                            continue;
+                        }
+
+                        // Atomically check concurrency rules + claim in a single transaction
+                        match db_operation::claim_task_with_rules(&mut conn, &t).await {
+                            Ok(db_operation::ClaimResult::Claimed) => {
+                                // Task claimed, now execute the on_start webhook
+                                match start_task(evaluator, &t, &mut conn).await {
+                                    Ok(cancel_tasks) => {
+                                        tasks_processed += 1;
+                                        metrics::record_status_transition("Pending", "Running");
+                                        log::debug!("Start worker: task {} started", t.id);
+                                        // Save cancel actions returned by the webhook
+                                        if let Err(e) = db_operation::save_cancel_actions(
+                                            &mut conn,
+                                            &t,
+                                            &cancel_tasks,
+                                        )
+                                        .await
+                                        {
                                             log::error!(
-                                                "Start worker: error saving task {}: after {} retries, skipping",
+                                                "Start worker: failed to save cancel actions for task {}: {:?}",
                                                 t.id,
-                                                max_retries,
+                                                e
                                             );
-                                            metrics::record_task_db_save_failure();
-                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // Webhook failed after claim -> mark task as failed,
+                                        // propagate to children, and fire on_failure webhooks
+                                        log::error!(
+                                            "Start worker: on_start webhook failed for task {}: {:?}",
+                                            t.id,
+                                            e
+                                        );
+                                        if let Err(e2) = db_operation::fail_task_and_propagate(
+                                            evaluator,
+                                            &mut conn,
+                                            &t.id,
+                                            "on_start webhook failed",
+                                        )
+                                        .await
+                                        {
+                                            log::error!(
+                                                "Start worker: failed to mark task {} as failed and propagate: {:?}",
+                                                t.id,
+                                                e2
+                                            );
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    log::error!(
-                                        "Start worker: error starting task {}: {:?}",
-                                        t.id,
-                                        e
-                                    );
-                                }
                             }
-                        } else {
-                            metrics::record_task_blocked_by_concurrency();
-                            log::warn!("Start worker: task {} not started", t.id);
+                            Ok(db_operation::ClaimResult::RuleBlocked) => {
+                                // Cache the blocked lock keys for this iteration so subsequent
+                                // tasks with the same rule+metadata combo are skipped without a DB call
+                                for strategy in &t.start_condition.0 {
+                                    match strategy {
+                                        Strategy::Concurency(rule) => {
+                                            let key = db_operation::concurrency_lock_key(
+                                                rule,
+                                                &t.metadata,
+                                            );
+                                            ctx.ko.insert(key);
+                                        }
+                                    }
+                                }
+                                metrics::record_task_blocked_by_concurrency();
+                                log::warn!(
+                                    "Start worker: task {} blocked by concurrency rule",
+                                    t.id
+                                );
+                            }
+                            Ok(db_operation::ClaimResult::AlreadyClaimed) => {
+                                log::debug!(
+                                    "Start worker: task {} already claimed by another worker",
+                                    t.id
+                                );
+                            }
+                            Err(e) => {
+                                log::error!("Start worker: failed to claim task {}: {:?}", t.id, e);
+                            }
                         }
                     }
                 }
@@ -168,79 +210,31 @@ pub async fn start_loop(evaluator: &ActionExecutor, pool: DbPool) {
         let loop_duration = loop_start.elapsed().as_secs_f64();
         metrics::record_worker_loop_iteration(loop_duration, tasks_processed);
 
-        sleep_secs(1).await;
+        tokio::select! {
+            _ = shutdown.changed() => {
+                log::info!("Start worker: shutdown signal received, exiting");
+                return;
+            }
+            _ = rt::time::sleep(interval) => {}
+        }
     }
 }
 
-async fn evaluate_rules<'a>(
-    _task: &Task,
-    conn: &mut Conn<'a>,
-    ctx: &mut EvaluationContext,
-) -> bool {
-    let conditions = &_task.start_condition.0;
+/// Pre-filter check: if any of the task's rule+metadata lock keys were already
+/// blocked in this iteration, skip the expensive DB call. Within a single loop
+/// iteration, counts can only increase (we only claim tasks), so a blocked key
+/// stays blocked.
+fn is_prefilter_blocked(task: &Task, ctx: &EvaluationContext) -> bool {
+    let conditions = &task.start_condition.0;
     if conditions.is_empty() {
-        return true;
+        return false;
     }
-    // let ok = &mut ctx.ok;
-    let ko = &mut ctx.ko;
-    for cond in conditions {
-        // for now the ok is disabled
-        // as the conditions may go from ok to ko
-        // after starting a previous task
-        // if ok.contains(cond) {
-        //     continue;
-        // }
-        if ko.contains(cond) {
-            return false;
+    conditions.iter().any(|cond| match cond {
+        Strategy::Concurency(rule) => {
+            let key = db_operation::concurrency_lock_key(rule, &task.metadata);
+            ctx.ko.contains(&key)
         }
-        match cond {
-            crate::rule::Strategy::Concurency(concurency_rule) => {
-                // cache partial result
-                use crate::schema::task::dsl::*;
-                use diesel::PgJsonbExpressionMethods;
-                let mut m = json!({});
-                concurency_rule.matcher.fields.iter().for_each(|e| {
-                    let k = _task.metadata.get(e);
-                    match k {
-                        Some(v) => {
-                            m[e] = v.clone();
-                        }
-                        None => unreachable!("None should't be there"),
-                    }
-                });
-                let count = task
-                    .filter(
-                        kind.eq(&concurency_rule.matcher.kind)
-                            .and(status.eq(&concurency_rule.matcher.status))
-                            .and(metadata.contains(m)),
-                    )
-                    .count()
-                    .get_result::<i64>(conn)
-                    .await
-                    .expect("failed to count for execution");
-
-                let is_same = concurency_rule.matcher.kind == _task.kind;
-
-                let res = {
-                    if is_same {
-                        // we start the new task of the same kind, so we must ensure we don't get over capacity
-                        count < concurency_rule.max_concurency.into()
-                    } else {
-                        count <= concurency_rule.max_concurency.into()
-                    }
-                };
-                // should use an id instead
-                if res {
-                    // relica
-                    // ok.insert(cond.clone());
-                } else {
-                    ko.insert(cond.clone());
-                    return false;
-                }
-            }
-        }
-    }
-    true
+    })
 }
 
 async fn start_task<'a>(
@@ -275,17 +269,56 @@ async fn start_task<'a>(
     Ok(tasks)
 }
 
+/// Fire end webhooks (on_success or on_failure) for a task without propagation.
+/// Used after a transaction commits to fire webhooks best-effort.
+pub(crate) async fn fire_end_webhooks<'a>(
+    evaluator: &ActionExecutor,
+    task_id: &uuid::Uuid,
+    result_status: StatusKind,
+    conn: &mut Conn<'a>,
+) -> Result<(), DbError> {
+    use crate::schema::action::dsl::{condition, trigger};
+    use crate::schema::task::dsl::*;
+    let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
+    let expected_condition = match result_status {
+        StatusKind::Success => TriggerCondition::Success,
+        _ => TriggerCondition::Failure,
+    };
+    let actions = Action::belonging_to(&t)
+        .filter(trigger.eq(TriggerKind::End))
+        .filter(condition.eq(expected_condition))
+        .load::<Action>(conn)
+        .await?;
+    for act in actions.iter() {
+        let res = evaluator.execute(act, &t).await;
+        match res {
+            Ok(_) => {
+                log::debug!("Action {} executed successfully", act.id);
+            }
+            Err(e) => {
+                log::error!("Action {} failed: {}", act.id, e);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn end_task<'a>(
     evaluator: &ActionExecutor,
     task_id: &uuid::Uuid,
     result_status: StatusKind,
     conn: &mut Conn<'a>,
 ) -> Result<(), DbError> {
-    use crate::schema::action::dsl::trigger;
+    use crate::schema::action::dsl::{condition, trigger};
     use crate::schema::task::dsl::*;
     let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
+    let expected_condition = match result_status {
+        StatusKind::Success => TriggerCondition::Success,
+        _ => TriggerCondition::Failure,
+    };
     let actions = Action::belonging_to(&t)
         .filter(trigger.eq(TriggerKind::End))
+        .filter(condition.eq(expected_condition))
         .load::<Action>(conn)
         .await?;
     for act in actions.iter() {
@@ -317,7 +350,7 @@ pub async fn end_task<'a>(
 /// 2. If parent succeeded, also decrement wait_success for children where requires_success = true
 /// 3. If both counters reach 0, transition child from Waiting to Pending
 /// 4. If a required parent fails, mark child as Failure
-async fn propagate_to_children<'a>(
+pub(crate) async fn propagate_to_children<'a>(
     parent_id: &uuid::Uuid,
     result_status: &StatusKind,
     conn: &mut Conn<'a>,
@@ -476,14 +509,33 @@ pub async fn cancel_task<'a>(
             ));
         }
     }
-    // we update to the canceled state
-    diesel::update(task.filter(id.eq(task_id)))
-        .set((
-            status.eq(StatusKind::Canceled),
-            ended_at.eq(diesel::dsl::now),
-        ))
-        .execute(conn)
-        .await?;
+    // we update to the canceled state — only if still in a cancelable state
+    let updated = diesel::update(
+        task.filter(
+            id.eq(task_id).and(
+                status
+                    .eq(StatusKind::Pending)
+                    .or(status.eq(StatusKind::Running))
+                    .or(status.eq(StatusKind::Paused)),
+            ),
+        ),
+    )
+    .set((
+        status.eq(StatusKind::Canceled),
+        ended_at.eq(diesel::dsl::now),
+        last_updated.eq(diesel::dsl::now),
+    ))
+    .execute(conn)
+    .await?;
+
+    if updated == 0 {
+        // Task already transitioned to a terminal state, skip propagation
+        log::warn!(
+            "cancel_task: task {} already in terminal state, cancel skipped",
+            task_id
+        );
+        return Ok(());
+    }
 
     // Propagate cancellation to dependent children
     // Canceled is treated like failure for children that require success
@@ -508,7 +560,12 @@ struct Entry {
 
 /// Receives success/failure update events and batches them to the database.
 /// Uses DashMap for lock-free concurrent access between receiver and updater.
-pub async fn batch_updater(pool: DbPool, receiver: mpsc::Receiver<UpdateEvent>) {
+pub async fn batch_updater(
+    pool: DbPool,
+    receiver: mpsc::Receiver<UpdateEvent>,
+    flush_interval: std::time::Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let data: Arc<DashMap<uuid::Uuid, Entry>> = Arc::new(DashMap::new());
     let mut receiver = receiver;
 
@@ -517,15 +574,10 @@ pub async fn batch_updater(pool: DbPool, receiver: mpsc::Receiver<UpdateEvent>) 
         let data = Arc::clone(&data);
         async move {
             while let Some(evt) = receiver.recv().await {
-                // DashMap allows concurrent insert/update - no global lock
-                data.entry(evt.task_id)
-                    .or_default()
-                    .success
-                    .fetch_add(evt.success, Ordering::Relaxed);
-                data.entry(evt.task_id)
-                    .or_default()
-                    .failures
-                    .fetch_add(evt.failures, Ordering::Relaxed);
+                // Single entry() call holds the shard lock for both updates
+                let entry = data.entry(evt.task_id).or_default();
+                entry.success.fetch_add(evt.success, Ordering::Relaxed);
+                entry.failures.fetch_add(evt.failures, Ordering::Relaxed);
             }
         }
     });
@@ -562,15 +614,10 @@ pub async fn batch_updater(pool: DbPool, receiver: mpsc::Receiver<UpdateEvent>) 
                         task_id,
                         e
                     );
-                    // Re-add the counts back for retry - no lock needed with DashMap
-                    data.entry(task_id)
-                        .or_default()
-                        .success
-                        .fetch_add(success_count, Ordering::Relaxed);
-                    data.entry(task_id)
-                        .or_default()
-                        .failures
-                        .fetch_add(failure_count, Ordering::Relaxed);
+                    // Re-add the counts back for retry - single entry() holds shard lock
+                    let entry = data.entry(task_id).or_default();
+                    entry.success.fetch_add(success_count, Ordering::Relaxed);
+                    entry.failures.fetch_add(failure_count, Ordering::Relaxed);
                     metrics::record_batch_update_failure();
                 }
             }
@@ -581,7 +628,121 @@ pub async fn batch_updater(pool: DbPool, receiver: mpsc::Receiver<UpdateEvent>) 
                     || AtomicI32::load(&entry.failures, Ordering::Relaxed) != 0
             });
         }
-        sleep_ms(100).await;
+        tokio::select! {
+            _ = shutdown.changed() => {
+                log::info!("Batch updater: shutdown signal received, flushing remaining data");
+                final_flush_batch_data(&data, &pool).await;
+                log::info!("Batch updater: final flush complete, exiting");
+                return;
+            }
+            _ = rt::time::sleep(flush_interval) => {}
+        }
+    }
+}
+
+/// Flush all remaining batch data to the database before shutdown.
+async fn final_flush_batch_data(data: &DashMap<uuid::Uuid, Entry>, pool: &DbPool) {
+    let updates: Vec<(uuid::Uuid, i32, i32)> = data
+        .iter()
+        .map(|e| {
+            (
+                *e.key(),
+                e.value().success.swap(0, Ordering::Relaxed),
+                e.value().failures.swap(0, Ordering::Relaxed),
+            )
+        })
+        .filter(|(_, s, f)| *s != 0 || *f != 0)
+        .collect();
+
+    if updates.is_empty() {
+        return;
+    }
+
+    log::info!(
+        "Batch updater final flush: {} entries to persist",
+        updates.len()
+    );
+
+    if let Ok(mut conn) = pool.get().await {
+        for (task_id, s, f) in updates {
+            if let Err(e) = handle_one_with_counts(task_id, &mut conn, s, f).await {
+                log::error!("Final flush FAILED for task {}: {:?}", task_id, e);
+            }
+        }
+    } else {
+        log::error!("Final flush: could not acquire DB connection, data lost");
+    }
+}
+
+/// Background loop that periodically deletes old terminal tasks based on retention config.
+/// Returns immediately if retention is not enabled.
+pub async fn retention_cleanup_loop(
+    pool: DbPool,
+    retention_config: RetentionConfig,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    if !retention_config.enabled {
+        log::info!("Retention cleanup: disabled, exiting");
+        return;
+    }
+
+    log::info!(
+        "Retention cleanup: enabled, retention_days={}, interval={}s, batch_size={}",
+        retention_config.retention_days,
+        retention_config.cleanup_interval_secs,
+        retention_config.batch_size
+    );
+
+    let interval = std::time::Duration::from_secs(retention_config.cleanup_interval_secs);
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                log::info!("Retention cleanup: shutdown signal received, exiting");
+                return;
+            }
+            _ = rt::time::sleep(interval) => {}
+        }
+
+        let start = std::time::Instant::now();
+        match pool.get().await {
+            Ok(mut conn) => {
+                match db_operation::cleanup_old_terminal_tasks(
+                    &mut conn,
+                    retention_config.retention_days,
+                    retention_config.batch_size,
+                )
+                .await
+                {
+                    Ok(count) => {
+                        let duration = start.elapsed().as_secs_f64();
+                        if count > 0 {
+                            log::info!(
+                                "Retention cleanup: deleted {} tasks in {:.2}s",
+                                count,
+                                duration
+                            );
+                        } else {
+                            log::debug!("Retention cleanup: no tasks to clean up");
+                        }
+                        metrics::record_retention_cleanup("success", count, duration);
+                    }
+                    Err(e) => {
+                        let duration = start.elapsed().as_secs_f64();
+                        log::error!("Retention cleanup: error: {:?}", e);
+                        metrics::record_retention_cleanup("error", 0, duration);
+                    }
+                }
+            }
+            Err(e) => {
+                let duration = start.elapsed().as_secs_f64();
+                log::error!(
+                    "Retention cleanup: could not acquire DB connection: {:?}",
+                    e
+                );
+                metrics::record_retention_cleanup("error", 0, duration);
+            }
+        }
     }
 }
 

@@ -1,18 +1,25 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::{
     dtos::NewActionDto,
     models::{Action, ActionKindEnum, Task},
 };
 
-#[derive(Debug, Deserialize, Serialize)]
+/// HTTP method for webhook calls.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub enum HttpVerb {
+    /// HTTP GET
     Get,
+    /// HTTP POST (most common for webhooks)
     Post,
+    /// HTTP DELETE
     Delete,
+    /// HTTP PUT
     Put,
+    /// HTTP PATCH
     Patch,
 }
 
@@ -28,20 +35,34 @@ impl From<HttpVerb> for reqwest::Method {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+/// Parameters for a Webhook action. This is the structure expected in `NewActionDto.params`
+/// when `kind` is `Webhook`.
+///
+/// When the webhook is called, the task runner appends a `?handle=<host>/task/<task_uuid>`
+/// query parameter to the URL. Your webhook handler should use this URL to report task
+/// completion via `PATCH` or `PUT`.
+///
+/// ## Example
+/// ```json
+/// {
+///   "url": "https://my-service.com/start-job",
+///   "verb": "Post",
+///   "body": {"job_type": "build", "ref": "main"},
+///   "headers": {"Authorization": "Bearer secret-token"}
+/// }
+/// ```
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WebhookParams {
+    /// The URL to call. Must be a valid HTTP(S) URL. Internal/private IPs are blocked (SSRF protection).
     pub url: String,
+    /// HTTP method to use.
     pub verb: HttpVerb,
+    /// Optional JSON body to send with the request.
     pub body: Option<serde_json::Value>,
+    /// Optional HTTP headers to include. Example: `{"Authorization": "Bearer xxx", "X-Custom": "value"}`.
     pub headers: Option<HashMap<String, String>>,
 }
 
-fn get_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .expect("Failed to build HTTP client")
-}
 #[derive(Clone)]
 pub struct ActionContext {
     pub host_address: String,
@@ -50,9 +71,19 @@ pub struct ActionContext {
 #[derive(Clone)]
 pub struct ActionExecutor {
     pub ctx: ActionContext,
+    pub client: reqwest::Client,
 }
 
 impl ActionExecutor {
+    pub fn new(ctx: ActionContext) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("Failed to build HTTP client");
+        Self { ctx, client }
+    }
+
     pub async fn execute(
         &self,
         action: &Action,
@@ -64,8 +95,7 @@ impl ActionExecutor {
                 let params: WebhookParams = serde_json::from_value(action.params.clone())
                     .map_err(|e| format!("Failed to parse webhook params: {}", e))?;
                 let url = params.url;
-                let client = get_http_client();
-                let mut request = client.request(params.verb.into(), &url);
+                let mut request = self.client.request(params.verb.into(), &url);
                 // enable the runner to send update of the task
                 request = request.query(&[("handle", format!("{}/task/{}", my_address, &task.id))]);
                 if let Some(body) = params.body {
@@ -81,6 +111,17 @@ impl ActionExecutor {
                     .await
                     .map_err(|e| format!("Failed to send request: {}", e))?;
                 let status = response.status();
+                if status.is_redirection() {
+                    log::warn!(
+                        "Webhook for task {} returned redirect status {} — redirects are disabled for SSRF protection",
+                        task.id,
+                        status
+                    );
+                    return Err(format!(
+                        "Webhook returned redirect status {} — redirects are disabled",
+                        status
+                    ));
+                }
                 if status.is_success() {
                     // try to parse cancel
                     Ok(match response.text().await {

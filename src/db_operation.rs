@@ -4,16 +4,52 @@ use crate::{
     dtos::{self, TaskDto},
     metrics,
     models::{self, Action, Link, NewAction, StatusKind, Task},
-    rule::Matcher,
-    workers::end_task,
+    rule::{Matcher, Strategy},
 };
+use chrono::Utc;
 use diesel::prelude::*;
 use diesel::sql_types;
 use diesel_async::RunQueryDsl;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::future::Future;
+use std::hash::{Hash, Hasher};
+use std::pin::Pin;
 use uuid::Uuid;
 pub(crate) type DbError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Escape special LIKE pattern characters (`%`, `_`, `\`) in user input
+/// so they are matched literally.
+fn escape_like_pattern(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Execute a closure within a database transaction.
+/// Automatically rolls back on error. Commits on success.
+/// Callers must wrap their async block with `Box::pin(async move { ... })`.
+pub async fn run_in_transaction<'a, T: Send>(
+    conn: &mut Conn<'a>,
+    f: impl for<'c> FnOnce(
+        &'c mut Conn<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<T, DbError>> + Send + 'c>>,
+) -> Result<T, DbError> {
+    diesel::sql_query("BEGIN").execute(&mut *conn).await?;
+    match f(conn).await {
+        Ok(val) => {
+            diesel::sql_query("COMMIT").execute(&mut *conn).await?;
+            Ok(val)
+        }
+        Err(e) => {
+            if let Err(rb_err) = diesel::sql_query("ROLLBACK").execute(&mut *conn).await {
+                log::error!("Failed to rollback transaction: {}", rb_err);
+            }
+            Err(e)
+        }
+    }
+}
 
 /// TaskDto is a data transfer object that represents a task with its actions.
 impl TaskDto {
@@ -46,7 +82,7 @@ impl TaskDto {
     }
 }
 
-/// Update all tasks with status running and last_updated older than timeout to failed and update
+/// Update all tasks with status running and started_at older than timeout to failed and update
 /// the ended_at field to the current time.
 pub(crate) async fn ensure_pending_tasks_timeout<'a>(
     conn: &mut Conn<'a>,
@@ -61,9 +97,14 @@ pub(crate) async fn ensure_pending_tasks_timeout<'a>(
             status
                 .eq(models::StatusKind::Running)
                 .and(started_at.is_not_null())
-                .and(last_updated.lt(now.into_sql::<sql_types::Timestamptz>()
-                    - (PgInterval::from_microseconds(1_000_000).into_sql::<sql_types::Interval>()
-                        * timeout))),
+                .and(
+                    started_at
+                        .assume_not_null()
+                        .lt(now.into_sql::<sql_types::Timestamptz>()
+                            - (PgInterval::from_microseconds(1_000_000)
+                                .into_sql::<sql_types::Interval>()
+                                * timeout)),
+                ),
         ),
     )
     .set((
@@ -86,31 +127,27 @@ pub(crate) async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task
         .await?;
     Ok(tasks)
 }
+/// Result of attempting to update a running task.
+#[derive(Debug, PartialEq)]
+pub enum UpdateTaskResult {
+    /// Task was successfully updated (transitioned from Running).
+    Updated,
+    /// Task exists but was not in Running state.
+    NotRunning,
+    /// Task does not exist.
+    NotFound,
+}
+
 pub async fn update_running_task<'a>(
     evaluator: &ActionExecutor,
     conn: &mut Conn<'a>,
     task_id: Uuid,
     dto: dtos::UpdateTaskDto,
-) -> Result<usize, DbError> {
+) -> Result<UpdateTaskResult, DbError> {
     use crate::schema::task::dsl::*;
+    use crate::workers;
     log::debug!("Update task: {:?}", &dto);
-    // TODO: make cleaner, ensure we only have failure or success
-    // can't change to the other kind -> reserved for internal use
-    if let Some(s) = &dto.status {
-        if s == &models::StatusKind::Failure || s == &models::StatusKind::Success {
-        } else {
-            return Ok(2);
-        }
-    }
     let s = dto.status.clone();
-    let is_failed = dto
-        .status
-        .as_ref()
-        .map(|s| s == &models::StatusKind::Failure)
-        .unwrap_or(false);
-    if dto.failure_reason.is_some() && !is_failed {
-        return Ok(2);
-    }
 
     // Fetch task kind for metrics before updating
     let task_kind = task
@@ -120,45 +157,78 @@ pub async fn update_running_task<'a>(
         .await
         .ok();
 
-    let res = diesel::update(
-        task.filter(
-            id.eq(task_id)
-                // lock failed tasks for update
-                .and(status.ne(models::StatusKind::Failure)),
-        ),
-    )
-    .set((
-        last_updated.eq(diesel::dsl::now),
-        dto.new_success.map(|e| success.eq(success + e)),
-        dto.new_failures.map(|e| failures.eq(failures + e)),
-        // if success or failure then update ended_at
-        s.filter(|e| e == &models::StatusKind::Success || e == &models::StatusKind::Failure)
-            .map(|_| ended_at.eq(diesel::dsl::now)),
-        dto.metadata.map(|m| metadata.eq(m)),
-        dto.status.as_ref().map(|m| status.eq(m)),
-        dto.failure_reason.map(|m| failure_reason.eq(m)),
-    ))
-    .execute(conn)
+    // Wrap parent status update + propagation in a transaction
+    let final_status_clone = dto.status.clone();
+
+    let res = run_in_transaction(conn, |conn| {
+        Box::pin(async move {
+            let res = diesel::update(
+                task.filter(
+                    id.eq(task_id)
+                        // Only transition from Running — prevents double-propagation from concurrent requests
+                        .and(status.eq(models::StatusKind::Running)),
+                ),
+            )
+            .set((
+                last_updated.eq(diesel::dsl::now),
+                dto.new_success.map(|e| success.eq(success + e)),
+                dto.new_failures.map(|e| failures.eq(failures + e)),
+                // if success or failure then update ended_at
+                s.filter(|e| {
+                    e == &models::StatusKind::Success || e == &models::StatusKind::Failure
+                })
+                .map(|_| ended_at.eq(diesel::dsl::now)),
+                dto.metadata.map(|m| metadata.eq(m)),
+                dto.status.as_ref().map(|m| status.eq(m)),
+                dto.failure_reason.map(|m| failure_reason.eq(m)),
+            ))
+            .execute(conn)
+            .await?;
+
+            // Propagate inside the transaction so parent + children are atomic
+            if let Some(ref final_status) = dto.status {
+                if res == 1 {
+                    workers::propagate_to_children(&task_id, final_status, conn).await?;
+                }
+            }
+
+            Ok(res)
+        })
+    })
     .await?;
 
-    if let Some(ref final_status) = dto.status {
-        // Record completion metrics with task kind
-        let outcome = match final_status {
-            models::StatusKind::Success => "success",
-            models::StatusKind::Failure => "failure",
-            _ => "other",
-        };
-        metrics::record_status_transition("Running", outcome);
-        metrics::record_task_completed(outcome, task_kind.as_deref().unwrap_or("unknown"));
+    // After commit: fire webhooks and record metrics (best-effort, outside transaction)
+    if let Some(ref final_status) = final_status_clone {
+        if res == 1 {
+            let outcome = match final_status {
+                models::StatusKind::Success => "success",
+                models::StatusKind::Failure => "failure",
+                _ => "other",
+            };
+            metrics::record_status_transition("Running", outcome);
+            metrics::record_task_completed(outcome, task_kind.as_deref().unwrap_or("unknown"));
 
-        // TODO: execute on end action triggers
-        match end_task(evaluator, &task_id, dto.status.clone().unwrap(), conn).await {
-            Ok(_) => log::debug!("task {} end actions are successfull", &task_id),
-            Err(_) => log::error!("task {} end actions failed", &task_id),
+            match workers::fire_end_webhooks(evaluator, &task_id, final_status.clone(), conn).await
+            {
+                Ok(_) => log::debug!("task {} end webhooks fired successfully", &task_id),
+                Err(e) => log::error!("task {} end webhooks failed: {}", &task_id, e),
+            }
+        } else {
+            // Task was not in Running state — concurrent request already handled it
+            log::warn!(
+                "update_running_task: task {} was not in Running state, skipping end_task",
+                task_id
+            );
         }
     }
 
-    Ok(res)
+    if res == 1 {
+        Ok(UpdateTaskResult::Updated)
+    } else if task_kind.is_some() {
+        Ok(UpdateTaskResult::NotRunning)
+    } else {
+        Ok(UpdateTaskResult::NotFound)
+    }
 }
 
 /// Find a task by ID with all its actions using a single LEFT JOIN query.
@@ -194,67 +264,44 @@ pub(crate) async fn list_task_filtered_paged<'a>(
     filter: dtos::FilterDto,
 ) -> Result<Vec<dtos::BasicTaskDto>, DbError> {
     use crate::schema::task::dsl::*;
+    use diesel::PgJsonbExpressionMethods;
+
     let m = filter
         .metadata
         .and_then(|f| serde_json::from_str::<Value>(&f).ok());
     let page_size = pagination.page_size.unwrap_or(50);
     let offset = pagination.page.unwrap_or(0) * page_size;
 
-    // Build base filter
-    let name_filter = name.like(format!("%{}%", filter.name.unwrap_or("".to_string())));
-    let kind_filter = kind.like(format!("%{}%", filter.kind.unwrap_or("".to_string())));
-    let metadata_filter = metadata.contains(m.unwrap_or(json!({})));
+    // Build base filter — escape LIKE wildcards in user input
+    let name_val = escape_like_pattern(&filter.name.unwrap_or_default());
+    let kind_val = escape_like_pattern(&filter.kind.unwrap_or_default());
 
-    let result = match (filter.status, filter.batch_id) {
-        (Some(dto_status), Some(bid)) => {
-            task.offset(offset)
-                .filter(
-                    name_filter
-                        .and(kind_filter)
-                        .and(status.eq(dto_status))
-                        .and(metadata_filter)
-                        .and(batch_id.eq(bid)),
-                )
-                .limit(page_size)
-                .order(created_at.desc())
-                .load::<models::Task>(conn)
-                .await?
-        }
-        (Some(dto_status), None) => {
-            task.offset(offset)
-                .filter(
-                    name_filter
-                        .and(kind_filter)
-                        .and(status.eq(dto_status))
-                        .and(metadata_filter),
-                )
-                .limit(page_size)
-                .order(created_at.desc())
-                .load::<models::Task>(conn)
-                .await?
-        }
-        (None, Some(bid)) => {
-            task.offset(offset)
-                .filter(
-                    name_filter
-                        .and(kind_filter)
-                        .and(metadata_filter)
-                        .and(batch_id.eq(bid)),
-                )
-                .limit(page_size)
-                .order(created_at.desc())
-                .load::<models::Task>(conn)
-                .await?
-        }
-        (None, None) => {
-            task.offset(offset)
-                .filter(name_filter.and(kind_filter).and(metadata_filter))
-                .limit(page_size)
-                .order(created_at.desc())
-                .load::<models::Task>(conn)
-                .await?
-        }
-    };
+    let mut query = task
+        .into_boxed()
+        .offset(offset)
+        .limit(page_size)
+        .order(created_at.desc())
+        .filter(name.like(format!("%{}%", name_val)))
+        .filter(kind.like(format!("%{}%", kind_val)));
+
+    // Only apply metadata filter when explicitly provided (NULL metadata @> '{}' is falsy in PG)
+    if let Some(val) = m {
+        query = query.filter(metadata.contains(val));
+    }
+
+    if let Some(s) = filter.status {
+        query = query.filter(status.eq(s));
+    }
+
+    if let Some(bid) = filter.batch_id {
+        query = query.filter(batch_id.eq(bid));
+    }
+
+    if let Some(t) = filter.timeout {
+        query = query.filter(timeout.eq(t));
+    }
+
+    let result = query.load::<models::Task>(conn).await?;
 
     let tasks: Vec<dtos::BasicTaskDto> = result
         .into_iter()
@@ -280,21 +327,44 @@ async fn handle_dedupe<'a>(
     conn: &mut Conn<'a>,
     rules: Vec<Matcher>,
     _metadata: &Option<serde_json::Value>,
-) -> bool {
+) -> Result<bool, DbError> {
     for matcher in rules.iter() {
         use crate::schema::task::dsl::*;
         use diesel::PgJsonbExpressionMethods;
         let mut m = json!({});
         if let Some(_m) = _metadata {
-            matcher.fields.iter().for_each(|e| {
+            let mut fields_ok = true;
+            for e in &matcher.fields {
                 let k = _m.get(e);
                 match k {
                     Some(v) => {
                         m[e] = v.clone();
                     }
-                    None => unreachable!("None should't be there"),
+                    None => {
+                        log::warn!(
+                            "Metadata missing field '{}' required by dedupe matcher, skipping rule",
+                            e
+                        );
+                        fields_ok = false;
+                        break;
+                    }
                 }
-            });
+            }
+            if !fields_ok {
+                // Skip this rule (allow creation) since we can't evaluate it
+                continue;
+            }
+        } else if !matcher.fields.is_empty() {
+            // Metadata is None but the matcher requires field comparisons.
+            // We can't evaluate this rule without metadata, so skip it
+            // (allow creation). Without this guard, m stays as {} and
+            // metadata.contains({}) would match ALL existing tasks with
+            // non-null metadata, causing over-aggressive deduplication.
+            log::warn!(
+                "Metadata is None but dedupe matcher requires fields {:?}, skipping rule",
+                matcher.fields
+            );
+            continue;
         }
         let count = task
             .filter(
@@ -304,13 +374,12 @@ async fn handle_dedupe<'a>(
             )
             .count()
             .get_result::<i64>(conn)
-            .await
-            .expect("failed to count for execution");
+            .await?;
         if count > 0 {
-            return false;
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
 async fn insert_actions<'a>(
@@ -358,7 +427,7 @@ pub(crate) async fn insert_new_task<'a>(
     use crate::schema::task::dsl::task;
 
     let should_write = if let Some(s) = dto.dedupe_strategy {
-        handle_dedupe(conn, s, &dto.metadata).await
+        handle_dedupe(conn, s, &dto.metadata).await?
     } else {
         true
     };
@@ -483,40 +552,268 @@ pub(crate) async fn insert_new_task<'a>(
     Ok(Some(TaskDto::new(new_task, all_actions)))
 }
 
-pub(crate) async fn set_started_task<'a>(
+/// Atomically claim a Pending task by transitioning it to Running.
+/// Returns true if this caller successfully claimed the task, false if another worker got it first.
+pub async fn claim_task<'a>(conn: &mut Conn<'a>, task_id: &uuid::Uuid) -> Result<bool, DbError> {
+    use crate::schema::task::dsl::*;
+    use diesel::dsl::now;
+
+    let updated_count =
+        diesel::update(task.filter(id.eq(task_id).and(status.eq(StatusKind::Pending))))
+            .set((
+                status.eq(StatusKind::Running),
+                started_at.eq(now),
+                last_updated.eq(now),
+            ))
+            .execute(conn)
+            .await?;
+
+    Ok(updated_count == 1)
+}
+
+/// Result of attempting to atomically check concurrency rules and claim a task.
+#[derive(Debug, PartialEq)]
+pub enum ClaimResult {
+    /// Task was successfully claimed (Pending -> Running).
+    Claimed,
+    /// A concurrency rule blocked this task from being claimed.
+    RuleBlocked,
+    /// Task was already claimed by another worker (UPDATE touched 0 rows).
+    AlreadyClaimed,
+}
+
+/// Compute a deterministic i64 advisory lock key from a concurrency rule and task metadata.
+/// The key is derived from the rule's kind, status, and the task's metadata values for the
+/// rule's fields.
+pub(crate) fn concurrency_lock_key(
+    rule: &crate::rule::ConcurencyRule,
+    task_metadata: &serde_json::Value,
+) -> i64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    rule.matcher.kind.hash(&mut hasher);
+    rule.matcher.status.hash(&mut hasher);
+    for field in &rule.matcher.fields {
+        field.hash(&mut hasher);
+        if let Some(val) = task_metadata.get(field) {
+            val.to_string().hash(&mut hasher);
+        }
+    }
+    hasher.finish() as i64
+}
+
+/// Atomically check concurrency rules and claim a task within a single transaction,
+/// using `pg_advisory_xact_lock` to serialize workers checking the same rule/metadata combo.
+///
+/// This prevents the TOCTOU race where two workers both see count < max and both claim,
+/// exceeding the concurrency limit.
+pub async fn claim_task_with_rules<'a>(
+    conn: &mut Conn<'a>,
+    t: &Task,
+) -> Result<ClaimResult, DbError> {
+    let rules = &t.start_condition.0;
+
+    // No rules — just do a plain claim (no advisory lock needed)
+    if rules.is_empty() {
+        return match claim_task(conn, &t.id).await? {
+            true => Ok(ClaimResult::Claimed),
+            false => Ok(ClaimResult::AlreadyClaimed),
+        };
+    }
+
+    // Pre-compute everything we need before entering the transaction closure.
+    // The closure must be 'static-safe, so we clone data out of the borrowed `t`.
+    let task_id = t.id;
+    let task_kind = t.kind.clone();
+    let task_metadata = t.metadata.clone();
+
+    // Build lock keys and rule checks outside the closure
+    let mut lock_keys = Vec::new();
+    let mut rule_checks: Vec<(crate::rule::ConcurencyRule, serde_json::Value)> = Vec::new();
+
+    for strategy in rules {
+        match strategy {
+            Strategy::Concurency(concurrency_rule) => {
+                let mut m = json!({});
+                let mut fields_ok = true;
+                for field in &concurrency_rule.matcher.fields {
+                    match task_metadata.get(field) {
+                        Some(v) => {
+                            m[field] = v.clone();
+                        }
+                        None => {
+                            log::warn!(
+                                "Task {} missing metadata field '{}' required by concurrency rule, blocking",
+                                task_id,
+                                field
+                            );
+                            fields_ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !fields_ok {
+                    return Ok(ClaimResult::RuleBlocked);
+                }
+
+                let lock_key = concurrency_lock_key(concurrency_rule, &task_metadata);
+                lock_keys.push(lock_key);
+                rule_checks.push((concurrency_rule.clone(), m));
+            }
+        }
+    }
+
+    // Sort and deduplicate lock keys to acquire them in consistent order (prevents deadlocks)
+    lock_keys.sort();
+    lock_keys.dedup();
+
+    run_in_transaction(conn, |conn| {
+        Box::pin(async move {
+            // Acquire all advisory locks (released automatically on COMMIT/ROLLBACK)
+            for key in &lock_keys {
+                diesel::sql_query(format!("SELECT pg_advisory_xact_lock({})", key))
+                    .execute(&mut *conn)
+                    .await?;
+            }
+
+            // Check all concurrency rules
+            for (concurrency_rule, metadata_filter) in &rule_checks {
+                use crate::schema::task::dsl;
+                use diesel::PgJsonbExpressionMethods;
+
+                let count = dsl::task
+                    .filter(
+                        dsl::kind
+                            .eq(&concurrency_rule.matcher.kind)
+                            .and(dsl::status.eq(&concurrency_rule.matcher.status))
+                            .and(dsl::metadata.contains(metadata_filter.clone())),
+                    )
+                    .count()
+                    .get_result::<i64>(&mut *conn)
+                    .await?;
+
+                let is_same_kind = concurrency_rule.matcher.kind == task_kind;
+                let allowed = if is_same_kind {
+                    count < concurrency_rule.max_concurency.into()
+                } else {
+                    count <= concurrency_rule.max_concurency.into()
+                };
+
+                if !allowed {
+                    return Ok(ClaimResult::RuleBlocked);
+                }
+            }
+
+            // All rules passed — claim the task
+            use crate::schema::task::dsl;
+            use diesel::dsl::now;
+
+            let updated_count = diesel::update(
+                dsl::task.filter(dsl::id.eq(task_id).and(dsl::status.eq(StatusKind::Pending))),
+            )
+            .set((
+                dsl::status.eq(StatusKind::Running),
+                dsl::started_at.eq(now),
+                dsl::last_updated.eq(now),
+            ))
+            .execute(&mut *conn)
+            .await?;
+
+            if updated_count == 1 {
+                Ok(ClaimResult::Claimed)
+            } else {
+                Ok(ClaimResult::AlreadyClaimed)
+            }
+        })
+    })
+    .await
+}
+
+/// Save cancel actions for a task that has been claimed.
+/// Validates webhook URLs before saving to prevent SSRF via cancel action responses.
+pub(crate) async fn save_cancel_actions<'a>(
     conn: &mut Conn<'a>,
     t: &Task,
     cancel_tasks: &[dtos::NewActionDto],
 ) -> Result<(), DbError> {
-    use diesel::{ExpressionMethods, QueryDsl};
-    use diesel_async::RunQueryDsl;
+    if !cancel_tasks.is_empty() {
+        // Validate each cancel action's webhook URL before persisting
+        for action_dto in cancel_tasks {
+            if let Err(e) =
+                crate::validation::validate_action_params(&action_dto.kind, &action_dto.params)
+            {
+                log::warn!(
+                    "Rejecting cancel action for task {} due to validation failure: {}",
+                    t.id,
+                    e
+                );
+                return Err(Box::from(format!("Cancel action validation failed: {}", e)));
+            }
+        }
+        insert_actions(
+            t.id,
+            cancel_tasks,
+            &models::TriggerKind::Cancel,
+            &models::TriggerCondition::Success, // Condition doesn't matter for cancel
+            conn,
+        )
+        .await?;
+    }
+    Ok(())
+}
 
-    use crate::schema::task::dsl::{id, last_updated, started_at, task};
-    // 1. We need `sql` for the binding trick
-    use crate::schema::task::status as task_status;
-    use diesel::dsl::{now, sql}; // Alias the column for clarity in sql
+/// Mark a task as failed with a reason. Used when on_start webhook fails after claim.
+pub(crate) async fn mark_task_failed<'a>(
+    conn: &mut Conn<'a>,
+    task_id: &uuid::Uuid,
+    reason: &str,
+) -> Result<(), DbError> {
+    use crate::schema::task::dsl::*;
+    use diesel::dsl::now;
 
-    // TODO: save cancel task and bind to task
-    diesel::update(task.filter(id.eq(t.id)))
+    diesel::update(task.filter(id.eq(task_id)))
         .set((
-            task_status.eq(sql(
-                "CASE WHEN task.status = 'pending' THEN 'running' ELSE task.status END",
-            )),
-            // These fields are always updated
-            started_at.eq(now),
+            status.eq(StatusKind::Failure),
+            failure_reason.eq(reason),
+            ended_at.eq(now),
             last_updated.eq(now),
         ))
         .execute(conn)
         .await?;
+    Ok(())
+}
 
-    insert_actions(
-        t.id,
-        cancel_tasks,
-        &models::TriggerKind::Cancel,
-        &models::TriggerCondition::Success, // Condition doesn't matter for cancel
-        conn,
-    )
+/// Mark a task as failed, propagate failure to children (in a transaction),
+/// then fire on_failure webhooks (best-effort, outside transaction).
+/// Used when on_start webhook fails after claim.
+pub(crate) async fn fail_task_and_propagate<'a>(
+    evaluator: &ActionExecutor,
+    conn: &mut Conn<'a>,
+    task_id: &uuid::Uuid,
+    reason: &str,
+) -> Result<(), DbError> {
+    use crate::workers;
+
+    // Wrap status update + propagation in a transaction
+    let tid = *task_id;
+    let reason_owned = reason.to_string();
+    run_in_transaction(conn, |conn| {
+        Box::pin(async move {
+            mark_task_failed(conn, &tid, &reason_owned).await?;
+            workers::propagate_to_children(&tid, &StatusKind::Failure, conn).await?;
+            Ok(())
+        })
+    })
     .await?;
+
+    // After commit: fire on_failure webhooks (best-effort)
+    match workers::fire_end_webhooks(evaluator, task_id, StatusKind::Failure, conn).await {
+        Ok(_) => log::debug!(
+            "task {} on_failure webhooks fired after on_start failure",
+            task_id
+        ),
+        Err(e) => log::error!("task {} on_failure webhooks failed: {}", task_id, e),
+    }
+
     Ok(())
 }
 
@@ -525,10 +822,24 @@ pub(crate) async fn pause_task<'a>(
     conn: &mut Conn<'a>,
 ) -> Result<(), DbError> {
     use crate::schema::task::dsl::{id, status, task};
-    diesel::update(task.filter(id.eq(task_id)))
-        .set(status.eq(StatusKind::Paused))
-        .execute(conn)
-        .await?;
+    let updated = diesel::update(
+        task.filter(
+            id.eq(task_id).and(
+                status
+                    .eq(StatusKind::Pending)
+                    .or(status.eq(StatusKind::Running))
+                    .or(status.eq(StatusKind::Waiting)),
+            ),
+        ),
+    )
+    .set(status.eq(StatusKind::Paused))
+    .execute(conn)
+    .await?;
+    if updated == 0 {
+        return Err(Box::from(
+            "Invalid operation: cannot pause task in this state",
+        ));
+    }
     Ok(())
 }
 
@@ -588,4 +899,68 @@ pub(crate) async fn get_dag_for_batch<'a>(
         tasks: tasks_dto,
         links: links_dto,
     })
+}
+
+/// Delete terminal tasks (Success/Failure/Canceled) with `ended_at` older than the
+/// retention period. Deletes in FK order (actions → links → tasks) within a transaction.
+/// Returns the number of tasks deleted.
+pub(crate) async fn cleanup_old_terminal_tasks<'a>(
+    conn: &mut Conn<'a>,
+    retention_days: u32,
+    batch_size: i64,
+) -> Result<usize, DbError> {
+    use crate::schema::task::dsl as task_dsl;
+
+    let cutoff = Utc::now() - chrono::Duration::days(retention_days as i64);
+
+    // Find task IDs eligible for cleanup
+    let task_ids: Vec<uuid::Uuid> = task_dsl::task
+        .filter(
+            task_dsl::status
+                .eq(StatusKind::Success)
+                .or(task_dsl::status.eq(StatusKind::Failure))
+                .or(task_dsl::status.eq(StatusKind::Canceled)),
+        )
+        .filter(task_dsl::ended_at.le(cutoff))
+        .select(task_dsl::id)
+        .limit(batch_size)
+        .load::<uuid::Uuid>(conn)
+        .await?;
+
+    if task_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let count = task_ids.len();
+
+    run_in_transaction(conn, |conn| {
+        Box::pin(async move {
+            use crate::schema::action::dsl as action_dsl;
+            use crate::schema::link::dsl as link_dsl;
+
+            // 1. Delete actions belonging to these tasks
+            diesel::delete(action_dsl::action.filter(action_dsl::task_id.eq_any(&task_ids)))
+                .execute(&mut *conn)
+                .await?;
+
+            // 2. Delete links referencing these tasks (as parent or child)
+            diesel::delete(
+                link_dsl::link.filter(
+                    link_dsl::parent_id
+                        .eq_any(&task_ids)
+                        .or(link_dsl::child_id.eq_any(&task_ids)),
+                ),
+            )
+            .execute(&mut *conn)
+            .await?;
+
+            // 3. Delete the tasks themselves
+            diesel::delete(task_dsl::task.filter(task_dsl::id.eq_any(&task_ids)))
+                .execute(&mut *conn)
+                .await?;
+
+            Ok(count)
+        })
+    })
+    .await
 }

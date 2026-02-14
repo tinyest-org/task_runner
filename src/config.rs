@@ -33,6 +33,9 @@ pub struct Config {
 
     /// Security settings
     pub security: SecurityConfig,
+
+    /// Data retention settings
+    pub retention: RetentionConfig,
 }
 
 /// Database connection pool configuration.
@@ -124,6 +127,22 @@ pub struct ObservabilityConfig {
     pub sampling_ratio: f64,
 }
 
+/// Data retention configuration for automatic cleanup of old terminal tasks.
+#[derive(Debug, Clone)]
+pub struct RetentionConfig {
+    /// Whether automatic cleanup is enabled
+    pub enabled: bool,
+
+    /// Number of days to retain terminal tasks before cleanup
+    pub retention_days: u32,
+
+    /// Interval between cleanup runs in seconds
+    pub cleanup_interval_secs: u64,
+
+    /// Maximum number of tasks to delete per cleanup cycle
+    pub batch_size: i64,
+}
+
 /// Security configuration for SSRF protection and validation.
 #[derive(Debug, Clone)]
 pub struct SecurityConfig {
@@ -192,6 +211,17 @@ impl Default for ObservabilityConfig {
             otlp_endpoint: None,
             service_name: "task-runner".to_string(),
             sampling_ratio: 1.0,
+        }
+    }
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            retention_days: 30,
+            cleanup_interval_secs: 3600,
+            batch_size: 1000,
         }
     }
 }
@@ -323,12 +353,27 @@ impl Config {
                 "SKIP_SSRF_VALIDATION",
                 if cfg!(debug_assertions) { 1 } else { 0 },
             )? != 0,
-            blocked_hostnames: std::env::var("BLOCKED_HOSTNAMES")
-                .map(|s| s.split(',').map(|h| h.trim().to_string()).collect())
-                .unwrap_or_else(|_| SecurityConfig::default().blocked_hostnames),
-            blocked_hostname_suffixes: std::env::var("BLOCKED_HOSTNAME_SUFFIXES")
-                .map(|s| s.split(',').map(|h| h.trim().to_string()).collect())
-                .unwrap_or_else(|_| SecurityConfig::default().blocked_hostname_suffixes),
+            blocked_hostnames: {
+                let mut hostnames = SecurityConfig::default().blocked_hostnames;
+                if let Ok(extra) = std::env::var("BLOCKED_HOSTNAMES") {
+                    hostnames.extend(extra.split(',').map(|h| h.trim().to_string()));
+                }
+                hostnames
+            },
+            blocked_hostname_suffixes: {
+                let mut suffixes = SecurityConfig::default().blocked_hostname_suffixes;
+                if let Ok(extra) = std::env::var("BLOCKED_HOSTNAME_SUFFIXES") {
+                    suffixes.extend(extra.split(',').map(|h| h.trim().to_string()));
+                }
+                suffixes
+            },
+        };
+
+        let retention = RetentionConfig {
+            enabled: parse_env_or("RETENTION_ENABLED", 0)? != 0,
+            retention_days: parse_env_or("RETENTION_DAYS", 30)?,
+            cleanup_interval_secs: parse_env_or("RETENTION_CLEANUP_INTERVAL_SECS", 3600)?,
+            batch_size: parse_env_or("RETENTION_BATCH_SIZE", 1000)?,
         };
 
         let config = Self {
@@ -341,6 +386,7 @@ impl Config {
             circuit_breaker,
             observability,
             security,
+            retention,
         };
 
         config.validate()?;
@@ -440,5 +486,69 @@ mod tests {
         let config = PaginationConfig::default();
         assert_eq!(config.default_per_page, 50);
         assert_eq!(config.max_per_page, 100);
+    }
+
+    #[test]
+    fn test_blocked_hostnames_merge_with_defaults() {
+        // SAFETY: test is single-threaded; env vars are restored after use
+        unsafe {
+            std::env::set_var("DATABASE_URL", "postgres://test:test@localhost/test");
+            std::env::set_var("HOST_URL", "http://localhost:8085");
+            std::env::set_var("BLOCKED_HOSTNAMES", "evil.com,badhost.net");
+            std::env::set_var("BLOCKED_HOSTNAME_SUFFIXES", ".evil,.badnet");
+        }
+
+        let config = Config::from_env().unwrap();
+
+        // Defaults must still be present
+        let defaults = SecurityConfig::default();
+        for hostname in &defaults.blocked_hostnames {
+            assert!(
+                config.security.blocked_hostnames.contains(hostname),
+                "Default hostname '{}' missing after merge",
+                hostname
+            );
+        }
+        for suffix in &defaults.blocked_hostname_suffixes {
+            assert!(
+                config.security.blocked_hostname_suffixes.contains(suffix),
+                "Default suffix '{}' missing after merge",
+                suffix
+            );
+        }
+
+        // Custom values must also be present
+        assert!(
+            config
+                .security
+                .blocked_hostnames
+                .contains(&"evil.com".to_string())
+        );
+        assert!(
+            config
+                .security
+                .blocked_hostnames
+                .contains(&"badhost.net".to_string())
+        );
+        assert!(
+            config
+                .security
+                .blocked_hostname_suffixes
+                .contains(&".evil".to_string())
+        );
+        assert!(
+            config
+                .security
+                .blocked_hostname_suffixes
+                .contains(&".badnet".to_string())
+        );
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("BLOCKED_HOSTNAMES");
+            std::env::remove_var("BLOCKED_HOSTNAME_SUFFIXES");
+            std::env::remove_var("DATABASE_URL");
+            std::env::remove_var("HOST_URL");
+        }
     }
 }

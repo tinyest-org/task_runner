@@ -14,8 +14,43 @@ A Rust service for orchestrating task execution with DAG (Directed Acyclic Graph
 - **Prometheus Metrics**: Built-in observability with custom metrics
 - **Deduplication**: Skip duplicate tasks based on metadata fields
 - **Input Validation**: Comprehensive validation with detailed error messages
+- **Circuit Breaker**: Connection pool resilience with automatic recovery
+- **Distributed Tracing**: OpenTelemetry support with OTLP export
+- **SSRF Protection**: Webhook URL validation to prevent server-side request forgery
+- **Health Checks**: Liveness and readiness probes for Kubernetes deployments
 
 ## API Endpoints
+
+### Health
+
+#### Health Check
+```http
+GET /health
+```
+
+Returns database connectivity status and connection pool stats.
+
+Response `200 OK` (healthy) or `503 Service Unavailable` (degraded):
+```json
+{
+  "status": "ok",
+  "database": "healthy",
+  "pool_size": 10,
+  "pool_idle": 5
+}
+```
+
+#### Readiness Check
+```http
+GET /ready
+```
+
+Stricter check - verifies pool is not exhausted and a connection can be acquired.
+
+Response `200 OK` or `503 Service Unavailable`:
+```json
+{"status": "ready"}
+```
 
 ### Tasks
 
@@ -23,7 +58,6 @@ A Rust service for orchestrating task execution with DAG (Directed Acyclic Graph
 ```http
 POST /task
 Content-Type: application/json
-X-Requester: your-service-name
 
 [
   {
@@ -34,17 +68,22 @@ X-Requester: your-service-name
     "metadata": {"key": "value"},
     "on_start": {
       "kind": "Webhook",
-      "trigger": "Start",
       "params": {
         "url": "https://example.com/webhook",
-        "verb": "Post"
+        "verb": "Post",
+        "body": {"optional": "payload"},
+        "headers": {"X-Custom": "header"}
       }
     },
     "dependencies": [
       {"id": "local-id-0", "requires_success": true}
     ],
-    "on_success": [...],
-    "on_failure": [...],
+    "on_success": [
+      {"kind": "Webhook", "params": {"url": "https://example.com/done", "verb": "Post"}}
+    ],
+    "on_failure": [
+      {"kind": "Webhook", "params": {"url": "https://example.com/failed", "verb": "Post"}}
+    ],
     "rules": [
       {
         "type": "Concurency",
@@ -59,25 +98,63 @@ X-Requester: your-service-name
 ]
 ```
 
-Response: `201 Created` with array of created tasks, includes `X-Batch-ID` header
+Response: `201 Created` with array of created tasks, includes `X-Batch-ID` header.
+If all tasks were deduplicated: `204 No Content` with `X-Batch-ID` header.
+
+On validation failure: `400 Bad Request`:
+```json
+{
+  "error": "Validation failed",
+  "batch_id": "uuid",
+  "details": ["error message 1", "error message 2"]
+}
+```
 
 #### Get Task
 ```http
 GET /task/{task_id}
 ```
 
-Response: Task details with all actions
+Response: Full task details with all actions (fetched via single LEFT JOIN query).
+
+```json
+{
+  "id": "uuid",
+  "name": "My Task",
+  "kind": "data-processing",
+  "status": "Running",
+  "timeout": 60,
+  "rules": [],
+  "metadata": {"key": "value"},
+  "actions": [
+    {"kind": "Webhook", "trigger": "Start", "params": {"url": "...", "verb": "Post"}}
+  ],
+  "created_at": "2024-01-01T00:00:00Z",
+  "started_at": "2024-01-01T00:00:01Z",
+  "ended_at": null,
+  "last_updated": "2024-01-01T00:00:01Z",
+  "success": 0,
+  "failures": 0,
+  "failure_reason": null,
+  "batch_id": "uuid"
+}
+```
 
 #### List Tasks
 ```http
-GET /task?page=0&page_size=50&status=Running&kind=data-processing
+GET /task?page=0&page_size=50&status=Running&kind=data-processing&batch_id=uuid&name=my&metadata={"key":"value"}
 ```
 
 Query parameters:
 - `page`: Page number (default: 0)
 - `page_size`: Items per page (default: 50, max: 100)
 - `status`: Filter by status (optional)
-- `kind`: Filter by kind (optional)
+- `kind`: Filter by kind (substring match, optional)
+- `name`: Filter by name (substring match, optional)
+- `batch_id`: Filter by batch ID (optional)
+- `metadata`: Filter by metadata JSON containment (optional)
+
+Response: `200 OK` with array of `BasicTaskDto`.
 
 #### Update Task
 ```http
@@ -93,6 +170,8 @@ Content-Type: application/json
 }
 ```
 
+Only `Success` or `Failure` status transitions are allowed. Setting status triggers end actions and dependency propagation. Failed tasks cannot be updated further.
+
 #### Cancel Task
 ```http
 DELETE /task/{task_id}
@@ -105,6 +184,8 @@ Cancels a pending or running task. For running tasks, executes cancel actions.
 ```http
 PATCH /task/pause/{task_id}
 ```
+
+Pauses a task (sets status to `Paused`).
 
 #### Batch Update (High-throughput)
 ```http
@@ -126,7 +207,17 @@ This endpoint efficiently batches counter updates using a lock-free `DashMap` ar
 GET /dag/{batch_id}
 ```
 
-Returns tasks and links for a batch in JSON format for visualization.
+Returns tasks and links for a batch in JSON format:
+```json
+{
+  "tasks": [
+    {"id": "uuid", "name": "...", "kind": "...", "status": "Running", ...}
+  ],
+  "links": [
+    {"parent_id": "uuid", "child_id": "uuid", "requires_success": true}
+  ]
+}
+```
 
 #### View DAG UI
 ```http
@@ -145,15 +236,25 @@ Opens the built-in DAG visualization UI with:
 GET /metrics
 ```
 
-Prometheus-format metrics including:
-- `tasks_created_total` - Total tasks created
-- `tasks_completed_total{outcome,kind}` - Tasks completed by outcome
-- `task_status_transitions_total{from_status,to_status}` - Status transitions
-- `tasks_blocked_by_concurrency_total` - Tasks blocked by rules
-- `tasks_failed_by_dependency_total` - Tasks failed due to parent failure
-- `tasks_cancelled_total` - Tasks cancelled
-- `dependency_propagations_total{parent_outcome}` - Dependency propagations
-- `worker_loop_duration_seconds` - Worker loop timing
+Prometheus-format metrics (see [Metrics](#metrics-1) section).
+
+## Webhook Execution
+
+When a task starts, the `on_start` webhook is called with a `?handle=<host_url>/task/<task_id>` query parameter. This allows the webhook target to update the task status directly.
+
+Webhook params:
+```json
+{
+  "url": "https://example.com/webhook",
+  "verb": "Post",
+  "body": {"optional": "json payload"},
+  "headers": {"X-Custom": "header value"}
+}
+```
+
+Supported HTTP verbs: `Get`, `Post`, `Put`, `Patch`, `Delete`.
+
+The `on_start` webhook response body can optionally contain a `NewActionDto` JSON to register a cancel action for the task.
 
 ## Task Lifecycle
 
@@ -251,37 +352,137 @@ If a task with the same `kind`, `status`, and matching `project_id` exists, the 
 
 ## Configuration
 
-Configuration via `config.toml` or environment variables:
+All configuration is via environment variables.
 
-```toml
-port = 8085
-host_url = "http://localhost:8085"
-database_url = "postgres://user:pass@localhost/taskrunner"
+### Required
 
-[pool]
-max_size = 10
-min_idle = 2
-max_lifetime = "30m"
-idle_timeout = "10m"
-connection_timeout = "30s"
-acquire_retries = 3
-retry_delay = "100ms"
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `HOST_URL` | Public URL for webhook callbacks (must start with `http://` or `https://`) |
 
-[pagination]
-default_per_page = 50
-max_per_page = 100
+### Optional
 
-[worker]
-loop_interval = "1s"
-timeout_check_interval = "5s"
-batch_flush_interval = "100ms"
-batch_channel_capacity = 100
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8085` | Server port |
+| `RUST_LOG` | `info` | Log level |
 
-Environment variables:
-- `DATABASE_URL` - PostgreSQL connection string
-- `HOST_URL` - Public URL for webhook callbacks
-- `RUST_LOG` - Log level (default: info)
+### Connection Pool
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POOL_MAX_SIZE` | `10` | Maximum connections |
+| `POOL_MIN_IDLE` | `5` | Minimum idle connections |
+| `POOL_ACQUIRE_RETRIES` | `3` | Connection acquire retries |
+| `POOL_TIMEOUT_SECS` | `30` | Connection timeout in seconds |
+
+### Pagination
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAGINATION_DEFAULT` | `50` | Default items per page |
+| `PAGINATION_MAX` | `100` | Maximum items per page |
+
+### Worker
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WORKER_LOOP_INTERVAL_MS` | `1000` | Worker loop interval in ms |
+| `BATCH_CHANNEL_CAPACITY` | `100` | Batch update channel size |
+
+### Circuit Breaker
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CIRCUIT_BREAKER_ENABLED` | `1` | Enable circuit breaker (0 to disable) |
+| `CIRCUIT_BREAKER_FAILURE_THRESHOLD` | `5` | Failures before circuit opens |
+| `CIRCUIT_BREAKER_FAILURE_WINDOW_SECS` | `10` | Time window for counting failures |
+| `CIRCUIT_BREAKER_RECOVERY_TIMEOUT_SECS` | `30` | Time before trying half-open |
+| `CIRCUIT_BREAKER_SUCCESS_THRESHOLD` | `2` | Successes in half-open to close |
+
+### Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SLOW_QUERY_THRESHOLD_MS` | `100` | Slow query warning threshold in ms |
+| `TRACING_ENABLED` | `0` | Enable OpenTelemetry distributed tracing |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | - | OTLP endpoint URL (e.g., `http://localhost:4317`) |
+| `OTEL_SERVICE_NAME` | `task-runner` | Service name for traces |
+| `OTEL_SAMPLING_RATIO` | `1.0` | Sampling ratio (0.0 to 1.0) |
+
+### Security
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SKIP_SSRF_VALIDATION` | `1` (debug) / `0` (release) | Skip SSRF validation on webhook URLs |
+| `BLOCKED_HOSTNAMES` | `localhost,127.0.0.1,::1,0.0.0.0,local,internal` | Comma-separated blocked hostnames |
+| `BLOCKED_HOSTNAME_SUFFIXES` | `.local,.internal,.localdomain,.localhost` | Comma-separated blocked hostname suffixes |
+
+## Metrics
+
+Prometheus metrics exposed at `GET /metrics`:
+
+### Task Counters
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `tasks_created_total` | - | Total tasks created |
+| `tasks_completed_total` | `outcome`, `kind` | Tasks completed by outcome and kind |
+| `tasks_cancelled_total` | - | Tasks cancelled |
+| `tasks_timed_out_total` | - | Tasks timed out |
+| `task_status_transitions_total` | `from_status`, `to_status` | Status transitions |
+
+### Task Gauges
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `tasks_by_status` | `status` | Current tasks by status |
+| `running_tasks_by_kind` | `kind` | Running tasks by kind |
+
+### Dependencies
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `tasks_with_dependencies_total` | - | Tasks created with dependencies |
+| `dependency_propagations_total` | `parent_outcome` | Dependency propagations |
+| `tasks_unblocked_total` | - | Tasks unblocked after dependencies completed |
+| `tasks_failed_by_dependency_total` | - | Tasks failed due to parent failure |
+
+### Webhooks
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `webhook_executions_total` | `trigger`, `outcome` | Webhook calls |
+| `webhook_duration_seconds` | `trigger` | Webhook duration histogram |
+
+### Concurrency
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `tasks_blocked_by_concurrency_total` | - | Tasks blocked by rules |
+
+### Duration
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `task_duration_seconds` | `kind`, `outcome` | Task execution duration |
+| `task_wait_seconds` | `kind` | Time from Pending to Running |
+
+### Worker
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `worker_loop_iterations_total` | - | Worker loop iterations |
+| `worker_loop_duration_seconds` | - | Worker loop duration |
+| `tasks_processed_per_loop` | - | Tasks processed per iteration |
+
+### Database
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `db_query_duration_seconds` | `query` | Query duration |
+| `slow_queries_total` | `query` | Queries exceeding threshold |
+| `tasks_db_save_failures_total` | - | DB save failures after retries |
+| `batch_update_failures_total` | - | Batch update failures (re-queued) |
+
+### Circuit Breaker
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `circuit_breaker_state_transitions_total` | `to_state` | State transitions |
+| `circuit_breaker_rejections_total` | - | Requests rejected |
 
 ## Development
 
@@ -363,30 +564,42 @@ docker pull plawn/task-runner:latest
   - Atomic counters (`AtomicI32`) for success/failure counts
   - Automatic retry on DB failure (re-queues counts)
   - Periodic cleanup of zero-count entries
-- **Prometheus**: Metrics exposition
+- **Circuit Breaker**: Connection pool resilience with states:
+  - Closed (normal) -> Open (rejecting) -> HalfOpen (testing recovery)
+- **OpenTelemetry**: Distributed tracing with OTLP export
+- **Prometheus**: Metrics exposition with custom registry
 - **Cytoscape.js + Dagre**: DAG visualization with auto-layout
 
 ## Project Structure
 
 ```
 src/
-├── main.rs          # HTTP server, routes, and handlers
-├── models.rs        # Database models (Task, Action, Link)
-├── dtos.rs          # API DTOs and validation
-├── schema.rs        # Diesel schema (auto-generated)
-├── db_operation.rs  # Database operations
-├── workers.rs       # Background worker loop and propagation
-├── action.rs        # Webhook action execution
-├── config.rs        # Configuration loading
-├── metrics.rs       # Prometheus metrics
-└── validation.rs    # Input validation
++-- main.rs              # HTTP server, startup, worker spawning
++-- test_server.rs       # Test server binary
++-- cache_helper.rs      # Cache utility binary
++-- lib.rs               # Module declarations, DB pool initialization
++-- handlers.rs          # HTTP handlers and route configuration
++-- models.rs            # Database models (Task, Action, Link, enums)
++-- dtos.rs              # API DTOs and query parameters
++-- schema.rs            # Diesel schema (auto-generated)
++-- db_operation.rs      # Database operations
++-- workers.rs           # Background worker loop, propagation, batch updater
++-- action.rs            # Webhook action execution
++-- rule.rs              # Concurrency rules and matchers
++-- config.rs            # Configuration loading from env vars
++-- metrics.rs           # Prometheus metrics
++-- validation.rs        # Input validation and SSRF protection
++-- error.rs             # Typed error definitions
++-- circuit_breaker.rs   # Circuit breaker for DB pool resilience
++-- tracing.rs           # OpenTelemetry distributed tracing
++-- helper.rs            # Internal helpers
 static/
-└── dag.html         # DAG visualization UI
++-- dag.html             # DAG visualization UI
 test/
-└── test.ts          # Manual testing script
-migrations/          # Diesel migrations
++-- test.ts              # Manual testing script (Bun)
+migrations/              # Diesel migrations
 tests/
-└── integration_tests.rs  # Integration tests with testcontainers
++-- integration_tests.rs # Integration tests with testcontainers
 ```
 
 ## TODO
@@ -394,6 +607,10 @@ tests/
 - [x] DAG visualization UI
 - [x] Cascading failure propagation
 - [x] Cancel propagation to children
+- [x] Circuit breaker for connection pool
+- [x] Distributed tracing
+- [x] SSRF protection
+- [x] Health and readiness endpoints
 - [ ] Automatic rule reuse
 - [ ] Automatic action reuse
 - [ ] Failure count on actions for retries

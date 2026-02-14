@@ -137,6 +137,25 @@
             font-family: monospace;
             word-break: break-all;
         }
+        .failure-reason {
+            margin-top: 8px;
+            padding: 8px;
+            background: rgba(231, 76, 60, 0.15);
+            border: 1px solid #e74c3c;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            word-break: break-word;
+        }
+        .failure-reason-label {
+            color: #e74c3c;
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .duration-live {
+            color: #3498db;
+        }
         .status-badge {
             padding: 2px 8px;
             border-radius: 4px;
@@ -260,6 +279,46 @@
 
         let cy = null;
         let refreshInterval = null;
+        // Track the currently loaded batch to detect structure changes
+        let currentNodeIds = new Set();
+        let currentEdgeIds = new Set();
+        // Track the currently selected task for auto-refresh of info panel
+        let selectedTaskId = null;
+
+        function formatDuration(startStr, endStr) {
+            if (!startStr) return '-';
+            const start = new Date(startStr).getTime();
+            const end = endStr ? new Date(endStr).getTime() : Date.now();
+            const ms = end - start;
+            if (ms < 0) return '-';
+            const secs = Math.floor(ms / 1000);
+            if (secs < 60) return `${secs}s`;
+            const mins = Math.floor(secs / 60);
+            const remSecs = secs % 60;
+            if (mins < 60) return `${mins}m ${remSecs}s`;
+            const hrs = Math.floor(mins / 60);
+            const remMins = mins % 60;
+            return `${hrs}h ${remMins}m ${remSecs}s`;
+        }
+
+        function buildNodeData(task) {
+            const color = statusColors[task.status] || '#666';
+            return {
+                id: task.id,
+                taskId: task.id,
+                label: task.name,
+                name: task.name,
+                kind: task.kind,
+                status: task.status,
+                color: color,
+                borderColor: color,
+                created_at: task.created_at,
+                started_at: task.started_at,
+                ended_at: task.ended_at,
+                success: task.success,
+                failures: task.failures
+            };
+        }
 
         function initCytoscape(elements) {
             if (cy) {
@@ -321,11 +380,13 @@
 
             cy.on('tap', 'node', function(evt) {
                 const node = evt.target;
+                selectedTaskId = node.data('taskId');
                 showTaskInfo(node.data());
             });
 
             cy.on('tap', function(evt) {
                 if (evt.target === cy) {
+                    selectedTaskId = null;
                     hideTaskInfo();
                 }
             });
@@ -333,7 +394,39 @@
             document.getElementById('fitBtn').disabled = false;
         }
 
-        function showTaskInfo(data) {
+        // Update existing cytoscape nodes in-place (no layout re-run)
+        function updateCytoscapeData(tasks) {
+            tasks.forEach(task => {
+                const node = cy.getElementById(task.id);
+                if (node.length === 0) return;
+                const d = buildNodeData(task);
+                node.data(d);
+            });
+
+            // Re-render info panel if a task is selected
+            if (selectedTaskId) {
+                const selectedNode = cy.getElementById(selectedTaskId);
+                if (selectedNode.length > 0) {
+                    showTaskInfo(selectedNode.data());
+                }
+            }
+        }
+
+        // Check if graph structure changed (different set of node/edge IDs)
+        function structureChanged(tasks, links) {
+            if (tasks.length !== currentNodeIds.size) return true;
+            for (const t of tasks) {
+                if (!currentNodeIds.has(t.id)) return true;
+            }
+            const newEdgeIds = new Set(links.map(l => `${l.parent_id}-${l.child_id}`));
+            if (newEdgeIds.size !== currentEdgeIds.size) return true;
+            for (const eid of newEdgeIds) {
+                if (!currentEdgeIds.has(eid)) return true;
+            }
+            return false;
+        }
+
+        async function showTaskInfo(data) {
             const panel = document.getElementById('infoPanel');
             const content = document.getElementById('infoContent');
 
@@ -341,6 +434,16 @@
                 if (!dateStr) return '-';
                 return new Date(dateStr).toLocaleString();
             };
+
+            const isRunning = data.status === 'Running';
+            const durationStr = formatDuration(data.started_at, data.ended_at);
+            const durationClass = isRunning ? ' duration-live' : '';
+
+            let failureReasonHtml = '';
+            // For failed tasks, fetch full detail to get failure_reason
+            if (data.status === 'Failure') {
+                failureReasonHtml = '<div class="failure-reason" id="failureReasonBlock">Loading failure reason...</div>';
+            }
 
             content.innerHTML = `
                 <div class="info-row">
@@ -372,6 +475,10 @@
                     <span class="info-value">${formatDate(data.ended_at)}</span>
                 </div>
                 <div class="info-row">
+                    <span class="info-label">Duration</span>
+                    <span class="info-value${durationClass}">${durationStr}</span>
+                </div>
+                <div class="info-row">
                     <span class="info-label">Success</span>
                     <span class="info-value">${data.success}</span>
                 </div>
@@ -379,8 +486,33 @@
                     <span class="info-label">Failures</span>
                     <span class="info-value">${data.failures}</span>
                 </div>
+                ${failureReasonHtml}
             `;
             panel.classList.add('visible');
+
+            // Fetch failure reason asynchronously
+            if (data.status === 'Failure') {
+                try {
+                    const resp = await fetch(`/task/${data.taskId}`);
+                    if (resp.ok) {
+                        const fullTask = await resp.json();
+                        const block = document.getElementById('failureReasonBlock');
+                        if (block) {
+                            const reason = fullTask.failure_reason || 'No reason provided';
+                            block.innerHTML = `<div class="failure-reason-label">Failure Reason</div>${escapeHtml(reason)}`;
+                        }
+                    }
+                } catch (e) {
+                    const block = document.getElementById('failureReasonBlock');
+                    if (block) block.textContent = 'Could not load failure reason';
+                }
+            }
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
         }
 
         function hideTaskInfo() {
@@ -410,47 +542,40 @@
                     document.getElementById('stats').textContent = '';
                     if (cy) cy.destroy();
                     cy = null;
+                    currentNodeIds.clear();
+                    currentEdgeIds.clear();
                     document.getElementById('fitBtn').disabled = true;
                     return;
                 }
 
-                const elements = [];
+                // If cytoscape exists and structure hasn't changed, update in-place
+                if (cy && !structureChanged(data.tasks, data.links)) {
+                    updateCytoscapeData(data.tasks);
+                } else {
+                    // Full rebuild needed (first load or structure changed)
+                    const elements = [];
 
-                // Add nodes
-                data.tasks.forEach(task => {
-                    const color = statusColors[task.status] || '#666';
-                    elements.push({
-                        data: {
-                            id: task.id,
-                            taskId: task.id,
-                            label: task.name,
-                            name: task.name,
-                            kind: task.kind,
-                            status: task.status,
-                            color: color,
-                            borderColor: color,
-                            created_at: task.created_at,
-                            started_at: task.started_at,
-                            ended_at: task.ended_at,
-                            success: task.success,
-                            failures: task.failures
-                        }
+                    data.tasks.forEach(task => {
+                        elements.push({ data: buildNodeData(task) });
                     });
-                });
 
-                // Add edges
-                data.links.forEach(link => {
-                    elements.push({
-                        data: {
-                            id: `${link.parent_id}-${link.child_id}`,
-                            source: link.parent_id,
-                            target: link.child_id,
-                            color: link.requires_success ? '#27ae60' : '#666'
-                        }
+                    data.links.forEach(link => {
+                        elements.push({
+                            data: {
+                                id: `${link.parent_id}-${link.child_id}`,
+                                source: link.parent_id,
+                                target: link.child_id,
+                                color: link.requires_success ? '#27ae60' : '#666'
+                            }
+                        });
                     });
-                });
 
-                initCytoscape(elements);
+                    initCytoscape(elements);
+
+                    // Track structure for future in-place updates
+                    currentNodeIds = new Set(data.tasks.map(t => t.id));
+                    currentEdgeIds = new Set(data.links.map(l => `${l.parent_id}-${l.child_id}`));
+                }
 
                 // Update stats
                 const statusCounts = {};
@@ -529,7 +654,10 @@
             if (cy) cy.fit(50);
         });
 
-        document.getElementById('closeInfo').addEventListener('click', hideTaskInfo);
+        document.getElementById('closeInfo').addEventListener('click', () => {
+            selectedTaskId = null;
+            hideTaskInfo();
+        });
 
         document.getElementById('listBatchesBtn').addEventListener('click', listBatches);
 

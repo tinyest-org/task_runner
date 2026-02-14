@@ -1,133 +1,258 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     models::{ActionKindEnum, StatusKind, TriggerKind},
     rule::{Matcher, Rules},
 };
 
-// Note: TriggerKind is only used in ActionDto (output), not NewActionDto (input)
-
-#[derive(Debug, Serialize, Deserialize)]
+/// Input DTO for creating a new task. Tasks are always created in batches via `POST /task`.
+///
+/// ## Webhook callback mechanism
+/// When the worker picks up a `Pending` task, it calls the `on_start` webhook with a
+/// `?handle=<host>/task/<uuid>` query parameter. Your service uses this URL to report
+/// completion via `PATCH` (status update) or `PUT` (counter update).
+///
+/// ## Example
+/// ```json
+/// {
+///   "id": "build",
+///   "name": "Build Application",
+///   "kind": "ci",
+///   "timeout": 300,
+///   "metadata": {"project": "my-app", "branch": "main"},
+///   "on_start": {
+///     "kind": "Webhook",
+///     "params": {"url": "https://ci.example.com/build", "verb": "Post", "body": {"ref": "main"}}
+///   },
+///   "on_success": [
+///     {"kind": "Webhook", "params": {"url": "https://slack.example.com/notify", "verb": "Post"}}
+///   ]
+/// }
+/// ```
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct NewTaskDto {
-    // Local id used in order to handle dependencies
-    // set by the client, only used to be a local graph (local to the query)
+    /// Local identifier for this task within the batch. This is NOT a UUID — it's a string you
+    /// choose (e.g. "build", "deploy", "step-1") used only to wire dependencies between tasks
+    /// in the same request. The server assigns the real UUID. Other tasks reference this id in
+    /// their `dependencies` array.
     pub id: String,
 
+    /// Human-readable name for the task. Must be non-empty, max 255 characters.
     pub name: String,
 
+    /// Task category/type. Used for concurrency rule matching and filtering. Must be non-empty,
+    /// max 100 characters. Examples: "ci", "deploy", "clustering", "etl".
     pub kind: String,
+    /// Maximum execution time in seconds. If a Running task exceeds this, it is marked as Failure.
+    /// Must be positive, max 86400 (24 hours). Defaults to a server-side value if omitted.
     pub timeout: Option<i32>,
+    /// Arbitrary JSON metadata attached to the task. Used for concurrency rule matching (via
+    /// Matcher.fields) and deduplication. Max 64KB. Example: `{"projectId": "abc", "env": "prod"}`
     pub metadata: Option<serde_json::Value>,
-    /// if a task matches one of the matcher then the task is not created
+    /// Deduplication strategy. If any matcher matches an existing task in the database (same status,
+    /// kind, and metadata field values), this task is skipped (not created). Useful to avoid
+    /// duplicate task creation in retry scenarios.
     pub dedupe_strategy: Option<Vec<Matcher>>,
 
+    /// Concurrency rules for this task. Each rule is a Strategy that can limit how many tasks of a
+    /// given kind can run concurrently. The worker checks these rules before starting a Pending task.
     pub rules: Option<Rules>,
 
+    /// Webhook action called when the worker starts this task (transitions Pending -> Running).
+    /// The webhook receives a `?handle=<callback_url>` query parameter for reporting completion.
+    /// The webhook response body can optionally return a `NewActionDto` JSON to register a cancel action.
     pub on_start: NewActionDto,
 
+    /// Dependencies on other tasks in the same batch. If specified, this task starts as `Waiting`
+    /// and transitions to `Pending` only when all dependencies are met.
     pub dependencies: Option<Vec<Dependency>>,
 
+    /// Webhook actions called when this task ends with `Failure` status. Multiple actions supported.
     pub on_failure: Option<Vec<NewActionDto>>,
+    /// Webhook actions called when this task ends with `Success` status. Multiple actions supported.
     pub on_success: Option<Vec<NewActionDto>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// A dependency on another task within the same batch.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct Dependency {
+    /// The local `id` of the parent task (as defined in its `NewTaskDto.id` field).
     pub id: String,
+    /// If true, this child task will be marked as `Failure` (and propagated to its own children)
+    /// if the parent fails or is canceled. If false, the child only waits for the parent to
+    /// finish (regardless of success or failure) before becoming Pending.
     pub requires_success: bool,
 }
 
-// only one action per tas
-
-#[derive(Debug, Serialize, Deserialize)]
+/// Lightweight task representation returned by list endpoints and batch creation.
+/// Does not include actions, rules, or metadata for performance.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct BasicTaskDto {
+    /// Server-assigned UUID. Use this for all subsequent API calls (GET, PATCH, PUT, DELETE).
     pub id: uuid::Uuid,
+    /// Human-readable name.
     pub name: String,
+    /// Task category used for filtering and concurrency rules.
     pub kind: String,
+    /// Current status in the task lifecycle.
     pub status: StatusKind,
+    /// When the task was created.
     pub created_at: chrono::DateTime<Utc>,
+    /// When the worker started the task (called on_start webhook). Null if not yet started.
     pub started_at: Option<chrono::DateTime<Utc>>,
+    /// Accumulated success counter (incremented via PUT endpoint).
     pub success: i32,
+    /// Accumulated failure counter (incremented via PUT endpoint).
     pub failures: i32,
+    /// When the task reached a terminal state (Success, Failure, Canceled). Null if still active.
     pub ended_at: Option<chrono::DateTime<Utc>>,
+    /// The batch this task belongs to. All tasks created in the same POST /task call share a batch_id.
     pub batch_id: Option<uuid::Uuid>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// Payload for updating a task. Used by both `PATCH /task/{id}` (status update) and `PUT /task/{id}` (counter update).
+///
+/// ## For PATCH (status update):
+/// Set `status` to `Success` or `Failure`. When `Failure`, `failure_reason` is required.
+/// Other fields are optional.
+///
+/// ## For PUT (counter update):
+/// Only `new_success` and `new_failures` are used. At least one must be non-zero.
+/// The `status` field is ignored.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateTaskDto {
+    /// Updated metadata (merged with existing). Only used by PATCH.
     pub metadata: Option<serde_json::Value>,
+    /// New status. Only `Success` and `Failure` are accepted via the API. Only used by PATCH.
     pub status: Option<StatusKind>,
+    /// Number of successful sub-items to add to the counter. Only used by PUT. Must be non-negative.
     pub new_success: Option<i32>,
+    /// Number of failed sub-items to add to the counter. Only used by PUT. Must be non-negative.
     pub new_failures: Option<i32>,
+    /// Reason for failure. Required when `status` is `Failure`, ignored otherwise.
     pub failure_reason: Option<String>,
 }
 
-/// Input DTO for creating actions - trigger is determined by context (on_start, on_success, etc.)
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// Input DTO for creating actions. The trigger (Start/End/Cancel) is determined by context:
+/// `on_start` field -> Start trigger, `on_success` -> End+Success, `on_failure` -> End+Failure.
+///
+/// ## Example (Webhook action)
+/// ```json
+/// {
+///   "kind": "Webhook",
+///   "params": {
+///     "url": "https://my-service.com/webhook",
+///     "verb": "Post",
+///     "body": {"key": "value"},
+///     "headers": {"Authorization": "Bearer token123"}
+///   }
+/// }
+/// ```
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct NewActionDto {
+    /// Action type. Currently only `Webhook` is supported.
     pub kind: ActionKindEnum,
+    /// Action parameters. For `Webhook` kind, this must be a `WebhookParams` JSON object
+    /// with fields: `url` (required, string), `verb` (required, one of Get/Post/Put/Patch/Delete),
+    /// `body` (optional, JSON), `headers` (optional, key-value map).
     pub params: serde_json::Value,
 }
 
-/// Output DTO for returning actions - includes trigger from database
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// Output DTO for a registered action on a task. Includes the trigger type (Start/End/Cancel)
+/// which is determined by context during creation and stored in the database.
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct ActionDto {
+    /// Action type (currently only Webhook).
     pub kind: ActionKindEnum,
+    /// When this action fires: `Start` (task begins), `End` (task completes), or `Cancel` (task canceled).
     pub trigger: TriggerKind,
+    /// Action parameters (WebhookParams for Webhook kind).
     pub params: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// Full task representation returned by `GET /task/{id}`. Includes all details: actions,
+/// rules, metadata, counters, and timestamps.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskDto {
+    /// Server-assigned UUID.
     pub id: uuid::Uuid,
+    /// Human-readable name.
     pub name: String,
+    /// Task category.
     pub kind: String,
+    /// Current lifecycle status.
     pub status: StatusKind,
+    /// Timeout in seconds. Running tasks exceeding this are marked as Failure.
     pub timeout: i32,
+    /// Concurrency rules (empty array means no concurrency constraints).
     pub rules: Rules,
+    /// Arbitrary JSON metadata.
     pub metadata: serde_json::Value,
+    /// All registered actions (on_start, on_success, on_failure, cancel).
     pub actions: Vec<ActionDto>,
+    /// When the task was created.
     pub created_at: chrono::DateTime<Utc>,
+    /// When the worker started the task. Null if not yet started.
     pub started_at: Option<chrono::DateTime<Utc>>,
+    /// When the task reached a terminal state. Null if still active.
     pub ended_at: Option<chrono::DateTime<Utc>>,
+    /// Last status or counter change timestamp.
     pub last_updated: chrono::DateTime<Utc>,
+    /// Accumulated success counter.
     pub success: i32,
+    /// Accumulated failure counter.
     pub failures: i32,
+    /// Reason for failure (set via API or by the system for timeouts/dependency failures).
     pub failure_reason: Option<String>,
+    /// Batch UUID grouping tasks created in the same POST /task call.
     pub batch_id: Option<uuid::Uuid>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+/// Pagination parameters for list endpoints.
+#[derive(Debug, Serialize, Deserialize, Default, IntoParams)]
 pub struct PaginationDto {
+    /// Page number (0-indexed). Defaults to 0.
     pub page: Option<i64>,
+    /// Number of items per page. Defaults to 50, maximum 100. Values above the max are clamped.
     pub page_size: Option<i64>,
 }
-#[derive(Debug, Serialize, Deserialize, Default)]
+
+/// Filter parameters for task listing. All filters are optional and combined with AND logic.
+#[derive(Debug, Serialize, Deserialize, Default, IntoParams)]
 pub struct FilterDto {
+    /// Filter by task name (exact match).
     pub name: Option<String>,
+    /// Filter by task kind (exact match). Example: "ci", "deploy".
     pub kind: Option<String>,
+    /// Filter by task status. Example: "Running", "Pending", "Success".
     pub status: Option<StatusKind>,
+    /// Filter by timeout value (exact match).
     pub timeout: Option<i32>,
+    /// Filter by metadata substring match (searches within the JSON metadata).
     pub metadata: Option<String>,
+    /// Filter by batch UUID. Use this to get all tasks from a specific batch/DAG.
     pub batch_id: Option<uuid::Uuid>,
 }
 
-// on_start -> one
-// on_success -> many
-// on_failure -> many
-
-/// Link between tasks for DAG visualization
-#[derive(Debug, Serialize, Deserialize)]
+/// A directed dependency link between two tasks in a DAG.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct LinkDto {
+    /// UUID of the parent (upstream) task.
     pub parent_id: uuid::Uuid,
+    /// UUID of the child (downstream) task that depends on the parent.
     pub child_id: uuid::Uuid,
+    /// If true, parent must succeed for child to proceed. If parent fails, child is also marked as Failure.
     pub requires_success: bool,
 }
 
-/// DAG response containing tasks and their links for visualization
-#[derive(Debug, Serialize, Deserialize)]
+/// Complete DAG structure for a batch — all tasks and their dependency links.
+/// Returned by `GET /dag/{batch_id}`.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct DagDto {
+    /// All tasks in this batch.
     pub tasks: Vec<BasicTaskDto>,
+    /// Dependency links (parent -> child edges in the DAG).
     pub links: Vec<LinkDto>,
 }

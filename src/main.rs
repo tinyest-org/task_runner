@@ -18,7 +18,7 @@ use task_runner::{
     validation,
     workers::UpdateEvent,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use diesel_migrations::MigrationHarness;
 use diesel_migrations::{EmbeddedMigrations, embed_migrations};
@@ -61,7 +61,7 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to install rustls crypto provider");
 
     // Initialize database pool
-    let pool = initialize_db_pool().await;
+    let pool = initialize_db_pool(&config.pool).await;
     log::info!("Database pool initialized");
 
     // Run migrations
@@ -77,6 +77,9 @@ async fn main() -> std::io::Result<()> {
 
     // Create channels for batch updates
     let (sender, receiver) = mpsc::channel::<UpdateEvent>(config.worker.batch_channel_capacity);
+
+    // Create shutdown signal channel for graceful worker termination
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Create circuit breaker for connection pool resilience
     let circuit_breaker = if config.circuit_breaker.enabled {
@@ -110,36 +113,47 @@ async fn main() -> std::io::Result<()> {
     let app_data = AppState {
         pool: pool.clone(),
         sender,
-        action_executor: ActionExecutor {
-            ctx: ActionContext {
-                host_address: config.host_url.clone(),
-            },
-        },
+        action_executor: ActionExecutor::new(ActionContext {
+            host_address: config.host_url.clone(),
+        }),
         config: config.clone(),
         circuit_breaker,
     };
 
-    let action_context = Arc::new(ActionExecutor {
-        ctx: ActionContext {
-            host_address: config.host_url.clone(),
-        },
-    });
+    let action_context = Arc::new(ActionExecutor::new(ActionContext {
+        host_address: config.host_url.clone(),
+    }));
 
-    // Spawn worker tasks
+    // Spawn worker tasks with shutdown signals and configured intervals
     let p = pool.clone();
     let a = action_context.clone();
-    actix_web::rt::spawn(async move {
-        task_runner::workers::start_loop(a.as_ref(), p).await;
+    let shutdown_rx_start = shutdown_rx.clone();
+    let start_interval = config.worker.loop_interval;
+    let start_handle = actix_web::rt::spawn(async move {
+        task_runner::workers::start_loop(a.as_ref(), p, start_interval, shutdown_rx_start).await;
     });
 
     let p2 = pool.clone();
-    actix_web::rt::spawn(async {
-        task_runner::workers::timeout_loop(p2).await;
+    let shutdown_rx_timeout = shutdown_rx.clone();
+    let timeout_interval = config.worker.timeout_check_interval;
+    let timeout_handle = actix_web::rt::spawn(async move {
+        task_runner::workers::timeout_loop(p2, timeout_interval, shutdown_rx_timeout).await;
     });
 
     let p3 = pool.clone();
-    actix_web::rt::spawn(async {
-        task_runner::workers::batch_updater(p3, receiver).await;
+    let shutdown_rx_batch = shutdown_rx.clone();
+    let batch_flush_interval = config.worker.batch_flush_interval;
+    let batch_handle = actix_web::rt::spawn(async move {
+        task_runner::workers::batch_updater(p3, receiver, batch_flush_interval, shutdown_rx_batch)
+            .await;
+    });
+
+    let p4 = pool.clone();
+    let shutdown_rx_retention = shutdown_rx.clone();
+    let retention_config = config.retention.clone();
+    let retention_handle = actix_web::rt::spawn(async move {
+        task_runner::workers::retention_cleanup_loop(p4, retention_config, shutdown_rx_retention)
+            .await;
     });
 
     // Initialize custom metrics
@@ -165,6 +179,20 @@ async fn main() -> std::io::Result<()> {
     .shutdown_timeout(30) // Wait up to 30 seconds for graceful shutdown
     .run()
     .await;
+
+    // Signal workers to shut down and wait for them
+    log::info!("HTTP server stopped, signaling workers to shut down");
+    let _ = shutdown_tx.send(true);
+
+    let shutdown_timeout = std::time::Duration::from_secs(10);
+    let _ = tokio::time::timeout(shutdown_timeout, async {
+        let _ = start_handle.await;
+        let _ = timeout_handle.await;
+        let _ = batch_handle.await;
+        let _ = retention_handle.await;
+    })
+    .await;
+    log::info!("All workers shut down");
 
     // Shutdown tracing provider gracefully
     shutdown_tracing(tracer_provider);

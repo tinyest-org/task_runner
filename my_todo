@@ -1,0 +1,3 @@
+- optimisation des perfos
+- optimisation de la propagation des states vers les childrens
+- ajouter une notion de transport autre que http+json

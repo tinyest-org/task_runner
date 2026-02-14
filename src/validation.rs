@@ -209,7 +209,7 @@ pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
 }
 
 /// Validates action parameters based on action kind.
-fn validate_action_params(kind: &ActionKindEnum, params: &Value) -> Result<(), String> {
+pub fn validate_action_params(kind: &ActionKindEnum, params: &Value) -> Result<(), String> {
     match kind {
         ActionKindEnum::Webhook => {
             let webhook: Result<WebhookParams, _> = serde_json::from_value(params.clone());
@@ -224,7 +224,7 @@ fn validate_action_params(kind: &ActionKindEnum, params: &Value) -> Result<(), S
 /// Validates a webhook URL for security (SSRF prevention).
 /// Blocks internal IP ranges, localhost, and non-HTTP schemes.
 /// Can be skipped in debug builds via configuration.
-fn validate_webhook_url(url_str: &str) -> Result<(), String> {
+pub fn validate_webhook_url(url_str: &str) -> Result<(), String> {
     validate_webhook_url_with_config(url_str, &get_security_config())
 }
 
@@ -398,7 +398,38 @@ pub fn validate_update_task(dto: &UpdateTaskDto) -> ValidationResult {
     }
 }
 
-/// Validates a batch of new tasks, checking for circular dependencies.
+/// Validates an update task DTO for the PUT (batch counter) endpoint.
+/// Only validates counter fields — does NOT check status or failure_reason.
+pub fn validate_update_task_counters(dto: &UpdateTaskDto) -> ValidationResult {
+    let mut errors = Vec::new();
+
+    if let Some(success) = dto.new_success
+        && success < 0
+    {
+        errors.push(ValidationError {
+            field: "new_success".to_string(),
+            message: "new_success cannot be negative".to_string(),
+        });
+    }
+
+    if let Some(failures) = dto.new_failures
+        && failures < 0
+    {
+        errors.push(ValidationError {
+            field: "new_failures".to_string(),
+            message: "new_failures cannot be negative".to_string(),
+        });
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Validates a batch of new tasks, checking for duplicate IDs, unknown/forward
+/// dependency references, and circular dependencies.
 pub fn validate_task_batch(tasks: &[NewTaskDto]) -> ValidationResult {
     use std::collections::{HashMap, HashSet};
 
@@ -416,24 +447,56 @@ pub fn validate_task_batch(tasks: &[NewTaskDto]) -> ValidationResult {
         }
     }
 
-    // Build adjacency list for cycle detection (task_id -> list of dependency ids)
-    let task_id_to_idx: HashMap<&str, usize> = tasks
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (t.id.as_str(), i))
-        .collect();
+    // Build task_id_to_idx incrementally, checking for duplicate IDs
+    let mut task_id_to_idx: HashMap<&str, usize> = HashMap::new();
+    for (i, task) in tasks.iter().enumerate() {
+        if let Some(prev_idx) = task_id_to_idx.insert(task.id.as_str(), i) {
+            errors.push(ValidationError {
+                field: format!("tasks[{}].id", i),
+                message: format!(
+                    "duplicate task id: '{}' (first defined at index {})",
+                    task.id, prev_idx
+                ),
+            });
+        }
+    }
 
+    // Check for unknown and forward dependency references
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (i, task) in tasks.iter().enumerate() {
+        if let Some(ref deps) = task.dependencies {
+            for dep in deps {
+                if !task_id_to_idx.contains_key(dep.id.as_str()) {
+                    errors.push(ValidationError {
+                        field: format!("tasks[{}].dependencies", i),
+                        message: format!("unknown dependency: '{}'", dep.id),
+                    });
+                } else if !seen.contains(dep.id.as_str()) {
+                    errors.push(ValidationError {
+                        field: format!("tasks[{}].dependencies", i),
+                        message: format!(
+                            "dependency '{}' must appear before task '{}' in the batch",
+                            dep.id, task.id
+                        ),
+                    });
+                }
+            }
+        }
+        seen.insert(task.id.as_str());
+    }
+
+    // If we already have errors from duplicate IDs or unknown deps, skip cycle detection
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // Build adjacency list for cycle detection
     let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
     for task in tasks {
         let deps: Vec<&str> = task
             .dependencies
             .as_ref()
-            .map(|d| {
-                d.iter()
-                    .filter(|dep| task_id_to_idx.contains_key(dep.id.as_str()))
-                    .map(|dep| dep.id.as_str())
-                    .collect()
-            })
+            .map(|d| d.iter().map(|dep| dep.id.as_str()).collect())
             .unwrap_or_default();
         adj.insert(task.id.as_str(), deps);
     }
@@ -597,6 +660,8 @@ mod tests {
 
     #[test]
     fn test_circular_dependency() {
+        // task1 depends on task2 (forward ref), task2 depends on task1 (backward ref)
+        // With strict ordering, task1's dep on task2 is a forward reference error
         let mut task1 = make_valid_task("task1");
         task1.dependencies = Some(vec![Dependency {
             id: "task2".to_string(),
@@ -611,17 +676,18 @@ mod tests {
 
         let result = validate_task_batch(&[task1, task2]);
         assert!(result.is_err());
+        // Now caught as forward reference (task1 references task2 which hasn't appeared yet)
         assert!(
             result
                 .unwrap_err()
                 .iter()
-                .any(|e| e.message.contains("Circular"))
+                .any(|e| e.message.contains("must appear before"))
         );
     }
 
     #[test]
     fn test_longer_circular_dependency() {
-        // Test A -> B -> C -> A cycle detection
+        // A depends on B (forward ref) — caught before cycle detection
         let mut task_a = make_valid_task("A");
         task_a.dependencies = Some(vec![Dependency {
             id: "B".to_string(),
@@ -644,8 +710,10 @@ mod tests {
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert!(
-            errors.iter().any(|e| e.message.contains("Circular")),
-            "Expected circular dependency error, got: {:?}",
+            errors
+                .iter()
+                .any(|e| e.message.contains("must appear before")),
+            "Expected forward reference error, got: {:?}",
             errors
         );
     }
