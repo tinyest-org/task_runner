@@ -78,7 +78,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run integration tests
-        run: cargo test --test integration_tests -- --test-threads=1
+        run: cargo test --test 'test_*' -- --test-threads=1
 
   # Build AMD64 image natively on x86 runner
   docker-amd64:

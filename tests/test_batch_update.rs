@@ -95,3 +95,68 @@ async fn test_batch_update_rejects_zero_counters() {
         "Should reject updates with all zero counters"
     );
 }
+
+#[tokio::test]
+async fn test_batch_update_ignores_terminal_tasks() {
+    let (_g, test_state) = setup_test_app_with_batch_updater().await;
+    let state = test_state.state;
+    let app = test_service!(state);
+
+    // Success case
+    let tasks = vec![task_json(
+        "terminal-success",
+        "Terminal Success",
+        "batch-test",
+    )];
+    let created = create_tasks_ok(&app, &tasks).await;
+    let task_id = created[0].id;
+
+    succeed_task(&state, task_id).await;
+
+    let update_req = actix_web::test::TestRequest::put()
+        .uri(&format!("/task/{}", task_id))
+        .set_json(&json!({"new_success": 3, "new_failures": 1}))
+        .to_request();
+    let update_resp = actix_web::test::call_service(&app, update_req).await;
+    assert_eq!(
+        update_resp.status(),
+        actix_web::http::StatusCode::ACCEPTED,
+        "Batch update should be accepted even if task is terminal"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let updated: TaskDto = get_task_ok(&app, task_id).await;
+    assert_eq!(updated.success, 0, "Success counter should not change");
+    assert_eq!(updated.failures, 0, "Failure counter should not change");
+
+    // Canceled case
+    let tasks = vec![task_json(
+        "terminal-canceled",
+        "Terminal Canceled",
+        "batch-test",
+    )];
+    let created = create_tasks_ok(&app, &tasks).await;
+    let cancel_id = created[0].id;
+
+    let cancel_req = actix_web::test::TestRequest::delete()
+        .uri(&format!("/task/{}", cancel_id))
+        .to_request();
+    let cancel_resp = actix_web::test::call_service(&app, cancel_req).await;
+    assert!(cancel_resp.status().is_success());
+
+    let update_req = actix_web::test::TestRequest::put()
+        .uri(&format!("/task/{}", cancel_id))
+        .set_json(&json!({"new_success": 2, "new_failures": 2}))
+        .to_request();
+    let update_resp = actix_web::test::call_service(&app, update_req).await;
+    assert_eq!(
+        update_resp.status(),
+        actix_web::http::StatusCode::ACCEPTED,
+        "Batch update should be accepted even if task is canceled"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let updated: TaskDto = get_task_ok(&app, cancel_id).await;
+    assert_eq!(updated.success, 0, "Success counter should not change");
+    assert_eq!(updated.failures, 0, "Failure counter should not change");
+}
