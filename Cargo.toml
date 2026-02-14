@@ -56,6 +56,7 @@ testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
 tokio = { version = "1.45.0", features = ["full", "test-util"] }
 actix-rt = "2.10"
+actix-http = "3"
 
 [profile.release]
 strip = true      # Automatically strip symbols from the binary.

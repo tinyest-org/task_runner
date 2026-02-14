@@ -23,6 +23,7 @@ use tokio::sync::{mpsc, watch};
 ///
 /// Add the date of failure
 pub async fn timeout_loop(
+    evaluator: Arc<ActionExecutor>,
     pool: DbPool,
     interval: std::time::Duration,
     mut shutdown: watch::Receiver<bool>,
@@ -57,6 +58,21 @@ pub async fn timeout_loop(
                             {
                                 log::error!(
                                     "Timeout worker: failed to propagate failure for task {}: {:?}",
+                                    failed_task.id,
+                                    e
+                                );
+                            }
+
+                            if let Err(e) = fire_end_webhooks(
+                                evaluator.as_ref(),
+                                &failed_task.id,
+                                StatusKind::Failure,
+                                &mut conn,
+                            )
+                            .await
+                            {
+                                log::error!(
+                                    "Timeout worker: failed to fire on_failure webhooks for task {}: {:?}",
                                     failed_task.id,
                                     e
                                 );
@@ -241,13 +257,15 @@ async fn start_task<'a>(
     evaluator: &ActionExecutor,
     task: &Task,
     conn: &mut Conn<'a>,
-) -> Result<Vec<NewActionDto>, diesel::result::Error> {
+) -> Result<Vec<NewActionDto>, String> {
     use crate::schema::action::dsl::*;
     let actions = Action::belonging_to(&task)
         .filter(trigger.eq(TriggerKind::Start))
         .load::<Action>(conn)
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
     let mut tasks = vec![];
+    let mut errors: Vec<String> = Vec::new();
     for act in actions.iter() {
         let res = evaluator.execute(act, task).await;
         match res {
@@ -263,8 +281,16 @@ async fn start_task<'a>(
                 // update the action status to failure
                 // update the action ended_at timestamp
                 log::error!("Action {} failed: {}", act.id, e);
+                errors.push(e);
             }
         }
+    }
+    if !errors.is_empty() {
+        return Err(format!(
+            "one or more on_start actions failed for task {}: {}",
+            task.id,
+            errors.join("; ")
+        ));
     }
     Ok(tasks)
 }
@@ -475,71 +501,63 @@ pub async fn cancel_task<'a>(
 ) -> Result<(), DbError> {
     use crate::schema::action::dsl::trigger;
     use crate::schema::task::dsl::*;
-    let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
-    match t.status {
-        StatusKind::Pending | StatusKind::Paused => {
-            // we do nothing
-        }
-        StatusKind::Running => {
-            // running so we try to stop using cancel actions
-            let actions = Action::belonging_to(&t)
-                .filter(trigger.eq(TriggerKind::Cancel))
-                .load::<Action>(conn)
+    use diesel::query_dsl::methods::LockingDsl;
+
+    let task_id = *task_id;
+
+    let prev_status = db_operation::run_in_transaction(conn, |conn| {
+        Box::pin(async move {
+            let t = task
+                .filter(id.eq(task_id))
+                .for_update()
+                .first::<Task>(conn)
                 .await?;
-            for act in actions.iter() {
-                let res = evaluator.execute(act, &t).await;
-                match res {
-                    Ok(_) => {
-                        // update the action status to success
-                        // update the action ended_at timestamp
-                        log::debug!("Action {} executed successfully", act.id);
-                    }
-                    Err(e) => {
-                        // update the action status to failure
-                        // update the action ended_at timestamp
-                        log::error!("Action {} failed: {}", act.id, e);
-                    }
+
+            match t.status {
+                StatusKind::Pending | StatusKind::Paused | StatusKind::Running => {}
+                _ => {
+                    return Err(Box::from(
+                        "Invalid operation: cannot cancel task in this state",
+                    ));
+                }
+            }
+
+            diesel::update(task.filter(id.eq(task_id)))
+                .set((
+                    status.eq(StatusKind::Canceled),
+                    ended_at.eq(diesel::dsl::now),
+                    last_updated.eq(diesel::dsl::now),
+                ))
+                .execute(conn)
+                .await?;
+
+            Ok(t.status)
+        })
+    })
+    .await?;
+
+    if prev_status == StatusKind::Running {
+        let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
+        let actions = Action::belonging_to(&t)
+            .filter(trigger.eq(TriggerKind::Cancel))
+            .load::<Action>(conn)
+            .await?;
+        for act in actions.iter() {
+            let res = evaluator.execute(act, &t).await;
+            match res {
+                Ok(_) => {
+                    log::debug!("Action {} executed successfully", act.id);
+                }
+                Err(e) => {
+                    log::error!("Action {} failed: {}", act.id, e);
                 }
             }
         }
-        _ => {
-            // invalid -> return error
-            return Err(Box::from(
-                "Invalid operation: cannot cancel task in this state",
-            ));
-        }
-    }
-    // we update to the canceled state — only if still in a cancelable state
-    let updated = diesel::update(
-        task.filter(
-            id.eq(task_id).and(
-                status
-                    .eq(StatusKind::Pending)
-                    .or(status.eq(StatusKind::Running))
-                    .or(status.eq(StatusKind::Paused)),
-            ),
-        ),
-    )
-    .set((
-        status.eq(StatusKind::Canceled),
-        ended_at.eq(diesel::dsl::now),
-        last_updated.eq(diesel::dsl::now),
-    ))
-    .execute(conn)
-    .await?;
-
-    if updated == 0 {
-        // Task already transitioned to a terminal state, skip propagation
-        log::warn!(
-            "cancel_task: task {} already in terminal state, cancel skipped",
-            task_id
-        );
-        return Ok(());
     }
 
     // Propagate cancellation to dependent children
     // Canceled is treated like failure for children that require success
-    propagate_to_children(task_id, &StatusKind::Canceled, conn).await?;
+    propagate_to_children(&task_id, &StatusKind::Canceled, conn).await?;
 
     metrics::record_task_cancelled();
     Ok(())
@@ -757,7 +775,9 @@ async fn handle_one_with_counts<'a>(
         task.filter(
             id.eq(task_id)
                 // Don't update failed tasks
-                .and(status.ne(models::StatusKind::Failure)),
+                .and(status.ne(models::StatusKind::Failure))
+                .and(status.ne(models::StatusKind::Success))
+                .and(status.ne(models::StatusKind::Canceled)),
         ),
     )
     .set((

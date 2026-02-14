@@ -270,7 +270,13 @@ pub(crate) async fn list_task_filtered_paged<'a>(
         .metadata
         .and_then(|f| serde_json::from_str::<Value>(&f).ok());
     let page_size = pagination.page_size.unwrap_or(50);
-    let offset = pagination.page.unwrap_or(0) * page_size;
+    let page = pagination.page.unwrap_or(0);
+    let offset = page.checked_mul(page_size).ok_or_else(|| {
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "pagination overflow",
+        )) as DbError
+    })?;
 
     // Build base filter — escape LIKE wildcards in user input
     let name_val = escape_like_pattern(&filter.name.unwrap_or_default());
@@ -761,16 +767,17 @@ pub(crate) async fn save_cancel_actions<'a>(
     Ok(())
 }
 
-/// Mark a task as failed with a reason. Used when on_start webhook fails after claim.
+/// Mark a task as failed with a reason. Returns true if the task was updated.
+/// Used when on_start webhook fails after claim.
 pub(crate) async fn mark_task_failed<'a>(
     conn: &mut Conn<'a>,
     task_id: &uuid::Uuid,
     reason: &str,
-) -> Result<(), DbError> {
+) -> Result<bool, DbError> {
     use crate::schema::task::dsl::*;
     use diesel::dsl::now;
 
-    diesel::update(task.filter(id.eq(task_id)))
+    let updated = diesel::update(task.filter(id.eq(task_id).and(status.eq(StatusKind::Running))))
         .set((
             status.eq(StatusKind::Failure),
             failure_reason.eq(reason),
@@ -779,7 +786,7 @@ pub(crate) async fn mark_task_failed<'a>(
         ))
         .execute(conn)
         .await?;
-    Ok(())
+    Ok(updated == 1)
 }
 
 /// Mark a task as failed, propagate failure to children (in a transaction),
@@ -796,14 +803,24 @@ pub(crate) async fn fail_task_and_propagate<'a>(
     // Wrap status update + propagation in a transaction
     let tid = *task_id;
     let reason_owned = reason.to_string();
-    run_in_transaction(conn, |conn| {
+    let updated = run_in_transaction(conn, |conn| {
         Box::pin(async move {
-            mark_task_failed(conn, &tid, &reason_owned).await?;
-            workers::propagate_to_children(&tid, &StatusKind::Failure, conn).await?;
-            Ok(())
+            let updated = mark_task_failed(conn, &tid, &reason_owned).await?;
+            if updated {
+                workers::propagate_to_children(&tid, &StatusKind::Failure, conn).await?;
+            }
+            Ok(updated)
         })
     })
     .await?;
+
+    if !updated {
+        log::warn!(
+            "fail_task_and_propagate: task {} not in Running state; skipping failure propagation",
+            task_id
+        );
+        return Ok(());
+    }
 
     // After commit: fire on_failure webhooks (best-effort)
     match workers::fire_end_webhooks(evaluator, task_id, StatusKind::Failure, conn).await {

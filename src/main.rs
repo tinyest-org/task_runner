@@ -134,10 +134,11 @@ async fn main() -> std::io::Result<()> {
     });
 
     let p2 = pool.clone();
+    let a2 = action_context.clone();
     let shutdown_rx_timeout = shutdown_rx.clone();
     let timeout_interval = config.worker.timeout_check_interval;
     let timeout_handle = actix_web::rt::spawn(async move {
-        task_runner::workers::timeout_loop(p2, timeout_interval, shutdown_rx_timeout).await;
+        task_runner::workers::timeout_loop(a2, p2, timeout_interval, shutdown_rx_timeout).await;
     });
 
     let p3 = pool.clone();

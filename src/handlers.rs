@@ -63,7 +63,9 @@ pub async fn get_conn_with_retry<'a>(
 
     let mut last_error = None;
 
-    for attempt in 0..max_retries.max(1) {
+    let effective_retries = max_retries.max(1);
+
+    for attempt in 0..effective_retries {
         match pool.get().await {
             Ok(conn) => {
                 // Record success for circuit breaker
@@ -72,11 +74,11 @@ pub async fn get_conn_with_retry<'a>(
             }
             Err(e) => {
                 last_error = Some(e);
-                if attempt < max_retries - 1 {
+                if attempt + 1 < effective_retries {
                     log::warn!(
                         "Failed to acquire connection (attempt {}/{}), retrying in {}ms",
                         attempt + 1,
-                        max_retries,
+                        effective_retries,
                         retry_delay_ms
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(retry_delay_ms)).await;
@@ -91,7 +93,7 @@ pub async fn get_conn_with_retry<'a>(
     let err = last_error.unwrap();
     log::error!(
         "Failed to acquire connection after {} attempts: {}",
-        max_retries,
+        effective_retries,
         err
     );
     metrics::TASKS_BY_STATUS
@@ -217,6 +219,17 @@ pub fn enforce_pagination_limits(
         && page < 0
     {
         pagination.page = Some(0);
+    }
+
+    // Prevent overflow when computing offset = page * page_size
+    if let (Some(page), Some(page_size)) = (pagination.page, pagination.page_size) {
+        if page_size > 0 && page > 0 {
+            let max_page = i64::MAX / page_size;
+            if page > max_page {
+                log::debug!("Capping page from {} to max {}", page, max_page);
+                pagination.page = Some(max_page);
+            }
+        }
     }
 
     pagination

@@ -156,12 +156,29 @@ Located in test modules within source files:
 - **`src/config.rs`**: Configuration defaults
 - **`src/error.rs`**: Error handling
 
-### Integration Tests (`tests/integration_tests.rs`)
-Uses testcontainers for PostgreSQL. Key test categories:
-- **CRUD tests**: Create, read, update, delete tasks
-- **DAG creation tests**: Verify correct initial states for dependencies
-- **Propagation tests**: Verify status transitions when parents complete
-- **Cascading tests**: Verify failure/cancel propagation through chain
+### Integration Tests (`tests/`)
+Uses testcontainers for PostgreSQL. Split into focused test files with shared helpers:
+
+**Shared helpers** (`tests/common/`):
+- `setup.rs` — `TestApp`, `setup_test_db()`, DB migrations, `test_service!` macro
+- `state.rs` — `test_config()`, `create_test_state()`, `TestStateWithBatchUpdater`
+- `builders.rs` — `task_json()`, `task_with_deps()`, `webhook_action()`
+- `assertions.rs` — `setup_test_app()`, `create_tasks_ok()`, `get_task_ok()`, `assert_task_status()`, `succeed_task()`, `fail_task()`, `read_wait_counters()`
+
+**Test files**:
+- `test_health.rs` — Health check endpoint (1 test)
+- `test_crud.rs` — Task CRUD operations (4 tests)
+- `test_dag.rs` — DAG dependency creation patterns (7 tests)
+- `test_filtering.rs` — Listing, filtering, pagination (6 tests)
+- `test_status.rs` — Status transitions: pause, cancel, update (5 tests)
+- `test_propagation.rs` — Dependency propagation on success/failure (6 tests)
+- `test_dedupe.rs` — Deduplication logic + bug #7 regressions (3 tests)
+- `test_concurrency.rs` — Concurrency rules storage (3 tests)
+- `test_actions.rs` — Action configuration (1 test)
+- `test_edge_cases.rs` — Large metadata, special characters (2 tests)
+- `test_batch_update.rs` — Batch counter updates (3 tests)
+- `test_bug_audit1.rs` — Bug regressions: bugs #1-4, #8 (9 tests)
+- `test_bug_audit2.rs` — Bug regressions: bugs #9-11, #16, #18-19 (8 tests)
 
 ### Manual Testing (`test/test.ts`)
 Bun script for manual API testing:
@@ -188,12 +205,13 @@ bun test.ts view <batch_id>
 4. Update `cancel_task` if it should be cancelable from this state
 
 ### Fixing a Bug
-When fixing a bug, always add an integration test in `tests/integration_tests.rs` that reproduces the bug scenario and verifies the fix. The test should:
+When fixing a bug, always add an integration test in the appropriate `tests/test_bug_audit*.rs` file that reproduces the bug scenario and verifies the fix. The test should:
 1. Be named `test_bug<N>_<short_description>` (e.g. `test_bug7_dedupe_not_over_aggressive_when_metadata_is_none`)
 2. Include a doc comment explaining the original bug, the fix, and what the test asserts
 3. Assert the **correct** behavior (test passes when the fix is in place, fails if reverted)
+4. Use shared helpers from `tests/common/` (`setup_test_app`, `create_tasks_ok`, `succeed_task`, etc.)
 
-Existing bug regression tests are grouped under the "Bug Regression Tests" section at the bottom of `tests/integration_tests.rs`.
+Existing bug regression tests are in `tests/test_bug_audit1.rs` (bugs #1-4, #8) and `tests/test_bug_audit2.rs` (bugs #9-19).
 
 ### Modifying Propagation Logic
 Key file: `src/workers.rs`, function `propagate_to_children`
@@ -304,5 +322,23 @@ test/
 +-- test.ts           # Manual testing script (Bun)
 migrations/           # Diesel migrations
 tests/
-+-- integration_tests.rs  # Integration tests with testcontainers
++-- common/               # Shared test helpers
+|   +-- mod.rs            # Re-exports + test_service! macro
+|   +-- setup.rs          # TestApp, DB setup, migrations
+|   +-- state.rs          # Test config/state factories
+|   +-- builders.rs       # Task JSON builders
+|   +-- assertions.rs     # HTTP + DB assertion helpers
++-- test_health.rs        # Health check (1 test)
++-- test_crud.rs          # CRUD operations (4 tests)
++-- test_dag.rs           # DAG patterns (7 tests)
++-- test_filtering.rs     # Filtering + pagination (6 tests)
++-- test_status.rs        # Status transitions (5 tests)
++-- test_propagation.rs   # Dependency propagation (6 tests)
++-- test_dedupe.rs        # Deduplication (3 tests)
++-- test_concurrency.rs   # Concurrency rules (3 tests)
++-- test_actions.rs       # Action config (1 test)
++-- test_edge_cases.rs    # Edge cases (2 tests)
++-- test_batch_update.rs  # Batch counters (3 tests)
++-- test_bug_audit1.rs    # Bug regressions #1-4, #8 (9 tests)
++-- test_bug_audit2.rs    # Bug regressions #9-19 (8 tests)
 ```
