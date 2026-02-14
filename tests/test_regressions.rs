@@ -2,7 +2,6 @@
 mod common;
 use common::*;
 
-use actix_web::{App, HttpResponse, HttpServer, web};
 use serde_json::json;
 use std::sync::{
     Arc,
@@ -10,6 +9,7 @@ use std::sync::{
 };
 use task_runner::dtos::BasicTaskDto;
 use task_runner::models::StatusKind;
+use tokio::io::AsyncWriteExt;
 
 #[tokio::test]
 async fn test_start_loop_marks_task_failed_on_start_webhook_error() {
@@ -73,7 +73,7 @@ async fn test_timeout_loop_fires_on_failure_webhook() {
     let app = test_service!(state);
 
     let hits = Arc::new(AtomicUsize::new(0));
-    let (webhook_url, server_handle) = spawn_webhook_server(hits.clone());
+    let (webhook_url, shutdown_server) = spawn_webhook_server(hits.clone());
 
     let on_failure = json!({
         "kind": "Webhook",
@@ -105,7 +105,7 @@ async fn test_timeout_loop_fires_on_failure_webhook() {
         use diesel_async::RunQueryDsl;
         sql_query(
             "UPDATE task \
-             SET status = 'Running', started_at = $1, last_updated = $2 \
+             SET status = 'running', started_at = $1, last_updated = $2 \
              WHERE id = $3",
         )
         .bind::<Timestamptz, _>(past)
@@ -141,7 +141,7 @@ async fn test_timeout_loop_fires_on_failure_webhook() {
         "on_failure webhook should be called exactly once"
     );
 
-    let _ = server_handle.stop(true).await;
+    let _ = shutdown_server.send(());
 }
 
 #[tokio::test]
@@ -165,24 +165,34 @@ async fn test_pagination_large_page_does_not_overflow() {
     );
 }
 
-fn spawn_webhook_server(hits: Arc<AtomicUsize>) -> (String, actix_web::dev::ServerHandle) {
+fn spawn_webhook_server(hits: Arc<AtomicUsize>) -> (String, tokio::sync::oneshot::Sender<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = HttpServer::new(move || {
-        let hits = hits.clone();
-        App::new().route(
-            "/webhook",
-            web::post().to(move || {
-                hits.fetch_add(1, Ordering::SeqCst);
-                async { HttpResponse::Ok() }
-            }),
-        )
-    })
-    .listen(listener)
-    .unwrap()
-    .run();
+    listener.set_nonblocking(true).unwrap();
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
 
-    let handle = server.handle();
-    actix_web::rt::spawn(server);
-    (format!("http://{}/webhook", addr), handle)
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = listener.accept() => {
+                    if let Ok((mut stream, _)) = result {
+                        let hits = hits.clone();
+                        tokio::spawn(async move {
+                            // Read request (we don't need to parse it fully)
+                            let mut buf = [0u8; 1024];
+                            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+                            hits.fetch_add(1, Ordering::SeqCst);
+                            let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+                            let _ = stream.write_all(response.as_bytes()).await;
+                        });
+                    }
+                }
+                _ = &mut shutdown_rx => break,
+            }
+        }
+    });
+
+    (format!("http://{}/webhook", addr), shutdown_tx)
 }
