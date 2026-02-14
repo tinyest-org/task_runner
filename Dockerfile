@@ -1,6 +1,6 @@
 FROM task-builder
 
-RUN apk add --no-cache libpq-dev
+RUN apk add --no-cache libpq-dev curl
 
 COPY ./migrations /app/migrations
 COPY ./src /app/src
