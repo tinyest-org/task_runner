@@ -501,8 +501,6 @@ pub async fn cancel_task<'a>(
 ) -> Result<(), DbError> {
     use crate::schema::action::dsl::trigger;
     use crate::schema::task::dsl::*;
-    use diesel::query_dsl::methods::LockingDsl;
-
     let task_id = *task_id;
 
     let prev_status = db_operation::run_in_transaction(conn, |conn| {

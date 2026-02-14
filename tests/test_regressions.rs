@@ -2,7 +2,7 @@
 mod common;
 use common::*;
 
-use actix_web::{App, HttpResponse, web};
+use actix_web::{App, HttpResponse, HttpServer, web};
 use serde_json::json;
 use std::sync::{
     Arc,
@@ -16,7 +16,7 @@ async fn test_start_loop_marks_task_failed_on_start_webhook_error() {
     let (_g, state) = setup_test_app().await;
     let app = test_service!(state);
 
-    let task = json!({
+    let task_payload = json!({
         "id": "start-fail",
         "name": "Start Fail Task",
         "kind": "start-fail-kind",
@@ -31,7 +31,7 @@ async fn test_start_loop_marks_task_failed_on_start_webhook_error() {
         }
     });
 
-    let created = create_tasks_ok(&app, &[task]).await;
+    let created = create_tasks_ok(&app, &[task_payload]).await;
     let task_id = created[0].id;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -73,27 +73,17 @@ async fn test_timeout_loop_fires_on_failure_webhook() {
     let app = test_service!(state);
 
     let hits = Arc::new(AtomicUsize::new(0));
-    let hits_clone = hits.clone();
-    let srv = actix_web::test::start(move || {
-        let hits = hits_clone.clone();
-        App::new().route(
-            "/webhook",
-            web::post().to(move || {
-                hits.fetch_add(1, Ordering::SeqCst);
-                async { HttpResponse::Ok() }
-            }),
-        )
-    });
+    let (webhook_url, server_handle) = spawn_webhook_server(hits.clone());
 
     let on_failure = json!({
         "kind": "Webhook",
         "params": {
-            "url": srv.url("/webhook"),
+            "url": webhook_url,
             "verb": "Post"
         }
     });
 
-    let task = json!({
+    let task_payload = json!({
         "id": "timeout-fail",
         "name": "Timeout Failure Task",
         "kind": "timeout-kind",
@@ -103,24 +93,28 @@ async fn test_timeout_loop_fires_on_failure_webhook() {
         "on_failure": [on_failure]
     });
 
-    let created = create_tasks_ok(&app, &[task]).await;
+    let created = create_tasks_ok(&app, &[task_payload]).await;
     let task_id = created[0].id;
 
     let mut conn = state.pool.get().await.unwrap();
-    use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
-    use task_runner::schema::task::dsl::*;
+    use diesel::sql_query;
+    use diesel::sql_types::{Timestamptz, Uuid as SqlUuid};
 
     let past = chrono::Utc::now() - chrono::Duration::seconds(120);
-    diesel::update(task.filter(id.eq(task_id)))
-        .set((
-            status.eq(StatusKind::Running),
-            started_at.eq(past),
-            last_updated.eq(past),
-        ))
+    {
+        use diesel_async::RunQueryDsl;
+        sql_query(
+            "UPDATE task \
+             SET status = 'Running', started_at = $1, last_updated = $2 \
+             WHERE id = $3",
+        )
+        .bind::<Timestamptz, _>(past)
+        .bind::<Timestamptz, _>(past)
+        .bind::<SqlUuid, _>(task_id)
         .execute(&mut conn)
         .await
         .unwrap();
+    }
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let evaluator = Arc::new(state.action_executor.clone());
@@ -141,11 +135,13 @@ async fn test_timeout_loop_fires_on_failure_webhook() {
 
     let updated = get_task_ok(&app, task_id).await;
     assert_eq!(updated.status, StatusKind::Failure, "task should be failed");
+    let hit_count = hits.load(Ordering::SeqCst);
     assert_eq!(
-        hits.load(Ordering::SeqCst),
-        1,
+        hit_count, 1,
         "on_failure webhook should be called exactly once"
     );
+
+    let _ = server_handle.stop(true).await;
 }
 
 #[tokio::test]
@@ -167,4 +163,26 @@ async fn test_pagination_large_page_does_not_overflow() {
         list.is_empty(),
         "Huge page should return an empty list (no overflow)"
     );
+}
+
+fn spawn_webhook_server(hits: Arc<AtomicUsize>) -> (String, actix_web::dev::ServerHandle) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = HttpServer::new(move || {
+        let hits = hits.clone();
+        App::new().route(
+            "/webhook",
+            web::post().to(move || {
+                hits.fetch_add(1, Ordering::SeqCst);
+                async { HttpResponse::Ok() }
+            }),
+        )
+    })
+    .listen(listener)
+    .unwrap()
+    .run();
+
+    let handle = server.handle();
+    actix_web::rt::spawn(server);
+    (format!("http://{}/webhook", addr), handle)
 }
