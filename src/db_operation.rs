@@ -97,14 +97,9 @@ pub(crate) async fn ensure_pending_tasks_timeout<'a>(
             status
                 .eq(models::StatusKind::Running)
                 .and(started_at.is_not_null())
-                .and(
-                    started_at
-                        .assume_not_null()
-                        .lt(now.into_sql::<sql_types::Timestamptz>()
-                            - (PgInterval::from_microseconds(1_000_000)
-                                .into_sql::<sql_types::Interval>()
-                                * timeout)),
-                ),
+                .and(last_updated.lt(now.into_sql::<sql_types::Timestamptz>()
+                    - (PgInterval::from_microseconds(1_000_000).into_sql::<sql_types::Interval>()
+                        * timeout))),
         ),
     )
     .set((
