@@ -2,3 +2,5 @@
 - optimisation de la propagation des states vers les childrens
 - ajouter une notion de transport autre que http+json
 - fournir un sdk pour faciliter l'integration
+- update le front -> solidjs
+- update la CI

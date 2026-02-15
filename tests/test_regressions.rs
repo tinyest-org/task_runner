@@ -165,6 +165,76 @@ async fn test_pagination_large_page_does_not_overflow() {
     );
 }
 
+/// Regression test: batch counter updates (failures/successes via PUT) must
+/// refresh `last_updated`, which the timeout loop uses. If the timeout query
+/// checks `started_at` instead of `last_updated`, a task that is actively
+/// receiving updates will be incorrectly timed out.
+///
+/// Setup: task with timeout=2s, started 120s ago (would timeout based on started_at),
+/// but last_updated is recent (just got a failure increment).
+/// Expected: timeout loop does NOT mark it as failed.
+#[tokio::test]
+async fn test_recent_batch_update_prevents_timeout() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let task_payload = json!({
+        "id": "batch-keepalive",
+        "name": "Batch Keepalive Task",
+        "kind": "batch-kind",
+        "timeout": 2,
+        "metadata": {"test": true},
+        "on_start": webhook_action("Start")
+    });
+
+    let created = create_tasks_ok(&app, &[task_payload]).await;
+    let task_id = created[0].id;
+
+    // Force task to Running with started_at far in the past but last_updated = now
+    let mut conn = state.pool.get().await.unwrap();
+    use diesel::sql_query;
+    use diesel::sql_types::{Timestamptz, Uuid as SqlUuid};
+    {
+        let past = chrono::Utc::now() - chrono::Duration::seconds(120);
+        use diesel_async::RunQueryDsl;
+        sql_query(
+            "UPDATE task \
+             SET status = 'running', started_at = $1, last_updated = now() \
+             WHERE id = $2",
+        )
+        .bind::<Timestamptz, _>(past)
+        .bind::<SqlUuid, _>(task_id)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    }
+
+    // Run timeout loop — it should NOT timeout this task because last_updated is fresh
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let evaluator = Arc::new(state.action_executor.clone());
+    let pool = state.pool.clone();
+    let handle = tokio::spawn(async move {
+        task_runner::workers::timeout_loop(
+            evaluator,
+            pool,
+            std::time::Duration::from_millis(50),
+            shutdown_rx,
+        )
+        .await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let _ = shutdown_tx.send(true);
+    let _ = handle.await;
+
+    let updated = get_task_ok(&app, task_id).await;
+    assert_eq!(
+        updated.status,
+        StatusKind::Running,
+        "Task with recent last_updated should NOT be timed out (bug: timeout used started_at instead of last_updated)"
+    );
+}
+
 fn spawn_webhook_server(hits: Arc<AtomicUsize>) -> (String, tokio::sync::oneshot::Sender<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
