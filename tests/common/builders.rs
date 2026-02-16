@@ -1,10 +1,13 @@
 use serde_json::json;
+use task_runner::dtos::UpdateTaskDto;
+use task_runner::models::StatusKind;
 
-/// Helper to create a valid webhook action JSON
-pub fn webhook_action(trigger: &str) -> serde_json::Value {
+/// Helper to create a valid webhook action JSON.
+/// The trigger is determined by context (on_start, on_success, on_failure),
+/// not by the action payload itself.
+pub fn webhook_action() -> serde_json::Value {
     json!({
         "kind": "Webhook",
-        "trigger": trigger,
         "params": {
             "url": "https://example.com/webhook",
             "verb": "Post"
@@ -20,7 +23,7 @@ pub fn task_json(id: &str, name: &str, kind: &str) -> serde_json::Value {
         "kind": kind,
         "timeout": 60,
         "metadata": {"test": true},
-        "on_start": webhook_action("Start")
+        "on_start": webhook_action()
     })
 }
 
@@ -47,7 +50,29 @@ pub fn task_with_deps(
         "kind": kind,
         "timeout": 60,
         "metadata": {"test": true},
-        "on_start": webhook_action("Start"),
+        "on_start": webhook_action(),
         "dependencies": dependencies
     })
+}
+
+/// Helper to build an UpdateTaskDto that marks a task as Success.
+pub fn success_dto() -> UpdateTaskDto {
+    UpdateTaskDto {
+        status: Some(StatusKind::Success),
+        metadata: None,
+        new_success: None,
+        new_failures: None,
+        failure_reason: None,
+    }
+}
+
+/// Helper to build an UpdateTaskDto that marks a task as Failure with a reason.
+pub fn failure_dto(reason: &str) -> UpdateTaskDto {
+    UpdateTaskDto {
+        status: Some(StatusKind::Failure),
+        metadata: None,
+        new_success: None,
+        new_failures: None,
+        failure_reason: Some(reason.to_string()),
+    }
 }

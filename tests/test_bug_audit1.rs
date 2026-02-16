@@ -3,7 +3,6 @@ mod common;
 use common::*;
 
 use serde_json::json;
-use task_runner::dtos::TaskDto;
 use task_runner::models::StatusKind;
 
 /// Bug #1: Duplicate webhook execution across multiple workers (multi-instance race).
@@ -93,20 +92,12 @@ async fn test_bug2_double_update_no_negative_counters() {
         .await
         .unwrap();
 
-    let make_success = || task_runner::dtos::UpdateTaskDto {
-        status: Some(StatusKind::Success),
-        metadata: None,
-        new_success: None,
-        new_failures: None,
-        failure_reason: None,
-    };
-
     // First update: should succeed and propagate
     let res1 = task_runner::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
         parent_id,
-        make_success(),
+        success_dto(),
     )
     .await
     .unwrap();
@@ -121,7 +112,7 @@ async fn test_bug2_double_update_no_negative_counters() {
         &state.action_executor,
         &mut conn,
         parent_id,
-        make_success(),
+        success_dto(),
     )
     .await
     .unwrap();
@@ -162,8 +153,8 @@ async fn test_bug3_double_success_update_returns_zero_second_time() {
         "kind": "double-test",
         "timeout": 60,
         "metadata": {"test": true},
-        "on_start": webhook_action("Start"),
-        "on_success": [webhook_action("End")]
+        "on_start": webhook_action(),
+        "on_success": [webhook_action()]
     });
 
     let created = create_tasks_ok(&app, &[task]).await;
@@ -174,19 +165,11 @@ async fn test_bug3_double_success_update_returns_zero_second_time() {
         .await
         .unwrap();
 
-    let make_success = || task_runner::dtos::UpdateTaskDto {
-        status: Some(StatusKind::Success),
-        metadata: None,
-        new_success: None,
-        new_failures: None,
-        failure_reason: None,
-    };
-
     let res1 = task_runner::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
         task_id,
-        make_success(),
+        success_dto(),
     )
     .await
     .unwrap();
@@ -196,7 +179,7 @@ async fn test_bug3_double_success_update_returns_zero_second_time() {
         &state.action_executor,
         &mut conn,
         task_id,
-        make_success(),
+        success_dto(),
     )
     .await
     .unwrap();
@@ -411,23 +394,8 @@ async fn test_bug8_update_non_running_task_returns_409() {
     let (_g, state) = setup_test_app().await;
     let app = test_service!(state);
 
-    let task_payload = json!([{
-        "id": "pending-task",
-        "name": "Pending Task",
-        "kind": "test",
-        "timeout": 60,
-        "on_start": webhook_action("Start")
-    }]);
-
-    let create_req = actix_web::test::TestRequest::post()
-        .uri("/task")
-        .set_json(&task_payload)
-        .to_request();
-    let create_resp = actix_web::test::call_service(&app, create_req).await;
-    assert_eq!(create_resp.status(), actix_web::http::StatusCode::CREATED);
-
-    let body: Vec<TaskDto> = actix_web::test::read_body_json(create_resp).await;
-    let task_id = body[0].id;
+    let created = create_tasks_ok(&app, &[task_json("pending-task", "Pending Task", "test")]).await;
+    let task_id = created[0].id;
 
     // Attempt to update a Pending task — should get 409
     let update_req = actix_web::test::TestRequest::patch()

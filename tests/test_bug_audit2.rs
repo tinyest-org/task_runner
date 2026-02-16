@@ -17,14 +17,14 @@ async fn test_bug9_duplicate_ids_in_batch() {
             "name": "First",
             "kind": "test",
             "timeout": 60,
-            "on_start": webhook_action("Start")
+            "on_start": webhook_action()
         },
         {
             "id": "dup",
             "name": "Second",
             "kind": "test",
             "timeout": 60,
-            "on_start": webhook_action("Start")
+            "on_start": webhook_action()
         }
     ]);
 
@@ -53,7 +53,7 @@ async fn test_bug10_unknown_dependency() {
             "name": "Child",
             "kind": "test",
             "timeout": 60,
-            "on_start": webhook_action("Start"),
+            "on_start": webhook_action(),
             "dependencies": [{"id": "nonexistent", "requires_success": true}]
         }
     ]);
@@ -84,7 +84,7 @@ async fn test_bug11_forward_reference() {
             "name": "Task A",
             "kind": "test",
             "timeout": 60,
-            "on_start": webhook_action("Start"),
+            "on_start": webhook_action(),
             "dependencies": [{"id": "B", "requires_success": true}]
         },
         {
@@ -92,7 +92,7 @@ async fn test_bug11_forward_reference() {
             "name": "Task B",
             "kind": "test",
             "timeout": 60,
-            "on_start": webhook_action("Start")
+            "on_start": webhook_action()
         }
     ]);
 
@@ -122,7 +122,7 @@ async fn test_valid_backward_reference() {
             "kind": "test",
             "timeout": 60,
             "metadata": {"test": true},
-            "on_start": webhook_action("Start")
+            "on_start": webhook_action()
         },
         {
             "id": "B",
@@ -130,7 +130,7 @@ async fn test_valid_backward_reference() {
             "kind": "test",
             "timeout": 60,
             "metadata": {"test": true},
-            "on_start": webhook_action("Start"),
+            "on_start": webhook_action(),
             "dependencies": [{"id": "A", "requires_success": true}]
         }
     ]);
@@ -159,7 +159,7 @@ async fn test_bug16_list_includes_null_metadata() {
         "name": "No Metadata Task",
         "kind": "null-meta-test",
         "timeout": 60,
-        "on_start": webhook_action("Start")
+        "on_start": webhook_action()
     }]);
 
     let create_req = actix_web::test::TestRequest::post()
@@ -196,7 +196,7 @@ async fn test_bug18_timeout_filter() {
             "kind": "timeout-test",
             "timeout": 60,
             "metadata": {"test": true},
-            "on_start": webhook_action("Start")
+            "on_start": webhook_action()
         },
         {
             "id": "t120",
@@ -204,7 +204,7 @@ async fn test_bug18_timeout_filter() {
             "kind": "timeout-test",
             "timeout": 120,
             "metadata": {"test": true},
-            "on_start": webhook_action("Start")
+            "on_start": webhook_action()
         }
     ]);
 
@@ -246,7 +246,7 @@ async fn test_bug19_put_ignores_status_validation() {
         "kind": "test",
         "timeout": 60,
         "metadata": {"test": true},
-        "on_start": webhook_action("Start")
+        "on_start": webhook_action()
     }]);
 
     let create_req = actix_web::test::TestRequest::post()
@@ -285,7 +285,7 @@ async fn test_bug19_patch_still_validates_status() {
         "kind": "test",
         "timeout": 60,
         "metadata": {"test": true},
-        "on_start": webhook_action("Start")
+        "on_start": webhook_action()
     }]);
 
     let create_req = actix_web::test::TestRequest::post()

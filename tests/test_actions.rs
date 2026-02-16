@@ -15,9 +15,9 @@ async fn test_task_with_success_and_failure_actions() {
         "kind": "action-test",
         "timeout": 60,
         "metadata": {"test": true},
-        "on_start": webhook_action("Start"),
-        "on_success": [webhook_action("End")],
-        "on_failure": [webhook_action("End")]
+        "on_start": webhook_action(),
+        "on_success": [webhook_action()],
+        "on_failure": [webhook_action()]
     });
 
     let body = create_tasks_ok(&app, &[task]).await;

@@ -2,6 +2,7 @@
 mod common;
 use common::*;
 
+use task_runner::dtos::DagDto;
 use task_runner::models::StatusKind;
 
 #[tokio::test]
@@ -163,4 +164,83 @@ async fn test_mixed_dependency_requirements() {
     let body = create_tasks_ok(&app, &tasks).await;
     assert_eq!(body.len(), 3);
     assert_eq!(body[2].status, StatusKind::Waiting);
+}
+
+/// Verify that GET /dag/{batch_id} returns correct tasks and links.
+#[tokio::test]
+async fn test_dag_endpoint_returns_tasks_and_links() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    // Diamond: A -> B, A -> C, B -> D, C -> D
+    let tasks = vec![
+        task_json("dag-A", "Task A", "dag-endpoint"),
+        task_with_deps("dag-B", "Task B", "dag-endpoint", vec![("dag-A", true)]),
+        task_with_deps("dag-C", "Task C", "dag-endpoint", vec![("dag-A", false)]),
+        task_with_deps(
+            "dag-D",
+            "Task D",
+            "dag-endpoint",
+            vec![("dag-B", true), ("dag-C", true)],
+        ),
+    ];
+
+    // Use raw POST to capture X-Batch-ID header
+    let req = actix_web::test::TestRequest::post()
+        .uri("/task")
+        .insert_header(("requester", "test"))
+        .set_json(&tasks)
+        .to_request();
+    let resp = actix_web::test::call_service(&app, req).await;
+    assert_eq!(resp.status(), actix_web::http::StatusCode::CREATED);
+
+    let batch_id = resp
+        .headers()
+        .get("X-Batch-ID")
+        .expect("Response should have X-Batch-ID header")
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let created: Vec<task_runner::dtos::TaskDto> = actix_web::test::read_body_json(resp).await;
+    assert_eq!(created.len(), 4);
+
+    let id_a = created[0].id;
+    let id_b = created[1].id;
+    let id_c = created[2].id;
+    let id_d = created[3].id;
+
+    // GET /dag/{batch_id}
+    let dag_req = actix_web::test::TestRequest::get()
+        .uri(&format!("/dag/{}", batch_id))
+        .to_request();
+    let dag_resp = actix_web::test::call_service(&app, dag_req).await;
+    assert!(dag_resp.status().is_success());
+
+    let dag: DagDto = actix_web::test::read_body_json(dag_resp).await;
+
+    // Verify all 4 tasks are returned
+    assert_eq!(dag.tasks.len(), 4, "DAG should have 4 tasks");
+    let dag_ids: std::collections::HashSet<uuid::Uuid> = dag.tasks.iter().map(|t| t.id).collect();
+    assert!(dag_ids.contains(&id_a));
+    assert!(dag_ids.contains(&id_b));
+    assert!(dag_ids.contains(&id_c));
+    assert!(dag_ids.contains(&id_d));
+
+    // Verify 4 links: A->B, A->C, B->D, C->D
+    assert_eq!(dag.links.len(), 4, "Diamond DAG should have 4 links");
+
+    let has_link = |parent: uuid::Uuid, child: uuid::Uuid, requires_success: bool| {
+        dag.links.iter().any(|l| {
+            l.parent_id == parent && l.child_id == child && l.requires_success == requires_success
+        })
+    };
+
+    assert!(has_link(id_a, id_b, true), "A -> B (requires_success=true)");
+    assert!(
+        has_link(id_a, id_c, false),
+        "A -> C (requires_success=false)"
+    );
+    assert!(has_link(id_b, id_d, true), "B -> D (requires_success=true)");
+    assert!(has_link(id_c, id_d, true), "C -> D (requires_success=true)");
 }

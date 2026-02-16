@@ -26,7 +26,7 @@ async fn test_task_with_large_metadata() {
                 }
             }
         },
-        "on_start": webhook_action("Start")
+        "on_start": webhook_action()
     });
 
     let body = create_tasks_ok(&app, &[task]).await;
@@ -44,7 +44,7 @@ async fn test_task_with_special_characters_in_name() {
         "kind": "special-chars",
         "timeout": 60,
         "metadata": {"test": true},
-        "on_start": webhook_action("Start")
+        "on_start": webhook_action()
     });
 
     let body: Vec<TaskDto> = create_tasks_ok(&app, &[task]).await;

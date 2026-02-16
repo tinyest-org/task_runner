@@ -16,16 +16,10 @@ async fn test_dedupe_skip_existing() {
         "kind": "dedupe-kind",
         "timeout": 60,
         "metadata": {"unique_key": "abc123"},
-        "on_start": webhook_action("Start")
+        "on_start": webhook_action()
     });
 
-    let create_req1 = actix_web::test::TestRequest::post()
-        .uri("/task")
-        .insert_header(("requester", "test"))
-        .set_json(&vec![task1])
-        .to_request();
-    let create_resp1 = actix_web::test::call_service(&app, create_req1).await;
-    assert_eq!(create_resp1.status(), actix_web::http::StatusCode::CREATED);
+    create_tasks_ok(&app, &[task1]).await;
 
     // Create second task with same metadata but dedupe strategy
     let task2 = json!({
@@ -34,7 +28,7 @@ async fn test_dedupe_skip_existing() {
         "kind": "dedupe-kind",
         "timeout": 60,
         "metadata": {"unique_key": "abc123"},
-        "on_start": webhook_action("Start"),
+        "on_start": webhook_action(),
         "dedupe_strategy": [{
             "kind": "dedupe-kind",
             "status": "Pending",
@@ -68,16 +62,10 @@ async fn test_bug7_dedupe_not_over_aggressive_when_metadata_is_none() {
         "kind": "dedupe-none-kind",
         "timeout": 60,
         "metadata": {"unique_key": "abc123", "project": "test"},
-        "on_start": webhook_action("Start")
+        "on_start": webhook_action()
     });
 
-    let create_req1 = actix_web::test::TestRequest::post()
-        .uri("/task")
-        .insert_header(("requester", "test"))
-        .set_json(&vec![task1])
-        .to_request();
-    let create_resp1 = actix_web::test::call_service(&app, create_req1).await;
-    assert_eq!(create_resp1.status(), actix_web::http::StatusCode::CREATED);
+    create_tasks_ok(&app, &[task1]).await;
 
     // Step 2: Create second task WITHOUT metadata, WITH dedupe_strategy referencing fields.
     let task2 = json!({
@@ -85,7 +73,7 @@ async fn test_bug7_dedupe_not_over_aggressive_when_metadata_is_none() {
         "name": "Task Without Metadata",
         "kind": "dedupe-none-kind",
         "timeout": 60,
-        "on_start": webhook_action("Start"),
+        "on_start": webhook_action(),
         "dedupe_strategy": [{
             "kind": "dedupe-none-kind",
             "status": "Pending",
@@ -118,16 +106,10 @@ async fn test_bug7_dedupe_two_tasks_both_no_metadata() {
         "name": "No Metadata Task 1",
         "kind": "no-meta-dedupe-kind",
         "timeout": 60,
-        "on_start": webhook_action("Start")
+        "on_start": webhook_action()
     });
 
-    let create_req1 = actix_web::test::TestRequest::post()
-        .uri("/task")
-        .insert_header(("requester", "test"))
-        .set_json(&vec![task1])
-        .to_request();
-    let create_resp1 = actix_web::test::call_service(&app, create_req1).await;
-    assert_eq!(create_resp1.status(), actix_web::http::StatusCode::CREATED);
+    create_tasks_ok(&app, &[task1]).await;
 
     // Create second task without metadata, with dedupe strategy referencing fields
     let task2 = json!({
@@ -135,7 +117,7 @@ async fn test_bug7_dedupe_two_tasks_both_no_metadata() {
         "name": "No Metadata Task 2",
         "kind": "no-meta-dedupe-kind",
         "timeout": 60,
-        "on_start": webhook_action("Start"),
+        "on_start": webhook_action(),
         "dedupe_strategy": [{
             "kind": "no-meta-dedupe-kind",
             "status": "Pending",

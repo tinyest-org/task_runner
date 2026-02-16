@@ -597,6 +597,43 @@ pub async fn pause_task(
 }
 
 // =============================================================================
+// Batch Listing Handlers
+// =============================================================================
+
+#[utoipa::path(
+    get,
+    path = "/batches",
+    summary = "List batches with statistics",
+    description = "Returns a paginated list of batches with aggregated task statistics per batch. Supports filtering by task name, kind, status, and creation time range. Each batch includes status counts, distinct kinds, and timestamps.",
+    params(dtos::PaginationDto, dtos::BatchFilterDto),
+    responses(
+        (status = 200, description = "Paginated array of batch summaries", body = Vec<dtos::BatchSummaryDto>),
+    ),
+    tag = "batches"
+)]
+/// List batches with aggregated statistics
+pub async fn list_batches(
+    state: web::Data<AppState>,
+    pagination: web::Query<dtos::PaginationDto>,
+    filter: web::Query<dtos::BatchFilterDto>,
+) -> actix_web::Result<HttpResponse> {
+    let mut conn = get_conn_with_retry(
+        &state.pool,
+        &state.circuit_breaker,
+        state.config.pool.acquire_retries,
+        state.config.pool.retry_delay.as_millis() as u64,
+    )
+    .await?;
+
+    let pagination = enforce_pagination_limits(pagination.0, &state.config);
+
+    let batches = db_operation::list_batches(&mut conn, pagination, filter.0)
+        .await
+        .map_err(error::ErrorInternalServerError)?;
+    Ok(HttpResponse::Ok().json(batches))
+}
+
+// =============================================================================
 // DAG Visualization Handlers
 // =============================================================================
 
@@ -665,6 +702,7 @@ pub async fn view_dag_page() -> HttpResponse {
         batch_task_updater,
         cancel_task,
         pause_task,
+        list_batches,
         get_dag,
         view_dag_page,
     ),
@@ -679,6 +717,8 @@ pub async fn view_dag_page() -> HttpResponse {
         dtos::Dependency,
         dtos::LinkDto,
         dtos::DagDto,
+        dtos::BatchSummaryDto,
+        dtos::BatchStatusCounts,
         crate::models::StatusKind,
         crate::models::ActionKindEnum,
         crate::models::TriggerKind,
@@ -693,6 +733,7 @@ pub async fn view_dag_page() -> HttpResponse {
     tags(
         (name = "health", description = "Health and readiness probes. Use GET /health for liveness and GET /ready for readiness."),
         (name = "tasks", description = "Task CRUD and lifecycle management. Tasks are created in batches via POST /task, forming a DAG. The worker loop picks up Pending tasks and calls their on_start webhook. External systems report completion via PATCH or PUT on /task/{task_id}."),
+        (name = "batches", description = "Batch discovery. List all batches with aggregated task statistics, supporting filtering and pagination."),
         (name = "dag", description = "DAG visualization. Retrieve the full graph (tasks + dependency links) for a batch, or render the built-in HTML viewer."),
     ),
     info(
@@ -790,6 +831,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/task/{task_id}", web::put().to(batch_task_updater))
         .route("/task/{task_id}", web::delete().to(cancel_task))
         .route("/task/pause/{task_id}", web::patch().to(pause_task))
+        .route("/batches", web::get().to(list_batches))
         .route("/dag/{batch_id}", web::get().to(get_dag))
         .route("/view", web::get().to(view_dag_page))
         .service(

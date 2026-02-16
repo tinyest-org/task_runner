@@ -225,7 +225,7 @@ async fn test_my_feature() {
 |----------|-------------|
 | `task_json(id, name, kind)` | Creates basic task JSON |
 | `task_with_deps(id, name, kind, deps)` | Creates task with dependencies |
-| `webhook_action(trigger)` | Creates webhook action JSON |
+| `webhook_action()` | Creates webhook action JSON |
 
 ## Troubleshooting
 

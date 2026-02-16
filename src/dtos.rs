@@ -7,6 +7,56 @@ use crate::{
     rule::{Matcher, Rules},
 };
 
+// =============================================================================
+// Batch DTOs
+// =============================================================================
+
+/// Summary of a batch with aggregated task statistics.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct BatchSummaryDto {
+    /// The batch UUID grouping tasks created in the same POST /task call.
+    pub batch_id: uuid::Uuid,
+    /// Total number of tasks in this batch.
+    pub total_tasks: i64,
+    /// When the first task in this batch was created.
+    pub first_created_at: chrono::DateTime<Utc>,
+    /// When the most recent task in this batch was last updated.
+    pub latest_updated_at: chrono::DateTime<Utc>,
+    /// Breakdown of task counts by status.
+    pub status_counts: BatchStatusCounts,
+    /// Distinct task kinds in this batch.
+    pub kinds: Vec<String>,
+}
+
+/// Per-status task counts within a batch.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Default)]
+pub struct BatchStatusCounts {
+    pub waiting: i64,
+    pub pending: i64,
+    pub running: i64,
+    pub success: i64,
+    pub failure: i64,
+    pub paused: i64,
+    pub canceled: i64,
+}
+
+/// Filter parameters for batch listing. All filters are optional and combined with AND logic.
+/// Filters apply to tasks within each batch — a batch is included if it contains at least one
+/// matching task.
+#[derive(Debug, Serialize, Deserialize, Default, IntoParams)]
+pub struct BatchFilterDto {
+    /// Filter batches containing tasks with this kind (substring match).
+    pub kind: Option<String>,
+    /// Filter batches containing tasks with this status.
+    pub status: Option<StatusKind>,
+    /// Filter batches containing tasks with this name (substring match).
+    pub name: Option<String>,
+    /// Only include batches with tasks created on or after this timestamp.
+    pub created_after: Option<chrono::DateTime<Utc>>,
+    /// Only include batches with tasks created on or before this timestamp.
+    pub created_before: Option<chrono::DateTime<Utc>>,
+}
+
 /// Input DTO for creating a new task. Tasks are always created in batches via `POST /task`.
 ///
 /// ## Webhook callback mechanism

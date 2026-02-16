@@ -4,6 +4,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=migrations");
     println!("cargo:rerun-if-changed=.githooks");
+    println!("cargo:rerun-if-changed=static/dag.html");
 
     // Setup git hooks if we're in a git repository
     setup_git_hooks();

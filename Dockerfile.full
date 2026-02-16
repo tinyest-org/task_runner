@@ -1,3 +1,12 @@
+# Stage 1: Build UI
+FROM oven/bun:1 AS ui-builder
+WORKDIR /ui
+COPY ui/package.json ui/bun.lockb* ./
+RUN bun install
+COPY ui/ .
+RUN bun run build
+
+# Stage 2: Build Rust
 FROM rust:1-alpine3.21
 
 ENV RUSTFLAGS="-C target-feature=-crt-static"
@@ -16,6 +25,8 @@ RUN cargo build --release --bin cache
 COPY ./migrations /app/migrations
 COPY ./src /app/src
 COPY ./static /app/static
+# Copy built UI from stage 1
+COPY --from=ui-builder /static/dag.html /app/static/dag.html
 
 
 # do a release build
@@ -26,7 +37,7 @@ FROM alpine:3.21
 # if needed, install additional dependencies here
 RUN apk add --no-cache libgcc libpq-dev
 # copy the binary into the final image
-COPY --from=0 /app/target/release/server server
+COPY --from=1 /app/target/release/server server
 # set the binary as entrypoint
 ENTRYPOINT ["/server"]
 

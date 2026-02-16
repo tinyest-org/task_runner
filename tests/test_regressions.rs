@@ -89,7 +89,7 @@ async fn test_timeout_loop_fires_on_failure_webhook() {
         "kind": "timeout-kind",
         "timeout": 1,
         "metadata": {"test": true},
-        "on_start": webhook_action("Start"),
+        "on_start": webhook_action(),
         "on_failure": [on_failure]
     });
 
@@ -184,7 +184,7 @@ async fn test_recent_batch_update_prevents_timeout() {
         "kind": "batch-kind",
         "timeout": 2,
         "metadata": {"test": true},
-        "on_start": webhook_action("Start")
+        "on_start": webhook_action()
     });
 
     let created = create_tasks_ok(&app, &[task_payload]).await;
@@ -232,6 +232,89 @@ async fn test_recent_batch_update_prevents_timeout() {
         updated.status,
         StatusKind::Running,
         "Task with recent last_updated should NOT be timed out (bug: timeout used started_at instead of last_updated)"
+    );
+}
+
+/// Timeout propagation: when a parent times out, its children with
+/// requires_success=true should be marked as Failure recursively.
+#[tokio::test]
+async fn test_timeout_propagates_failure_to_children() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let tasks = vec![
+        task_json("timeout-parent", "Timeout Parent", "timeout-prop"),
+        task_with_deps(
+            "timeout-child",
+            "Timeout Child",
+            "timeout-prop",
+            vec![("timeout-parent", true)],
+        ),
+    ];
+
+    let created = create_tasks_ok(&app, &tasks).await;
+    let parent_id = created[0].id;
+    let child_id = created[1].id;
+
+    assert_eq!(created[0].status, StatusKind::Pending);
+    assert_eq!(created[1].status, StatusKind::Waiting);
+
+    // Force parent to Running with last_updated far in the past (simulates timeout)
+    let mut conn = state.pool.get().await.unwrap();
+    {
+        use diesel::sql_query;
+        use diesel::sql_types::{Timestamptz, Uuid as SqlUuid};
+        use diesel_async::RunQueryDsl;
+
+        let past = chrono::Utc::now() - chrono::Duration::seconds(120);
+        sql_query(
+            "UPDATE task \
+             SET status = 'running', started_at = $1, last_updated = $2 \
+             WHERE id = $3",
+        )
+        .bind::<Timestamptz, _>(past)
+        .bind::<Timestamptz, _>(past)
+        .bind::<SqlUuid, _>(parent_id)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    }
+
+    // Run timeout loop
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let evaluator = Arc::new(state.action_executor.clone());
+    let pool = state.pool.clone();
+    let handle = tokio::spawn(async move {
+        task_runner::workers::timeout_loop(
+            evaluator,
+            pool,
+            std::time::Duration::from_millis(50),
+            shutdown_rx,
+        )
+        .await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let _ = shutdown_tx.send(true);
+    let _ = handle.await;
+
+    assert_task_status(
+        &app,
+        parent_id,
+        StatusKind::Failure,
+        "Parent should be failed by timeout",
+    )
+    .await;
+
+    let child = get_task_ok(&app, child_id).await;
+    assert_eq!(
+        child.status,
+        StatusKind::Failure,
+        "Child with requires_success=true should fail when parent times out"
+    );
+    assert!(
+        child.failure_reason.is_some(),
+        "Child should have a failure reason"
     );
 }
 

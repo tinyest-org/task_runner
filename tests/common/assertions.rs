@@ -137,12 +137,9 @@ pub struct TaskCounters {
 /// Read wait_finished and wait_success counters directly from the task table.
 pub async fn read_wait_counters(pool: &task_runner::DbPool, task_id: uuid::Uuid) -> (i32, i32) {
     let mut conn = pool.get().await.unwrap();
-    // Use fully qualified syntax to disambiguate from diesel::RunQueryDsl
     let c: TaskCounters = diesel_async::RunQueryDsl::get_result(
-        diesel::sql_query(format!(
-            "SELECT wait_finished, wait_success FROM task WHERE id = '{}'",
-            task_id
-        )),
+        diesel::sql_query("SELECT wait_finished, wait_success FROM task WHERE id = $1")
+            .bind::<diesel::sql_types::Uuid, _>(task_id),
         &mut *conn,
     )
     .await

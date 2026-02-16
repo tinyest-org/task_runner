@@ -38,13 +38,23 @@ When a task completes, `propagate_to_children` in `src/workers.rs` handles:
 2. **Failure/Canceled**: Children with `requires_success=true` are marked as `Failure` (recursively)
 3. **Transition to Pending**: When `wait_finished=0` and `wait_success=0`, child becomes `Pending`
 
-### Worker Loop
-The worker loop in `src/workers.rs`:
+### Worker Loops
+There are two separate loops in `src/workers.rs`:
+
+**Start Loop** (`start_loop`):
 1. Finds `Pending` tasks
 2. Checks concurrency rules against running tasks
-3. Starts eligible tasks (calls on_start webhooks)
-4. Handles timeouts
-5. Does NOT handle propagation (that's done in `update_running_task` and `cancel_task`)
+3. Claims eligible tasks atomically (Pending → Running)
+4. Executes on_start webhooks
+5. On webhook failure: marks task as Failed, propagates to children, fires on_failure webhooks
+
+**Timeout Loop** (`timeout_loop`):
+1. Finds `Running` tasks where `last_updated < now - timeout` (in seconds)
+2. Marks them as `Failure` with reason "Timeout"
+3. Propagates failure to dependent children
+4. Fires on_failure webhooks
+
+**Important**: The timeout is based on `last_updated`, NOT `started_at`. This means batch counter updates (via `PUT /task/{id}`) reset the timeout clock, preventing active tasks from being incorrectly timed out.
 
 ## Code Architecture
 
@@ -179,6 +189,7 @@ Uses testcontainers for PostgreSQL. Split into focused test files with shared he
 - `test_batch_update.rs` — Batch counter updates (3 tests)
 - `test_bug_audit1.rs` — Bug regressions: bugs #1-4, #8 (9 tests)
 - `test_bug_audit2.rs` — Bug regressions: bugs #9-11, #16, #18-19 (8 tests)
+- `test_regressions.rs` — Regression tests: on_start failure, timeout+webhook, batch keepalive timeout, pagination overflow (4 tests)
 
 ### Manual Testing (`test/test.ts`)
 Bun script for manual API testing:
@@ -228,6 +239,7 @@ Key file: `src/workers.rs`, function `propagate_to_children`
    - `wait_success` counts only `requires_success=true` dependencies
 4. **Actions are per-task**: Each task has its own action records, not shared
 5. **Route configuration is centralized**: All routes in `handlers::configure_routes`, shared by main server and test server
+6. **Timeout uses `last_updated`, not `started_at`**: The timeout loop must compare `last_updated` against the timeout duration. Using `started_at` would cause tasks that are actively receiving batch updates (failures/successes via PUT) to be incorrectly timed out. See `test_recent_batch_update_prevents_timeout` regression test.
 
 ## Database Schema
 

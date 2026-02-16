@@ -98,6 +98,9 @@ Content-Type: application/json
 ]
 ```
 
+Fields:
+- `timeout` (seconds): Maximum inactivity time. The task is marked as `Failure` if `last_updated` exceeds this duration. Batch counter updates (`PUT /task/{id}`) refresh `last_updated`, resetting the timeout clock.
+
 Response: `201 Created` with array of created tasks, includes `X-Batch-ID` header.
 If all tasks were deduplicated: `204 No Content` with `X-Batch-ID` header.
 
@@ -199,6 +202,8 @@ Content-Type: application/json
 ```
 
 This endpoint efficiently batches counter updates using a lock-free `DashMap` architecture for high concurrency. At least one of `new_success` or `new_failures` must be non-zero. Returns `202 Accepted` when the update is queued.
+
+Each batch update refreshes the task's `last_updated` timestamp, which resets the timeout clock. This prevents active tasks (still receiving updates) from being incorrectly timed out.
 
 ### DAG Visualization
 
@@ -554,11 +559,13 @@ docker pull plawn/task-runner:latest
 
 - **Actix-web**: HTTP server with async handlers
 - **Diesel + diesel-async**: Async PostgreSQL ORM with bb8 connection pooling
-- **Worker Loop**: Background task that:
+- **Start Loop**: Background loop that:
   - Checks pending tasks against concurrency rules
-  - Starts eligible tasks (executes on_start webhooks)
-  - Checks for timeouts
+  - Claims and starts eligible tasks (executes on_start webhooks)
   - Propagates completions to dependent children
+- **Timeout Loop**: Background loop that:
+  - Finds running tasks where `last_updated` exceeds the timeout duration
+  - Marks them as failed, propagates to children, fires on_failure webhooks
 - **Batch Updater**: High-throughput counter updates using:
   - `DashMap` for lock-free concurrent access (per-shard locking)
   - Atomic counters (`AtomicI32`) for success/failure counts
