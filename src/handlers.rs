@@ -53,7 +53,7 @@ pub async fn get_conn_with_retry<'a>(
     retry_delay_ms: u64,
 ) -> Result<crate::Conn<'a>, actix_web::Error> {
     // Check circuit breaker first
-    if let Err(state) = circuit_breaker.check().await {
+    if let Err(state) = circuit_breaker.check() {
         log::warn!("Circuit breaker is {:?}, rejecting request", state);
         metrics::record_circuit_breaker_rejection();
         return Err(error::ErrorServiceUnavailable(
@@ -69,7 +69,7 @@ pub async fn get_conn_with_retry<'a>(
         match pool.get().await {
             Ok(conn) => {
                 // Record success for circuit breaker
-                circuit_breaker.record_success().await;
+                circuit_breaker.record_success();
                 return Ok(conn);
             }
             Err(e) => {
@@ -88,7 +88,7 @@ pub async fn get_conn_with_retry<'a>(
     }
 
     // All retries failed - record failure for circuit breaker
-    circuit_breaker.record_failure().await;
+    circuit_breaker.record_failure();
 
     let err = last_error.unwrap();
     log::error!(

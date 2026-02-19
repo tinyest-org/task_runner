@@ -7,10 +7,16 @@
 //! - Closed: Normal operation, requests flow through
 //! - Open: Failing fast, requests rejected immediately
 //! - HalfOpen: Testing if system recovered, allowing one probe request
+//!
+//! This implementation is fully lock-free using atomic operations.
+//! The hot path (Closed state) is a single atomic load with no contention.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+
+const STATE_CLOSED: u8 = 0;
+const STATE_OPEN: u8 = 1;
+const STATE_HALF_OPEN: u8 = 2;
 
 /// Circuit breaker state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +27,16 @@ pub enum State {
     Open,
     /// Testing recovery - one request allowed through
     HalfOpen,
+}
+
+impl State {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            STATE_OPEN => State::Open,
+            STATE_HALF_OPEN => State::HalfOpen,
+            _ => State::Closed,
+        }
+    }
 }
 
 impl std::fmt::Display for State {
@@ -57,11 +73,14 @@ impl Default for CircuitBreakerConfig {
     }
 }
 
-/// Thread-safe circuit breaker implementation
+/// Thread-safe, lock-free circuit breaker implementation.
+///
+/// All operations use atomic compare-and-swap for state transitions,
+/// making the hot path (Closed state) a single atomic load.
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
-    /// Current state
-    state: RwLock<State>,
+    /// Current state as AtomicU8 (0=Closed, 1=Open, 2=HalfOpen)
+    state: AtomicU8,
     /// Failure count in current window
     failure_count: AtomicU32,
     /// Success count in half-open state
@@ -80,7 +99,7 @@ impl CircuitBreaker {
         let epoch = Instant::now();
         Self {
             config,
-            state: RwLock::new(State::Closed),
+            state: AtomicU8::new(STATE_CLOSED),
             failure_count: AtomicU32::new(0),
             half_open_successes: AtomicU32::new(0),
             window_start: AtomicU64::new(0),
@@ -95,19 +114,19 @@ impl CircuitBreaker {
     }
 
     /// Get the current state of the circuit breaker
-    pub async fn state(&self) -> State {
-        *self.state.read().await
+    pub fn state(&self) -> State {
+        State::from_u8(self.state.load(Ordering::Acquire))
     }
 
     /// Check if a request should be allowed through.
     /// Returns Ok(()) if allowed, Err with state if rejected.
-    pub async fn check(&self) -> Result<(), State> {
-        let mut state = self.state.write().await;
-        let now = self.now_millis();
+    pub fn check(&self) -> Result<(), State> {
+        let current = self.state.load(Ordering::Acquire);
 
-        match *state {
-            State::Closed => {
-                // Check if failure window expired, reset counter if so
+        match current {
+            STATE_CLOSED => {
+                // Hot path: single atomic load, no contention
+                let now = self.now_millis();
                 let window_start = self.window_start.load(Ordering::Relaxed);
                 let window_ms = self.config.failure_window.as_millis() as u64;
 
@@ -117,65 +136,80 @@ impl CircuitBreaker {
                 }
                 Ok(())
             }
-            State::Open => {
-                // Check if recovery timeout has passed
+            STATE_OPEN => {
+                let now = self.now_millis();
                 let opened_at = self.opened_at.load(Ordering::Relaxed);
                 let recovery_ms = self.config.recovery_timeout.as_millis() as u64;
 
                 if now.saturating_sub(opened_at) >= recovery_ms {
-                    // Transition to half-open
-                    log::info!("Circuit breaker transitioning from Open to HalfOpen");
-                    *state = State::HalfOpen;
-                    self.half_open_successes.store(0, Ordering::Relaxed);
-                    crate::metrics::record_circuit_breaker_state("half_open");
+                    // Try to transition Open -> HalfOpen via CAS
+                    if self
+                        .state
+                        .compare_exchange(
+                            STATE_OPEN,
+                            STATE_HALF_OPEN,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        log::info!("Circuit breaker transitioning from Open to HalfOpen");
+                        self.half_open_successes.store(0, Ordering::Relaxed);
+                        crate::metrics::record_circuit_breaker_state("half_open");
+                    }
+                    // Even if CAS failed, another thread transitioned it — allow through
                     Ok(())
                 } else {
                     Err(State::Open)
                 }
             }
-            State::HalfOpen => {
+            STATE_HALF_OPEN => {
                 // Allow the request through for probing
                 Ok(())
             }
+            _ => Ok(()),
         }
     }
 
     /// Record a successful operation
-    pub async fn record_success(&self) {
-        let mut state = self.state.write().await;
+    pub fn record_success(&self) {
+        let current = self.state.load(Ordering::Acquire);
 
-        match *state {
-            State::HalfOpen => {
-                let successes = self.half_open_successes.fetch_add(1, Ordering::Relaxed) + 1;
-                if successes >= self.config.success_threshold {
+        if current == STATE_HALF_OPEN {
+            let successes = self.half_open_successes.fetch_add(1, Ordering::Relaxed) + 1;
+            if successes >= self.config.success_threshold {
+                // Try to transition HalfOpen -> Closed via CAS
+                if self
+                    .state
+                    .compare_exchange(
+                        STATE_HALF_OPEN,
+                        STATE_CLOSED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
                     log::info!(
                         "Circuit breaker closing after {} successful probes",
                         successes
                     );
-                    *state = State::Closed;
                     self.failure_count.store(0, Ordering::Relaxed);
                     self.window_start
                         .store(self.now_millis(), Ordering::Relaxed);
                     crate::metrics::record_circuit_breaker_state("closed");
                 }
             }
-            State::Closed => {
-                // Success in closed state, nothing to do
-            }
-            State::Open => {
-                // Shouldn't happen, but ignore
-            }
         }
+        // Closed or Open: nothing to do
     }
 
     /// Record a failed operation
-    pub async fn record_failure(&self) {
-        let mut state = self.state.write().await;
+    pub fn record_failure(&self) {
+        let current = self.state.load(Ordering::Acquire);
         let now = self.now_millis();
 
-        match *state {
-            State::Closed => {
-                // Check if we need to reset the window
+        match current {
+            STATE_CLOSED => {
                 let window_start = self.window_start.load(Ordering::Relaxed);
                 let window_ms = self.config.failure_window.as_millis() as u64;
 
@@ -186,25 +220,46 @@ impl CircuitBreaker {
                 } else {
                     let failures = self.failure_count.fetch_add(1, Ordering::Relaxed) + 1;
                     if failures >= self.config.failure_threshold {
-                        log::warn!(
-                            "Circuit breaker opening after {} failures in {}ms window",
-                            failures,
-                            window_ms
-                        );
-                        *state = State::Open;
-                        self.opened_at.store(now, Ordering::Relaxed);
-                        crate::metrics::record_circuit_breaker_state("open");
+                        // Try to transition Closed -> Open via CAS
+                        if self
+                            .state
+                            .compare_exchange(
+                                STATE_CLOSED,
+                                STATE_OPEN,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            log::warn!(
+                                "Circuit breaker opening after {} failures in {}ms window",
+                                failures,
+                                window_ms
+                            );
+                            self.opened_at.store(now, Ordering::Relaxed);
+                            crate::metrics::record_circuit_breaker_state("open");
+                        }
                     }
                 }
             }
-            State::HalfOpen => {
+            STATE_HALF_OPEN => {
                 // Probe failed, back to open
-                log::warn!("Circuit breaker probe failed, returning to Open state");
-                *state = State::Open;
-                self.opened_at.store(now, Ordering::Relaxed);
-                crate::metrics::record_circuit_breaker_state("open");
+                if self
+                    .state
+                    .compare_exchange(
+                        STATE_HALF_OPEN,
+                        STATE_OPEN,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    log::warn!("Circuit breaker probe failed, returning to Open state");
+                    self.opened_at.store(now, Ordering::Relaxed);
+                    crate::metrics::record_circuit_breaker_state("open");
+                }
             }
-            State::Open => {
+            _ => {
                 // Already open, nothing to do
             }
         }
@@ -220,20 +275,20 @@ impl CircuitBreaker {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_initial_state_is_closed() {
+    #[test]
+    fn test_initial_state_is_closed() {
         let cb = CircuitBreaker::new(CircuitBreakerConfig::default());
-        assert_eq!(cb.state().await, State::Closed);
+        assert_eq!(cb.state(), State::Closed);
     }
 
-    #[tokio::test]
-    async fn test_allows_requests_when_closed() {
+    #[test]
+    fn test_allows_requests_when_closed() {
         let cb = CircuitBreaker::new(CircuitBreakerConfig::default());
-        assert!(cb.check().await.is_ok());
+        assert!(cb.check().is_ok());
     }
 
-    #[tokio::test]
-    async fn test_opens_after_threshold_failures() {
+    #[test]
+    fn test_opens_after_threshold_failures() {
         let config = CircuitBreakerConfig {
             failure_threshold: 3,
             failure_window: Duration::from_secs(60),
@@ -242,17 +297,17 @@ mod tests {
         let cb = CircuitBreaker::new(config);
 
         // Record failures below threshold
-        cb.record_failure().await;
-        cb.record_failure().await;
-        assert_eq!(cb.state().await, State::Closed);
+        cb.record_failure();
+        cb.record_failure();
+        assert_eq!(cb.state(), State::Closed);
 
         // Third failure should trip the breaker
-        cb.record_failure().await;
-        assert_eq!(cb.state().await, State::Open);
+        cb.record_failure();
+        assert_eq!(cb.state(), State::Open);
     }
 
-    #[tokio::test]
-    async fn test_rejects_when_open() {
+    #[test]
+    fn test_rejects_when_open() {
         let config = CircuitBreakerConfig {
             failure_threshold: 1,
             recovery_timeout: Duration::from_secs(60),
@@ -260,16 +315,16 @@ mod tests {
         };
         let cb = CircuitBreaker::new(config);
 
-        cb.record_failure().await;
-        assert_eq!(cb.state().await, State::Open);
+        cb.record_failure();
+        assert_eq!(cb.state(), State::Open);
 
-        let result = cb.check().await;
+        let result = cb.check();
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), State::Open);
     }
 
-    #[tokio::test]
-    async fn test_transitions_to_half_open_after_timeout() {
+    #[test]
+    fn test_transitions_to_half_open_after_timeout() {
         let config = CircuitBreakerConfig {
             failure_threshold: 1,
             recovery_timeout: Duration::from_millis(10),
@@ -277,19 +332,19 @@ mod tests {
         };
         let cb = CircuitBreaker::new(config);
 
-        cb.record_failure().await;
-        assert_eq!(cb.state().await, State::Open);
+        cb.record_failure();
+        assert_eq!(cb.state(), State::Open);
 
         // Wait for recovery timeout
-        tokio::time::sleep(Duration::from_millis(15)).await;
+        std::thread::sleep(Duration::from_millis(15));
 
         // Check should transition to half-open and allow request
-        assert!(cb.check().await.is_ok());
-        assert_eq!(cb.state().await, State::HalfOpen);
+        assert!(cb.check().is_ok());
+        assert_eq!(cb.state(), State::HalfOpen);
     }
 
-    #[tokio::test]
-    async fn test_closes_after_successful_probes() {
+    #[test]
+    fn test_closes_after_successful_probes() {
         let config = CircuitBreakerConfig {
             failure_threshold: 1,
             recovery_timeout: Duration::from_millis(1),
@@ -299,24 +354,24 @@ mod tests {
         let cb = CircuitBreaker::new(config);
 
         // Trip the breaker
-        cb.record_failure().await;
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        cb.record_failure();
+        std::thread::sleep(Duration::from_millis(5));
 
         // Transition to half-open
-        cb.check().await.ok();
-        assert_eq!(cb.state().await, State::HalfOpen);
+        cb.check().ok();
+        assert_eq!(cb.state(), State::HalfOpen);
 
         // First success
-        cb.record_success().await;
-        assert_eq!(cb.state().await, State::HalfOpen);
+        cb.record_success();
+        assert_eq!(cb.state(), State::HalfOpen);
 
         // Second success should close
-        cb.record_success().await;
-        assert_eq!(cb.state().await, State::Closed);
+        cb.record_success();
+        assert_eq!(cb.state(), State::Closed);
     }
 
-    #[tokio::test]
-    async fn test_returns_to_open_on_half_open_failure() {
+    #[test]
+    fn test_returns_to_open_on_half_open_failure() {
         let config = CircuitBreakerConfig {
             failure_threshold: 1,
             recovery_timeout: Duration::from_millis(1),
@@ -325,18 +380,18 @@ mod tests {
         let cb = CircuitBreaker::new(config);
 
         // Trip and transition to half-open
-        cb.record_failure().await;
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        cb.check().await.ok();
-        assert_eq!(cb.state().await, State::HalfOpen);
+        cb.record_failure();
+        std::thread::sleep(Duration::from_millis(5));
+        cb.check().ok();
+        assert_eq!(cb.state(), State::HalfOpen);
 
         // Failure in half-open returns to open
-        cb.record_failure().await;
-        assert_eq!(cb.state().await, State::Open);
+        cb.record_failure();
+        assert_eq!(cb.state(), State::Open);
     }
 
-    #[tokio::test]
-    async fn test_failure_window_resets() {
+    #[test]
+    fn test_failure_window_resets() {
         let config = CircuitBreakerConfig {
             failure_threshold: 3,
             failure_window: Duration::from_millis(10),
@@ -345,16 +400,16 @@ mod tests {
         let cb = CircuitBreaker::new(config);
 
         // Two failures
-        cb.record_failure().await;
-        cb.record_failure().await;
+        cb.record_failure();
+        cb.record_failure();
         assert_eq!(cb.failure_count(), 2);
 
         // Wait for window to expire
-        tokio::time::sleep(Duration::from_millis(15)).await;
+        std::thread::sleep(Duration::from_millis(15));
 
         // Next failure should reset the counter
-        cb.record_failure().await;
+        cb.record_failure();
         assert_eq!(cb.failure_count(), 1);
-        assert_eq!(cb.state().await, State::Closed);
+        assert_eq!(cb.state(), State::Closed);
     }
 }

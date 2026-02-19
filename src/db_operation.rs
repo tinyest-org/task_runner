@@ -142,47 +142,55 @@ pub async fn update_running_task<'a>(
     use crate::workers;
     use tracing::Instrument;
     let s = dto.status;
-
-    // Wrap parent status update + propagation in a transaction
     let final_status_clone = dto.status;
 
-    let res = run_in_transaction(conn, |conn| {
-        Box::pin(async move {
-            let res = diesel::update(
-                task.filter(
-                    id.eq(task_id)
-                        // Only transition from Running — prevents double-propagation from concurrent requests
-                        .and(status.eq(models::StatusKind::Running)),
-                ),
-            )
+    let has_status_change = dto.status.is_some();
+
+    let res = if has_status_change {
+        // Status change: transaction needed for atomic UPDATE + propagation
+        run_in_transaction(conn, |conn| {
+            Box::pin(async move {
+                let res = diesel::update(
+                    task.filter(id.eq(task_id).and(status.eq(models::StatusKind::Running))),
+                )
+                .set((
+                    last_updated.eq(diesel::dsl::now),
+                    dto.new_success.map(|e| success.eq(success + e)),
+                    dto.new_failures.map(|e| failures.eq(failures + e)),
+                    s.filter(|e| {
+                        e == &models::StatusKind::Success || e == &models::StatusKind::Failure
+                    })
+                    .map(|_| ended_at.eq(diesel::dsl::now)),
+                    dto.metadata.map(|m| metadata.eq(m)),
+                    dto.status.as_ref().map(|m| status.eq(m)),
+                    dto.failure_reason.map(|m| failure_reason.eq(m)),
+                ))
+                .execute(conn)
+                .await?;
+
+                if res == 1 {
+                    if let Some(ref final_status) = dto.status {
+                        workers::propagate_to_children(&task_id, final_status, conn).await?;
+                    }
+                }
+
+                Ok(res)
+            })
+        })
+        .instrument(tracing::info_span!("tx_update_and_propagate"))
+        .await?
+    } else {
+        // Counter-only update: no transaction needed, autocommit for minimal row lock
+        diesel::update(task.filter(id.eq(task_id).and(status.eq(models::StatusKind::Running))))
             .set((
                 last_updated.eq(diesel::dsl::now),
                 dto.new_success.map(|e| success.eq(success + e)),
                 dto.new_failures.map(|e| failures.eq(failures + e)),
-                // if success or failure then update ended_at
-                s.filter(|e| {
-                    e == &models::StatusKind::Success || e == &models::StatusKind::Failure
-                })
-                .map(|_| ended_at.eq(diesel::dsl::now)),
                 dto.metadata.map(|m| metadata.eq(m)),
-                dto.status.as_ref().map(|m| status.eq(m)),
-                dto.failure_reason.map(|m| failure_reason.eq(m)),
             ))
             .execute(conn)
-            .await?;
-
-            // Propagate inside the transaction so parent + children are atomic
-            if let Some(ref final_status) = dto.status {
-                if res == 1 {
-                    workers::propagate_to_children(&task_id, final_status, conn).await?;
-                }
-            }
-
-            Ok(res)
-        })
-    })
-    .instrument(tracing::info_span!("tx_update_and_propagate"))
-    .await?;
+            .await?
+    };
 
     // After commit: fire webhooks and record metrics (best-effort, outside transaction)
     if let Some(ref final_status) = final_status_clone {
@@ -201,7 +209,6 @@ pub async fn update_running_task<'a>(
                 Err(e) => log::error!("task {} end webhooks failed: {}", &task_id, e),
             }
         } else {
-            // Task was not in Running state — concurrent request already handled it
             log::warn!(
                 "update_running_task: task {} was not in Running state, skipping end_task",
                 task_id
