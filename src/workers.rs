@@ -297,6 +297,7 @@ async fn start_task<'a>(
 
 /// Fire end webhooks (on_success or on_failure) for a task without propagation.
 /// Used after a transaction commits to fire webhooks best-effort.
+#[tracing::instrument(name = "fire_end_webhooks", skip(evaluator, conn), fields(task_id = %task_id, status = ?result_status))]
 pub(crate) async fn fire_end_webhooks<'a>(
     evaluator: &ActionExecutor,
     task_id: &uuid::Uuid,
@@ -369,13 +370,16 @@ pub async fn end_task<'a>(
     Ok(())
 }
 
-/// Propagates task completion to dependent children.
+/// Propagates task completion to dependent children using batched queries.
 ///
 /// When a parent task completes:
-/// 1. Decrement wait_finished for all children in Waiting status
-/// 2. If parent succeeded, also decrement wait_success for children where requires_success = true
-/// 3. If both counters reach 0, transition child from Waiting to Pending
-/// 4. If a required parent fails, mark child as Failure
+/// 1. If parent failed/canceled: batch-mark all requires_success children as Failure
+/// 2. Batch-decrement wait_finished for all remaining children in Waiting status
+/// 3. Batch-decrement wait_success for children where parent succeeded AND requires_success
+/// 4. Batch-transition children to Pending where both counters reach 0
+///
+/// This uses O(1) queries per propagation level instead of O(N) per child.
+#[tracing::instrument(name = "propagate_to_children", skip(conn), fields(parent_id = %parent_id, status = ?result_status))]
 pub(crate) async fn propagate_to_children<'a>(
     parent_id: &uuid::Uuid,
     result_status: &StatusKind,
@@ -407,87 +411,103 @@ pub(crate) async fn propagate_to_children<'a>(
         return Ok(());
     }
 
-    for (child_id, requires_success) in children_links {
-        // If parent failed and this child required success, mark child as failed
-        if parent_failed && requires_success {
-            let failure_reason = format!("Required parent task {} failed", parent_id);
-            let updated = diesel::update(
-                task_dsl::task.filter(
-                    task_dsl::id
-                        .eq(child_id)
-                        .and(task_dsl::status.eq(StatusKind::Waiting)),
-                ),
-            )
-            .set((
-                task_dsl::status.eq(StatusKind::Failure),
-                task_dsl::failure_reason.eq(failure_reason),
-                task_dsl::ended_at.eq(diesel::dsl::now),
-            ))
-            .execute(conn)
-            .await?;
+    // Split children into groups for batched operations
+    let mut fail_child_ids: Vec<uuid::Uuid> = Vec::new();
+    let mut decrement_child_ids: Vec<uuid::Uuid> = Vec::new();
+    let mut decrement_success_child_ids: Vec<uuid::Uuid> = Vec::new();
 
-            if updated > 0 {
-                metrics::record_task_failed_by_dependency();
-                log::info!(
-                    "Child task {} marked as failed due to required parent {} failure",
-                    child_id,
-                    parent_id
-                );
-
-                // Recursively propagate failure to this child's dependents
-                // Use Box::pin to handle async recursion
-                Box::pin(propagate_to_children(&child_id, &StatusKind::Failure, conn)).await?;
-            }
-            continue;
-        }
-
-        // Decrement counters for children in Waiting status
-        // wait_finished is always decremented
-        // wait_success is only decremented if parent succeeded AND child requires success
-        let decrement_wait_success: i32 = if parent_succeeded && requires_success {
-            1
+    for (child_id, requires_success) in &children_links {
+        if parent_failed && *requires_success {
+            fail_child_ids.push(*child_id);
         } else {
-            0
-        };
+            decrement_child_ids.push(*child_id);
+            if parent_succeeded && *requires_success {
+                decrement_success_child_ids.push(*child_id);
+            }
+        }
+    }
 
-        // Decrement counters and transition to Pending if both reach 0
-        // Uses RETURNING to get new values, then conditionally updates status
-        diesel::update(
+    // 1. Batch-mark failed children (parent failed + requires_success)
+    if !fail_child_ids.is_empty() {
+        let failure_reason = format!("Required parent task {} failed", parent_id);
+        let failed_ids: Vec<uuid::Uuid> = diesel::update(
             task_dsl::task.filter(
                 task_dsl::id
-                    .eq(child_id)
+                    .eq_any(&fail_child_ids)
                     .and(task_dsl::status.eq(StatusKind::Waiting)),
             ),
         )
         .set((
-            task_dsl::wait_finished.eq(task_dsl::wait_finished - 1),
-            task_dsl::wait_success.eq(task_dsl::wait_success - decrement_wait_success),
+            task_dsl::status.eq(StatusKind::Failure),
+            task_dsl::failure_reason.eq(&failure_reason),
+            task_dsl::ended_at.eq(diesel::dsl::now),
         ))
+        .returning(task_dsl::id)
+        .get_results::<uuid::Uuid>(conn)
+        .await?;
+
+        for fid in &failed_ids {
+            metrics::record_task_failed_by_dependency();
+            log::info!(
+                "Child task {} marked as failed due to required parent {} failure",
+                fid,
+                parent_id
+            );
+        }
+
+        // Recursively propagate failure to each actually-failed child's dependents
+        for fid in &failed_ids {
+            Box::pin(propagate_to_children(fid, &StatusKind::Failure, conn)).await?;
+        }
+    }
+
+    // 2. Batch-decrement counters for remaining children
+    if !decrement_child_ids.is_empty() {
+        // Decrement wait_finished for all remaining children
+        diesel::update(
+            task_dsl::task.filter(
+                task_dsl::id
+                    .eq_any(&decrement_child_ids)
+                    .and(task_dsl::status.eq(StatusKind::Waiting)),
+            ),
+        )
+        .set(task_dsl::wait_finished.eq(task_dsl::wait_finished - 1))
         .execute(conn)
         .await?;
 
-        // Atomically transition to Pending only if counters are both 0
-        // The WHERE clause ensures this is safe even with concurrent updates
-        let updated_count = diesel::update(
+        // Decrement wait_success only for children that require it
+        if !decrement_success_child_ids.is_empty() {
+            diesel::update(
+                task_dsl::task.filter(
+                    task_dsl::id
+                        .eq_any(&decrement_success_child_ids)
+                        .and(task_dsl::status.eq(StatusKind::Waiting)),
+                ),
+            )
+            .set(task_dsl::wait_success.eq(task_dsl::wait_success - 1))
+            .execute(conn)
+            .await?;
+        }
+
+        // 3. Batch-transition to Pending where both counters reach 0
+        let unblocked_ids: Vec<uuid::Uuid> = diesel::update(
             task_dsl::task.filter(
                 task_dsl::id
-                    .eq(child_id)
+                    .eq_any(&decrement_child_ids)
                     .and(task_dsl::status.eq(StatusKind::Waiting))
                     .and(task_dsl::wait_finished.eq(0))
                     .and(task_dsl::wait_success.eq(0)),
             ),
         )
         .set(task_dsl::status.eq(StatusKind::Pending))
-        .execute(conn)
+        .returning(task_dsl::id)
+        .get_results::<uuid::Uuid>(conn)
         .await?;
 
-        if updated_count > 0 {
+        for uid in &unblocked_ids {
             metrics::record_task_unblocked();
             metrics::record_status_transition("Waiting", "Pending");
-            log::info!(
-                "Child task {} transitioned from Waiting to Pending",
-                child_id
-            );
+            log::info!("Child task {} transitioned from Waiting to Pending", uid);
         }
     }
 

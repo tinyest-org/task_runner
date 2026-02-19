@@ -321,14 +321,9 @@ pub async fn update_task(
         db_operation::UpdateTaskResult::Updated => {
             HttpResponse::Ok().body("Task updated successfully")
         }
-        db_operation::UpdateTaskResult::NotRunning => {
-            HttpResponse::Conflict().json(serde_json::json!({
-                "error": "Task is not in Running state"
-            }))
-        }
         db_operation::UpdateTaskResult::NotFound => {
             HttpResponse::NotFound().json(serde_json::json!({
-                "error": "Task not found"
+                "error": "Task not found or not in Running state"
             }))
         }
     })

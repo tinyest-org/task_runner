@@ -17,3 +17,7 @@ services:
   #     - HOST_URL=http://localhost:8085
   #   ports:
   #     - 8085:8085
+  #   ulimits:
+  #     nofile:
+  #       soft: 65536
+  #       hard: 65536

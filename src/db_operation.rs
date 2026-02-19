@@ -71,11 +71,11 @@ impl TaskDto {
             failure_reason: base_task.failure_reason,
             batch_id: base_task.batch_id,
             actions: actions
-                .iter()
+                .into_iter()
                 .map(|a| dtos::ActionDto {
-                    kind: a.kind.clone(),
-                    params: a.params.clone(),
-                    trigger: a.trigger.clone(),
+                    kind: a.kind,
+                    params: a.params,
+                    trigger: a.trigger,
                 })
                 .collect(),
         }
@@ -127,12 +127,11 @@ pub(crate) async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task
 pub enum UpdateTaskResult {
     /// Task was successfully updated (transitioned from Running).
     Updated,
-    /// Task exists but was not in Running state.
-    NotRunning,
-    /// Task does not exist.
+    /// Task does not exist or was not in Running state.
     NotFound,
 }
 
+#[tracing::instrument(name = "update_running_task", skip(evaluator, conn, dto), fields(task_id = %task_id))]
 pub async fn update_running_task<'a>(
     evaluator: &ActionExecutor,
     conn: &mut Conn<'a>,
@@ -141,19 +140,11 @@ pub async fn update_running_task<'a>(
 ) -> Result<UpdateTaskResult, DbError> {
     use crate::schema::task::dsl::*;
     use crate::workers;
-    log::debug!("Update task: {:?}", &dto);
-    let s = dto.status.clone();
-
-    // Fetch task kind for metrics before updating
-    let task_kind = task
-        .filter(id.eq(task_id))
-        .select(kind)
-        .first::<String>(conn)
-        .await
-        .ok();
+    use tracing::Instrument;
+    let s = dto.status;
 
     // Wrap parent status update + propagation in a transaction
-    let final_status_clone = dto.status.clone();
+    let final_status_clone = dto.status;
 
     let res = run_in_transaction(conn, |conn| {
         Box::pin(async move {
@@ -190,6 +181,7 @@ pub async fn update_running_task<'a>(
             Ok(res)
         })
     })
+    .instrument(tracing::info_span!("tx_update_and_propagate"))
     .await?;
 
     // After commit: fire webhooks and record metrics (best-effort, outside transaction)
@@ -201,9 +193,9 @@ pub async fn update_running_task<'a>(
                 _ => "other",
             };
             metrics::record_status_transition("Running", outcome);
-            metrics::record_task_completed(outcome, task_kind.as_deref().unwrap_or("unknown"));
-
-            match workers::fire_end_webhooks(evaluator, &task_id, final_status.clone(), conn).await
+            match workers::fire_end_webhooks(evaluator, &task_id, *final_status, conn)
+                .instrument(tracing::info_span!("fire_end_webhooks"))
+                .await
             {
                 Ok(_) => log::debug!("task {} end webhooks fired successfully", &task_id),
                 Err(e) => log::error!("task {} end webhooks failed: {}", &task_id, e),
@@ -219,8 +211,6 @@ pub async fn update_running_task<'a>(
 
     if res == 1 {
         Ok(UpdateTaskResult::Updated)
-    } else if task_kind.is_some() {
-        Ok(UpdateTaskResult::NotRunning)
     } else {
         Ok(UpdateTaskResult::NotFound)
     }
@@ -246,9 +236,13 @@ pub(crate) async fn find_detailed_task_by_id<'a>(
         return Ok(None);
     }
 
-    // All rows have the same task, collect actions
-    let base_task = results[0].0.clone();
-    let actions: Vec<Action> = results.into_iter().filter_map(|(_, a)| a).collect();
+    // All rows have the same task; take the first one by value, collect actions from the rest
+    let mut iter = results.into_iter();
+    let (base_task, first_action) = iter.next().unwrap();
+    let actions: Vec<Action> = first_action
+        .into_iter()
+        .chain(iter.filter_map(|(_, a)| a))
+        .collect();
 
     Ok(Some(TaskDto::new(base_task, actions)))
 }
@@ -622,14 +616,11 @@ pub async fn claim_task_with_rules<'a>(
     }
 
     // Pre-compute everything we need before entering the transaction closure.
-    // The closure must be 'static-safe, so we clone data out of the borrowed `t`.
+    // Build lock keys and rule checks from &t references to avoid cloning task_metadata.
     let task_id = t.id;
-    let task_kind = t.kind.clone();
-    let task_metadata = t.metadata.clone();
 
-    // Build lock keys and rule checks outside the closure
     let mut lock_keys = Vec::new();
-    let mut rule_checks: Vec<(crate::rule::ConcurencyRule, serde_json::Value)> = Vec::new();
+    let mut rule_checks: Vec<(crate::rule::ConcurencyRule, serde_json::Value, bool)> = Vec::new();
 
     for strategy in rules {
         match strategy {
@@ -637,7 +628,7 @@ pub async fn claim_task_with_rules<'a>(
                 let mut m = json!({});
                 let mut fields_ok = true;
                 for field in &concurrency_rule.matcher.fields {
-                    match task_metadata.get(field) {
+                    match t.metadata.get(field) {
                         Some(v) => {
                             m[field] = v.clone();
                         }
@@ -656,9 +647,10 @@ pub async fn claim_task_with_rules<'a>(
                     return Ok(ClaimResult::RuleBlocked);
                 }
 
-                let lock_key = concurrency_lock_key(concurrency_rule, &task_metadata);
+                let lock_key = concurrency_lock_key(concurrency_rule, &t.metadata);
+                let is_same_kind = concurrency_rule.matcher.kind == t.kind;
                 lock_keys.push(lock_key);
-                rule_checks.push((concurrency_rule.clone(), m));
+                rule_checks.push((concurrency_rule.clone(), m, is_same_kind));
             }
         }
     }
@@ -677,7 +669,7 @@ pub async fn claim_task_with_rules<'a>(
             }
 
             // Check all concurrency rules
-            for (concurrency_rule, metadata_filter) in &rule_checks {
+            for (concurrency_rule, metadata_filter, is_same_kind) in &rule_checks {
                 use crate::schema::task::dsl;
                 use diesel::PgJsonbExpressionMethods;
 
@@ -692,8 +684,7 @@ pub async fn claim_task_with_rules<'a>(
                     .get_result::<i64>(&mut *conn)
                     .await?;
 
-                let is_same_kind = concurrency_rule.matcher.kind == task_kind;
-                let allowed = if is_same_kind {
+                let allowed = if *is_same_kind {
                     count < concurrency_rule.max_concurency.into()
                 } else {
                     count <= concurrency_rule.max_concurency.into()

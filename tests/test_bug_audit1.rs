@@ -107,7 +107,7 @@ async fn test_bug2_double_update_no_negative_counters() {
         "First update should succeed"
     );
 
-    // Second update: should be no-op
+    // Second update: should be no-op (task is no longer Running)
     let res2 = task_runner::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
@@ -118,8 +118,8 @@ async fn test_bug2_double_update_no_negative_counters() {
     .unwrap();
     assert_eq!(
         res2,
-        task_runner::db_operation::UpdateTaskResult::NotRunning,
-        "Second update should be NotRunning (prevents double propagation)"
+        task_runner::db_operation::UpdateTaskResult::NotFound,
+        "Second update should be NotFound (task no longer Running, prevents double propagation)"
     );
 
     assert_task_status(
@@ -185,8 +185,8 @@ async fn test_bug3_double_success_update_returns_zero_second_time() {
     .unwrap();
     assert_eq!(
         res2,
-        task_runner::db_operation::UpdateTaskResult::NotRunning,
-        "Second update should be NotRunning — prevents duplicate webhook execution"
+        task_runner::db_operation::UpdateTaskResult::NotFound,
+        "Second update should be NotFound (task no longer Running) — prevents duplicate webhook execution"
     );
 
     assert_task_status(
@@ -388,16 +388,16 @@ async fn test_bug8_update_nonexistent_task_returns_404() {
     );
 }
 
-/// Bug: A task that exists but is in Pending state should return 409 Conflict.
+/// Bug: A task that exists but is in Pending state should return 404 (not in Running state).
 #[tokio::test]
-async fn test_bug8_update_non_running_task_returns_409() {
+async fn test_bug8_update_non_running_task_returns_404() {
     let (_g, state) = setup_test_app().await;
     let app = test_service!(state);
 
     let created = create_tasks_ok(&app, &[task_json("pending-task", "Pending Task", "test")]).await;
     let task_id = created[0].id;
 
-    // Attempt to update a Pending task — should get 409
+    // Attempt to update a Pending task — should get 404 (not Running)
     let update_req = actix_web::test::TestRequest::patch()
         .uri(&format!("/task/{}", task_id))
         .set_json(&json!({"status": "Success"}))
@@ -406,7 +406,7 @@ async fn test_bug8_update_non_running_task_returns_409() {
 
     assert_eq!(
         update_resp.status(),
-        actix_web::http::StatusCode::CONFLICT,
-        "Updating a Pending (non-Running) task should return 409 Conflict"
+        actix_web::http::StatusCode::NOT_FOUND,
+        "Updating a Pending (non-Running) task should return 404"
     );
 }

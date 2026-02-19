@@ -4,3 +4,4 @@
 - fournir un sdk pour faciliter l'integration
 - update le front -> solidjs
 - update la CI
+- audit de perfo

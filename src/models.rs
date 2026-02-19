@@ -99,7 +99,9 @@ pub struct NewAction<'a> {
 // }
 
 /// The type of action to execute. Currently only Webhook is supported.
-#[derive(Debug, PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, ToSchema)]
+#[derive(
+    Debug, PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, Copy, ToSchema,
+)]
 #[db_enum(existing_type_path = "crate::schema::sql_types::ActionKind")]
 pub enum ActionKindEnum {
     /// HTTP webhook call. Params must be a WebhookParams JSON object.
@@ -107,7 +109,9 @@ pub enum ActionKindEnum {
 }
 
 /// When an action is triggered in the task lifecycle.
-#[derive(Debug, PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, ToSchema)]
+#[derive(
+    Debug, PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, Copy, ToSchema,
+)]
 #[db_enum(existing_type_path = "crate::schema::sql_types::TriggerKind")]
 pub enum TriggerKind {
     /// Fired when the worker starts the task (Pending -> Running transition).
@@ -119,7 +123,9 @@ pub enum TriggerKind {
 }
 
 /// Condition that determines which End-trigger action fires.
-#[derive(Debug, PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, ToSchema)]
+#[derive(
+    Debug, PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, Copy, ToSchema,
+)]
 #[db_enum(existing_type_path = "crate::schema::sql_types::TriggerCondition")]
 pub enum TriggerCondition {
     /// Action fires when the task ends with Success status.
@@ -138,7 +144,16 @@ pub enum TriggerCondition {
 /// - Any active state -> Canceled (via DELETE API)
 /// - Any active state -> Paused (via PATCH /task/pause/{id})
 #[derive(
-    Debug, PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, Hash, Eq, ToSchema,
+    Debug,
+    PartialEq,
+    Serialize,
+    diesel_derive_enum::DbEnum,
+    Deserialize,
+    Clone,
+    Copy,
+    Hash,
+    Eq,
+    ToSchema,
 )]
 #[db_enum(existing_type_path = "crate::schema::sql_types::StatusKind")]
 pub enum StatusKind {
