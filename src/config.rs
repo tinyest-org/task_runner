@@ -82,6 +82,9 @@ pub struct WorkerConfig {
     /// Interval for timeout check loop
     pub timeout_check_interval: Duration,
 
+    /// Maximum time a task can stay Claimed before being requeued
+    pub claim_timeout: Duration,
+
     /// Interval for batch updater flush
     pub batch_flush_interval: Duration,
 
@@ -185,6 +188,7 @@ impl Default for WorkerConfig {
         Self {
             loop_interval: Duration::from_secs(1),
             timeout_check_interval: Duration::from_secs(1),
+            claim_timeout: Duration::from_secs(30),
             batch_flush_interval: Duration::from_millis(100),
             batch_channel_capacity: 100,
         }
@@ -283,6 +287,7 @@ impl Config {
     /// - `PAGINATION_DEFAULT`: Default items per page (default: 50)
     /// - `PAGINATION_MAX`: Max items per page (default: 100)
     /// - `WORKER_LOOP_INTERVAL_MS`: Worker loop interval in ms (default: 1000)
+    /// - `WORKER_CLAIM_TIMEOUT_SECS`: Max time a task can stay Claimed before requeue (default: 30)
     /// - `BATCH_CHANNEL_CAPACITY`: Batch update channel size (default: 100)
     /// - `CIRCUIT_BREAKER_ENABLED`: Enable circuit breaker (default: true)
     /// - `CIRCUIT_BREAKER_FAILURE_THRESHOLD`: Failures before opening (default: 5)
@@ -325,6 +330,7 @@ impl Config {
 
         let worker = WorkerConfig {
             loop_interval: Duration::from_millis(parse_env_or("WORKER_LOOP_INTERVAL_MS", 1000)?),
+            claim_timeout: Duration::from_secs(parse_env_or("WORKER_CLAIM_TIMEOUT_SECS", 30)?),
             batch_channel_capacity: parse_env_or("BATCH_CHANNEL_CAPACITY", 100)?,
             ..Default::default()
         };
@@ -441,6 +447,13 @@ impl Config {
             return Err(ConfigError {
                 field: "PAGINATION_DEFAULT".to_string(),
                 message: "Cannot be greater than PAGINATION_MAX".to_string(),
+            });
+        }
+
+        if self.worker.claim_timeout.as_secs() == 0 {
+            return Err(ConfigError {
+                field: "WORKER_CLAIM_TIMEOUT_SECS".to_string(),
+                message: "Must be greater than 0".to_string(),
             });
         }
 

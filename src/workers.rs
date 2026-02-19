@@ -26,6 +26,7 @@ pub async fn timeout_loop(
     evaluator: Arc<ActionExecutor>,
     pool: DbPool,
     interval: std::time::Duration,
+    claim_timeout: std::time::Duration,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -33,6 +34,28 @@ pub async fn timeout_loop(
         let conn = pool.get();
 
         if let Ok(mut conn) = conn.await {
+            let requeued =
+                db_operation::requeue_stale_claimed_tasks(&mut conn, claim_timeout).await;
+            match requeued {
+                Ok(tasks) => {
+                    if !tasks.is_empty() {
+                        for _ in &tasks {
+                            metrics::record_status_transition("Claimed", "Pending");
+                        }
+                        log::warn!(
+                            "Timeout worker: requeued {} stale claimed tasks, {:?}",
+                            tasks.len(),
+                            tasks.iter().map(|t| t.id).collect::<Vec<_>>()
+                        );
+                    } else {
+                        log::debug!("Timeout worker: no stale claimed tasks");
+                    }
+                }
+                Err(e) => {
+                    log::error!("Timeout worker: error requeuing claimed tasks: {:?}", e);
+                }
+            }
+
             let res = db_operation::ensure_pending_tasks_timeout(&mut conn).await;
             match res {
                 Ok(failed) => {
@@ -139,25 +162,47 @@ pub async fn start_loop(
                         // Atomically check concurrency rules + claim in a single transaction
                         match db_operation::claim_task_with_rules(&mut conn, &t).await {
                             Ok(db_operation::ClaimResult::Claimed) => {
+                                metrics::record_status_transition("Pending", "Claimed");
                                 // Task claimed, now execute the on_start webhook
                                 match start_task(evaluator, &t, &mut conn).await {
                                     Ok(cancel_tasks) => {
-                                        tasks_processed += 1;
-                                        metrics::record_status_transition("Pending", "Running");
-                                        log::debug!("Start worker: task {} started", t.id);
-                                        // Save cancel actions returned by the webhook
-                                        if let Err(e) = db_operation::save_cancel_actions(
-                                            &mut conn,
-                                            &t,
-                                            &cancel_tasks,
-                                        )
-                                        .await
+                                        match db_operation::mark_task_running(&mut conn, &t.id)
+                                            .await
                                         {
-                                            log::error!(
-                                                "Start worker: failed to save cancel actions for task {}: {:?}",
-                                                t.id,
-                                                e
-                                            );
+                                            Ok(true) => {
+                                                tasks_processed += 1;
+                                                metrics::record_status_transition(
+                                                    "Claimed", "Running",
+                                                );
+                                                log::debug!("Start worker: task {} started", t.id);
+                                                // Save cancel actions returned by the webhook
+                                                if let Err(e) = db_operation::save_cancel_actions(
+                                                    &mut conn,
+                                                    &t,
+                                                    &cancel_tasks,
+                                                )
+                                                .await
+                                                {
+                                                    log::error!(
+                                                        "Start worker: failed to save cancel actions for task {}: {:?}",
+                                                        t.id,
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                            Ok(false) => {
+                                                log::warn!(
+                                                    "Start worker: task {} no longer claimed; skipping running transition",
+                                                    t.id
+                                                );
+                                            }
+                                            Err(e) => {
+                                                log::error!(
+                                                    "Start worker: failed to mark task {} as running: {:?}",
+                                                    t.id,
+                                                    e
+                                                );
+                                            }
                                         }
                                     }
                                     Err(e) => {
@@ -532,7 +577,10 @@ pub async fn cancel_task<'a>(
                 .await?;
 
             match t.status {
-                StatusKind::Pending | StatusKind::Paused | StatusKind::Running => {}
+                StatusKind::Pending
+                | StatusKind::Paused
+                | StatusKind::Claimed
+                | StatusKind::Running => {}
                 _ => {
                     return Err(Box::from(
                         "Invalid operation: cannot cancel task in this state",

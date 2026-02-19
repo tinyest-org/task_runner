@@ -138,7 +138,8 @@ pub enum TriggerCondition {
 ///
 /// Valid transitions:
 /// - Waiting -> Pending (automatic, when all dependencies are met)
-/// - Pending -> Running (automatic, when worker starts the task)
+/// - Pending -> Claimed (automatic, when worker claims the task)
+/// - Claimed -> Running (automatic, after on_start webhook succeeds)
 /// - Running -> Success (via PATCH API)
 /// - Running -> Failure (via PATCH API, timeout, or parent failure propagation)
 /// - Any active state -> Canceled (via DELETE API)
@@ -161,6 +162,8 @@ pub enum StatusKind {
     Waiting,
     /// Ready to run. The worker loop will pick it up and call its on_start webhook.
     Pending,
+    /// Claimed by a worker but not yet started (on_start not completed).
+    Claimed,
     /// Currently executing. The on_start webhook has been called. Waiting for external completion.
     Running,
     /// Failed. Set via API, by timeout, or by parent failure propagation.

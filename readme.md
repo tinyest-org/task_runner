@@ -8,7 +8,7 @@ A Rust service for orchestrating task execution with DAG (Directed Acyclic Graph
 - **Cascading Propagation**: Failures and cancellations automatically propagate through the dependency chain
 - **Concurrency Control**: Limit concurrent task execution per task kind using rules
 - **Webhook Actions**: Execute webhooks on task start, success, failure, or cancellation
-- **Task States**: Pending, Running, Waiting, Success, Failure, Canceled, Paused
+- **Task States**: Waiting, Pending, Claimed, Running, Success, Failure, Canceled, Paused
 - **DAG Visualization**: Built-in web UI for visualizing task DAGs with auto-layout
 - **Batch Updates**: Efficient batch update endpoint for high-throughput scenarios
 - **Prometheus Metrics**: Built-in observability with custom metrics
@@ -264,21 +264,21 @@ The `on_start` webhook response body can optionally contain a `NewActionDto` JSO
 ## Task Lifecycle
 
 ```
-         +-------------------------------------+
-         |                                     |
-         v                                     |
-     +-------+    +---------+    +---------+  |
----->|Pending|--->| Running |--->| Success |  |
-     +-------+    +---------+    +---------+  |
-         |             |                       |
-         |             |         +---------+  |
-         |             +-------->| Failure |  |
-         |                       +---------+  |
-         |                                     |
-         |  (has dependencies)                 |
-         v                                     |
-     +-------+                                 |
-     |Waiting|---------------------------------+
+         +-----------------------------------------------------+
+         |                                                     |
+         v                                                     |
+     +-------+   +---------+   +---------+   +---------+      |
+---->|Pending|-->| Claimed |-->| Running |-->| Success |      |
+     +-------+   +---------+   +---------+   +---------+      |
+         |             |             |                         |
+         |             |             |         +---------+     |
+         |             |             +-------->| Failure |     |
+         |             |                       +---------+     |
+         |             |                                     |
+         | (has deps)  | (start timeout -> requeue)          |
+         v             |                                     |
+     +-------+         |                                     |
+     |Waiting|---------+-------------------------------------+
      +-------+  (all dependencies complete)
 
      +----------+     +----------+
@@ -394,6 +394,7 @@ All configuration is via environment variables.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WORKER_LOOP_INTERVAL_MS` | `1000` | Worker loop interval in ms |
+| `WORKER_CLAIM_TIMEOUT_SECS` | `30` | Max time a task can stay Claimed before requeue |
 | `BATCH_CHANNEL_CAPACITY` | `100` | Batch update channel size |
 
 ### Circuit Breaker
@@ -466,7 +467,7 @@ Prometheus metrics exposed at `GET /metrics`:
 | Metric | Labels | Description |
 |--------|--------|-------------|
 | `task_duration_seconds` | `kind`, `outcome` | Task execution duration |
-| `task_wait_seconds` | `kind` | Time from Pending to Running |
+| `task_wait_seconds` | `kind` | Time from Pending to Running (includes Claimed) |
 
 ### Worker
 | Metric | Labels | Description |

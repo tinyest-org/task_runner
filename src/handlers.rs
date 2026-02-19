@@ -32,6 +32,19 @@ pub struct AppState {
     pub circuit_breaker: Arc<CircuitBreaker>,
 }
 
+impl AppState {
+    /// Get a database connection with retry logic and circuit breaker protection.
+    pub async fn conn(&self) -> Result<crate::Conn<'_>, actix_web::Error> {
+        get_conn_with_retry(
+            &self.pool,
+            &self.circuit_breaker,
+            self.config.pool.acquire_retries,
+            self.config.pool.retry_delay.as_millis() as u64,
+        )
+        .await
+    }
+}
+
 /// Health check response showing service and database status.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct HealthResponse {
@@ -189,52 +202,6 @@ pub async fn readiness_check(state: web::Data<AppState>) -> HttpResponse {
 // Task Handlers
 // =============================================================================
 
-/// Enforce pagination limits from config
-pub fn enforce_pagination_limits(
-    mut pagination: dtos::PaginationDto,
-    config: &Config,
-) -> dtos::PaginationDto {
-    // Apply default if not specified
-    if pagination.page_size.is_none() {
-        pagination.page_size = Some(config.pagination.default_per_page);
-    }
-
-    // Enforce maximum
-    if let Some(page_size) = pagination.page_size {
-        if page_size > config.pagination.max_per_page {
-            log::debug!(
-                "Capping page_size from {} to max {}",
-                page_size,
-                config.pagination.max_per_page
-            );
-            pagination.page_size = Some(config.pagination.max_per_page);
-        }
-        if page_size <= 0 {
-            pagination.page_size = Some(config.pagination.default_per_page);
-        }
-    }
-
-    // Ensure page is non-negative
-    if let Some(page) = pagination.page
-        && page < 0
-    {
-        pagination.page = Some(0);
-    }
-
-    // Prevent overflow when computing offset = page * page_size
-    if let (Some(page), Some(page_size)) = (pagination.page, pagination.page_size) {
-        if page_size > 0 && page > 0 {
-            let max_page = i64::MAX / page_size;
-            if page > max_page {
-                log::debug!("Capping page from {} to max {}", page, max_page);
-                pagination.page = Some(max_page);
-            }
-        }
-    }
-
-    pagination
-}
-
 #[utoipa::path(
     get,
     path = "/task",
@@ -252,18 +219,11 @@ pub async fn list_task(
     pagination: web::Query<dtos::PaginationDto>,
     filter: web::Query<dtos::FilterDto>,
 ) -> actix_web::Result<HttpResponse> {
-    let mut conn = get_conn_with_retry(
-        &state.pool,
-        &state.circuit_breaker,
-        state.config.pool.acquire_retries,
-        state.config.pool.retry_delay.as_millis() as u64,
-    )
-    .await?;
+    let mut conn = state.conn().await?;
+    let pagination = pagination.0.resolve(&state.config);
+    let filter = filter.0.resolve();
 
-    // Enforce pagination limits
-    let pagination = enforce_pagination_limits(pagination.0, &state.config);
-
-    let tasks = db_operation::list_task_filtered_paged(&mut conn, pagination, filter.0)
+    let tasks = db_operation::list_task_filtered_paged(&mut conn, pagination, filter)
         .await
         .map_err(error::ErrorInternalServerError)?;
     Ok(HttpResponse::Ok().json(tasks))
@@ -305,13 +265,7 @@ pub async fn update_task(
         })));
     }
 
-    let mut conn = get_conn_with_retry(
-        &state.pool,
-        &state.circuit_breaker,
-        state.config.pool.acquire_retries,
-        state.config.pool.retry_delay.as_millis() as u64,
-    )
-    .await?;
+    let mut conn = state.conn().await?;
 
     let result =
         db_operation::update_running_task(&state.action_executor, &mut conn, *task_id, form.0)
@@ -346,13 +300,7 @@ pub async fn get_task(
     state: web::Data<AppState>,
     task_id: web::Path<Uuid>,
 ) -> actix_web::Result<HttpResponse> {
-    let mut conn = get_conn_with_retry(
-        &state.pool,
-        &state.circuit_breaker,
-        state.config.pool.acquire_retries,
-        state.config.pool.retry_delay.as_millis() as u64,
-    )
-    .await?;
+    let mut conn = state.conn().await?;
 
     let task = db_operation::find_detailed_task_by_id(&mut conn, *task_id)
         .await
@@ -475,13 +423,7 @@ pub async fn add_task(
         })));
     }
 
-    let mut conn = get_conn_with_retry(
-        &state.pool,
-        &state.circuit_breaker,
-        state.config.pool.acquire_retries,
-        state.config.pool.retry_delay.as_millis() as u64,
-    )
-    .await?;
+    let mut conn = state.conn().await?;
 
     let result = db_operation::run_in_transaction(&mut conn, |conn| {
         Box::pin(async move {
@@ -546,13 +488,7 @@ pub async fn cancel_task(
     state: web::Data<AppState>,
     task_id: web::Path<Uuid>,
 ) -> actix_web::Result<HttpResponse> {
-    let mut conn = get_conn_with_retry(
-        &state.pool,
-        &state.circuit_breaker,
-        state.config.pool.acquire_retries,
-        state.config.pool.retry_delay.as_millis() as u64,
-    )
-    .await?;
+    let mut conn = state.conn().await?;
 
     match workers::cancel_task(&state.action_executor, &task_id, &mut conn).await {
         Ok(_) => Ok(HttpResponse::Ok().finish()),
@@ -577,13 +513,7 @@ pub async fn pause_task(
     state: web::Data<AppState>,
     task_id: web::Path<Uuid>,
 ) -> actix_web::Result<HttpResponse> {
-    let mut conn = get_conn_with_retry(
-        &state.pool,
-        &state.circuit_breaker,
-        state.config.pool.acquire_retries,
-        state.config.pool.retry_delay.as_millis() as u64,
-    )
-    .await?;
+    let mut conn = state.conn().await?;
 
     match db_operation::pause_task(&task_id, &mut conn).await {
         Ok(_) => Ok(HttpResponse::Ok().finish()),
@@ -612,15 +542,8 @@ pub async fn list_batches(
     pagination: web::Query<dtos::PaginationDto>,
     filter: web::Query<dtos::BatchFilterDto>,
 ) -> actix_web::Result<HttpResponse> {
-    let mut conn = get_conn_with_retry(
-        &state.pool,
-        &state.circuit_breaker,
-        state.config.pool.acquire_retries,
-        state.config.pool.retry_delay.as_millis() as u64,
-    )
-    .await?;
-
-    let pagination = enforce_pagination_limits(pagination.0, &state.config);
+    let mut conn = state.conn().await?;
+    let pagination = pagination.0.resolve(&state.config);
 
     let batches = db_operation::list_batches(&mut conn, pagination, filter.0)
         .await
@@ -648,13 +571,7 @@ pub async fn get_dag(
     state: web::Data<AppState>,
     batch_id: web::Path<Uuid>,
 ) -> actix_web::Result<HttpResponse> {
-    let mut conn = get_conn_with_retry(
-        &state.pool,
-        &state.circuit_breaker,
-        state.config.pool.acquire_retries,
-        state.config.pool.retry_delay.as_millis() as u64,
-    )
-    .await?;
+    let mut conn = state.conn().await?;
 
     let dag = db_operation::get_dag_for_batch(&mut conn, *batch_id)
         .await

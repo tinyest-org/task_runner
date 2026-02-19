@@ -3,9 +3,16 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
+    config::Config,
     models::{ActionKindEnum, StatusKind, TriggerKind},
     rule::{Matcher, Rules},
 };
+
+/// Resolved pagination parameters ready for DB queries.
+pub struct Pagination {
+    pub offset: i64,
+    pub limit: i64,
+}
 
 // =============================================================================
 // Batch DTOs
@@ -33,6 +40,7 @@ pub struct BatchSummaryDto {
 pub struct BatchStatusCounts {
     pub waiting: i64,
     pub pending: i64,
+    pub claimed: i64,
     pub running: i64,
     pub success: i64,
     pub failure: i64,
@@ -269,6 +277,36 @@ pub struct PaginationDto {
     pub page_size: Option<i64>,
 }
 
+impl PaginationDto {
+    /// Resolve raw query params into validated offset + limit, enforcing config limits.
+    pub fn resolve(self, config: &Config) -> Pagination {
+        let mut page_size = self.page_size.unwrap_or(config.pagination.default_per_page);
+        if page_size > config.pagination.max_per_page {
+            page_size = config.pagination.max_per_page;
+        }
+        if page_size <= 0 {
+            page_size = config.pagination.default_per_page;
+        }
+
+        let mut page = self.page.unwrap_or(0).max(0);
+
+        // Prevent overflow when computing offset = page * page_size
+        if page_size > 0 && page > 0 {
+            let max_page = i64::MAX / page_size;
+            if page > max_page {
+                page = max_page;
+            }
+        }
+
+        let offset = page.saturating_mul(page_size);
+
+        Pagination {
+            offset,
+            limit: page_size,
+        }
+    }
+}
+
 /// Filter parameters for task listing. All filters are optional and combined with AND logic.
 #[derive(Debug, Serialize, Deserialize, Default, IntoParams)]
 pub struct FilterDto {
@@ -284,6 +322,38 @@ pub struct FilterDto {
     pub metadata: Option<String>,
     /// Filter by batch UUID. Use this to get all tasks from a specific batch/DAG.
     pub batch_id: Option<uuid::Uuid>,
+}
+
+/// Resolved filter with escaped/parsed values ready for DB queries.
+pub struct Filter {
+    pub name: String,
+    pub kind: String,
+    pub metadata: Option<serde_json::Value>,
+    pub status: Option<StatusKind>,
+    pub timeout: Option<i32>,
+    pub batch_id: Option<uuid::Uuid>,
+}
+
+/// Escape LIKE wildcards in user input to prevent pattern injection.
+pub(crate) fn escape_like_pattern(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+impl FilterDto {
+    /// Resolve raw query params into escaped/parsed values ready for DB queries.
+    pub fn resolve(self) -> Filter {
+        Filter {
+            name: escape_like_pattern(&self.name.unwrap_or_default()),
+            kind: escape_like_pattern(&self.kind.unwrap_or_default()),
+            metadata: self.metadata.and_then(|f| serde_json::from_str(&f).ok()),
+            status: self.status,
+            timeout: self.timeout,
+            batch_id: self.batch_id,
+        }
+    }
 }
 
 /// A directed dependency link between two tasks in a DAG.

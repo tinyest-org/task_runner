@@ -69,7 +69,5 @@ diesel::table! {
 }
 
 diesel::joinable!(action -> task (task_id));
-// Note: link has two foreign keys to task (parent_id, child_id)
-// We don't use joinable! for link->task since we need explicit joins
 
 diesel::allow_tables_to_appear_in_same_query!(action, link, task,);

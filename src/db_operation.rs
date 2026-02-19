@@ -10,7 +10,7 @@ use chrono::Utc;
 use diesel::prelude::*;
 use diesel::sql_types;
 use diesel_async::RunQueryDsl;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
@@ -20,12 +20,7 @@ pub(crate) type DbError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Escape special LIKE pattern characters (`%`, `_`, `\`) in user input
 /// so they are matched literally.
-fn escape_like_pattern(input: &str) -> String {
-    input
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
+use crate::dtos::escape_like_pattern;
 
 /// Execute a closure within a database transaction.
 /// Automatically rolls back on error. Commits on success.
@@ -110,6 +105,35 @@ pub(crate) async fn ensure_pending_tasks_timeout<'a>(
     .returning(Task::as_returning())
     .get_results::<Task>(conn)
     .await?;
+    Ok(updated)
+}
+
+/// Requeue Claimed tasks that never started within the claim timeout.
+/// Returns the tasks moved back to Pending.
+pub(crate) async fn requeue_stale_claimed_tasks<'a>(
+    conn: &mut Conn<'a>,
+    claim_timeout: std::time::Duration,
+) -> Result<Vec<Task>, DbError> {
+    use {
+        crate::schema::task::dsl::*,
+        diesel::{dsl::now, pg::data_types::PgInterval},
+    };
+
+    let micros = i64::try_from(claim_timeout.as_micros()).unwrap_or(i64::MAX);
+    let interval = PgInterval::from_microseconds(micros).into_sql::<sql_types::Interval>();
+
+    let updated = diesel::update(
+        task.filter(
+            status
+                .eq(models::StatusKind::Claimed)
+                .and(last_updated.lt(now.into_sql::<sql_types::Timestamptz>() - interval)),
+        ),
+    )
+    .set((status.eq(models::StatusKind::Pending), last_updated.eq(now)))
+    .returning(Task::as_returning())
+    .get_results::<Task>(conn)
+    .await?;
+
     Ok(updated)
 }
 
@@ -256,38 +280,21 @@ pub(crate) async fn find_detailed_task_by_id<'a>(
 
 pub(crate) async fn list_task_filtered_paged<'a>(
     conn: &mut Conn<'a>,
-    pagination: dtos::PaginationDto,
-    filter: dtos::FilterDto,
+    pagination: dtos::Pagination,
+    filter: dtos::Filter,
 ) -> Result<Vec<dtos::BasicTaskDto>, DbError> {
     use crate::schema::task::dsl::*;
     use diesel::PgJsonbExpressionMethods;
 
-    let m = filter
-        .metadata
-        .and_then(|f| serde_json::from_str::<Value>(&f).ok());
-    let page_size = pagination.page_size.unwrap_or(50);
-    let page = pagination.page.unwrap_or(0);
-    let offset = page.checked_mul(page_size).ok_or_else(|| {
-        Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "pagination overflow",
-        )) as DbError
-    })?;
-
-    // Build base filter — escape LIKE wildcards in user input
-    let name_val = escape_like_pattern(&filter.name.unwrap_or_default());
-    let kind_val = escape_like_pattern(&filter.kind.unwrap_or_default());
-
     let mut query = task
         .into_boxed()
-        .offset(offset)
-        .limit(page_size)
+        .offset(pagination.offset)
+        .limit(pagination.limit)
         .order(created_at.desc())
-        .filter(name.like(format!("%{}%", name_val)))
-        .filter(kind.like(format!("%{}%", kind_val)));
+        .filter(name.like(format!("%{}%", filter.name)))
+        .filter(kind.like(format!("%{}%", filter.kind)));
 
-    // Only apply metadata filter when explicitly provided (NULL metadata @> '{}' is falsy in PG)
-    if let Some(val) = m {
+    if let Some(val) = filter.metadata {
         query = query.filter(metadata.contains(val));
     }
 
@@ -554,7 +561,7 @@ pub(crate) async fn insert_new_task<'a>(
     Ok(Some(TaskDto::new(new_task, all_actions)))
 }
 
-/// Atomically claim a Pending task by transitioning it to Running.
+/// Atomically claim a Pending task by transitioning it to Claimed.
 /// Returns true if this caller successfully claimed the task, false if another worker got it first.
 pub async fn claim_task<'a>(conn: &mut Conn<'a>, task_id: &uuid::Uuid) -> Result<bool, DbError> {
     use crate::schema::task::dsl::*;
@@ -562,6 +569,24 @@ pub async fn claim_task<'a>(conn: &mut Conn<'a>, task_id: &uuid::Uuid) -> Result
 
     let updated_count =
         diesel::update(task.filter(id.eq(task_id).and(status.eq(StatusKind::Pending))))
+            .set((status.eq(StatusKind::Claimed), last_updated.eq(now)))
+            .execute(conn)
+            .await?;
+
+    Ok(updated_count == 1)
+}
+
+/// Transition a Claimed task to Running and set started_at.
+/// Returns true if the task was updated, false if it was no longer Claimed.
+pub async fn mark_task_running<'a>(
+    conn: &mut Conn<'a>,
+    task_id: &uuid::Uuid,
+) -> Result<bool, DbError> {
+    use crate::schema::task::dsl::*;
+    use diesel::dsl::now;
+
+    let updated_count =
+        diesel::update(task.filter(id.eq(task_id).and(status.eq(StatusKind::Claimed))))
             .set((
                 status.eq(StatusKind::Running),
                 started_at.eq(now),
@@ -576,7 +601,7 @@ pub async fn claim_task<'a>(conn: &mut Conn<'a>, task_id: &uuid::Uuid) -> Result
 /// Result of attempting to atomically check concurrency rules and claim a task.
 #[derive(Debug, PartialEq)]
 pub enum ClaimResult {
-    /// Task was successfully claimed (Pending -> Running).
+    /// Task was successfully claimed (Pending -> Claimed).
     Claimed,
     /// A concurrency rule blocked this task from being claimed.
     RuleBlocked,
@@ -680,16 +705,22 @@ pub async fn claim_task_with_rules<'a>(
                 use crate::schema::task::dsl;
                 use diesel::PgJsonbExpressionMethods;
 
-                let count = dsl::task
-                    .filter(
-                        dsl::kind
-                            .eq(&concurrency_rule.matcher.kind)
-                            .and(dsl::status.eq(&concurrency_rule.matcher.status))
-                            .and(dsl::metadata.contains(metadata_filter.clone())),
-                    )
-                    .count()
-                    .get_result::<i64>(&mut *conn)
-                    .await?;
+                let mut query = dsl::task
+                    .into_boxed()
+                    .filter(dsl::kind.eq(&concurrency_rule.matcher.kind))
+                    .filter(dsl::metadata.contains(metadata_filter.clone()));
+
+                if concurrency_rule.matcher.status == StatusKind::Running {
+                    query = query.filter(
+                        dsl::status
+                            .eq(StatusKind::Running)
+                            .or(dsl::status.eq(StatusKind::Claimed)),
+                    );
+                } else {
+                    query = query.filter(dsl::status.eq(&concurrency_rule.matcher.status));
+                }
+
+                let count = query.count().get_result::<i64>(&mut *conn).await?;
 
                 let allowed = if *is_same_kind {
                     count < concurrency_rule.max_concurency.into()
@@ -710,8 +741,7 @@ pub async fn claim_task_with_rules<'a>(
                 dsl::task.filter(dsl::id.eq(task_id).and(dsl::status.eq(StatusKind::Pending))),
             )
             .set((
-                dsl::status.eq(StatusKind::Running),
-                dsl::started_at.eq(now),
+                dsl::status.eq(StatusKind::Claimed),
                 dsl::last_updated.eq(now),
             ))
             .execute(&mut *conn)
@@ -770,15 +800,23 @@ pub(crate) async fn mark_task_failed<'a>(
     use crate::schema::task::dsl::*;
     use diesel::dsl::now;
 
-    let updated = diesel::update(task.filter(id.eq(task_id).and(status.eq(StatusKind::Running))))
-        .set((
-            status.eq(StatusKind::Failure),
-            failure_reason.eq(reason),
-            ended_at.eq(now),
-            last_updated.eq(now),
-        ))
-        .execute(conn)
-        .await?;
+    let updated = diesel::update(
+        task.filter(
+            id.eq(task_id).and(
+                status
+                    .eq(StatusKind::Running)
+                    .or(status.eq(StatusKind::Claimed)),
+            ),
+        ),
+    )
+    .set((
+        status.eq(StatusKind::Failure),
+        failure_reason.eq(reason),
+        ended_at.eq(now),
+        last_updated.eq(now),
+    ))
+    .execute(conn)
+    .await?;
     Ok(updated == 1)
 }
 
@@ -809,7 +847,7 @@ pub(crate) async fn fail_task_and_propagate<'a>(
 
     if !updated {
         log::warn!(
-            "fail_task_and_propagate: task {} not in Running state; skipping failure propagation",
+            "fail_task_and_propagate: task {} not in Running/Claimed state; skipping failure propagation",
             task_id
         );
         return Ok(());
@@ -837,6 +875,7 @@ pub(crate) async fn pause_task<'a>(
             id.eq(task_id).and(
                 status
                     .eq(StatusKind::Pending)
+                    .or(status.eq(StatusKind::Claimed))
                     .or(status.eq(StatusKind::Running))
                     .or(status.eq(StatusKind::Waiting)),
             ),
@@ -931,6 +970,8 @@ struct BatchSummaryRow {
     #[diesel(sql_type = sql_types::BigInt)]
     pending: i64,
     #[diesel(sql_type = sql_types::BigInt)]
+    claimed: i64,
+    #[diesel(sql_type = sql_types::BigInt)]
     running: i64,
     #[diesel(sql_type = sql_types::BigInt)]
     success: i64,
@@ -947,18 +988,9 @@ struct BatchSummaryRow {
 /// List batches with aggregated statistics, supporting optional filters and pagination.
 pub(crate) async fn list_batches<'a>(
     conn: &mut Conn<'a>,
-    pagination: dtos::PaginationDto,
+    pagination: dtos::Pagination,
     filter: dtos::BatchFilterDto,
 ) -> Result<Vec<dtos::BatchSummaryDto>, DbError> {
-    let page_size = pagination.page_size.unwrap_or(50);
-    let page = pagination.page.unwrap_or(0);
-    let offset = page.checked_mul(page_size).ok_or_else(|| {
-        Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "pagination overflow",
-        )) as DbError
-    })?;
-
     // Build CTE with dynamic WHERE clauses.
     // String filters are safely escaped and inlined; timestamps use bind params.
     let mut cte_conditions = vec!["batch_id IS NOT NULL".to_string()];
@@ -974,6 +1006,7 @@ pub(crate) async fn list_batches<'a>(
         let status_str = match status_filter {
             models::StatusKind::Waiting => "waiting",
             models::StatusKind::Pending => "pending",
+            models::StatusKind::Claimed => "claimed",
             models::StatusKind::Running => "running",
             models::StatusKind::Success => "success",
             models::StatusKind::Failure => "failure",
@@ -1019,6 +1052,7 @@ pub(crate) async fn list_batches<'a>(
             MAX(t.last_updated) AS latest_updated_at,
             COUNT(*) FILTER (WHERE t.status = 'waiting')::bigint AS waiting,
             COUNT(*) FILTER (WHERE t.status = 'pending')::bigint AS pending,
+            COUNT(*) FILTER (WHERE t.status = 'claimed')::bigint AS claimed,
             COUNT(*) FILTER (WHERE t.status = 'running')::bigint AS running,
             COUNT(*) FILTER (WHERE t.status = 'success')::bigint AS success,
             COUNT(*) FILTER (WHERE t.status = 'failure')::bigint AS failure,
@@ -1035,7 +1069,8 @@ pub(crate) async fn list_batches<'a>(
 
     // Chain .bind() calls for timestamps, then limit/offset
     // We use a helper that accepts up to N timestamp binds + limit + offset.
-    let rows = list_batches_execute(conn, &sql, &ts_binds, page_size, offset).await?;
+    let rows =
+        list_batches_execute(conn, &sql, &ts_binds, pagination.limit, pagination.offset).await?;
 
     let results = rows
         .into_iter()
@@ -1047,6 +1082,7 @@ pub(crate) async fn list_batches<'a>(
             status_counts: dtos::BatchStatusCounts {
                 waiting: r.waiting,
                 pending: r.pending,
+                claimed: r.claimed,
                 running: r.running,
                 success: r.success,
                 failure: r.failure,

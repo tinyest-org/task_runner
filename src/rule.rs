@@ -11,8 +11,8 @@ use utoipa::ToSchema;
 /// A concurrency control strategy. Discriminated by the `type` JSON field.
 ///
 /// Currently only `Concurency` is supported. When the worker picks up a Pending task, it checks
-/// its rules against all currently Running tasks. If the concurrency limit is reached, the task
-/// stays Pending until a slot opens.
+/// its rules against all currently Running (and Claimed) tasks. If the concurrency limit is
+/// reached, the task stays Pending until a slot opens.
 ///
 /// ## Example
 /// ```json
@@ -27,7 +27,7 @@ use utoipa::ToSchema;
 /// }
 /// ```
 /// This means: at most 1 task of kind "clustering" with the same `projectId` metadata value
-/// can be Running at the same time.
+/// can be Running (or Claimed) at the same time.
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq, ToSchema)]
 #[serde(tag = "type")]
 pub enum Strategy {
@@ -58,6 +58,7 @@ pub struct ConcurencyRule {
 #[derive(Debug, Clone, Serialize, PartialEq, Deserialize, Hash, Eq, ToSchema)]
 pub struct Matcher {
     /// The task status to match on. For concurrency rules, this is typically `Running`.
+    /// When set to `Running`, Claimed tasks are also counted to avoid oversubscription.
     pub status: StatusKind,
     /// The task kind to match on. Must be non-empty.
     pub kind: String,

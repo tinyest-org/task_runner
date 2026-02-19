@@ -8,6 +8,7 @@ import { addRecentBatch } from './storage';
 import { AUTO_REFRESH_INTERVAL } from './constants';
 import { Input, Button, Card, useWindowManager } from 'glass-ui-solid';
 import DagCanvas, { type DagCanvasAPI } from './components/DagCanvas';
+import IsometricView from './components/IsometricView';
 import TaskInfoPanel from './components/TaskInfoPanel';
 import BatchList from './components/BatchList';
 import Legend from './components/Legend';
@@ -22,6 +23,7 @@ export default function App() {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [batchListOpen, setBatchListOpen] = createSignal(false);
+  const [viewMode, setViewMode] = createSignal<'dag' | 'iso'>('iso');
   const [message, setMessage] = createSignal<string | null>(
     'Enter a batch ID to visualize the task DAG',
   );
@@ -169,11 +171,30 @@ export default function App() {
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => canvasApi?.fit()}
+            onClick={() => setViewMode(v => v === 'dag' ? 'iso' : 'dag')}
             disabled={!dagData()}
           >
-            Fit View
+            {viewMode() === 'dag' ? '3D View' : '2D View'}
           </Button>
+          <Show when={viewMode() === 'dag'}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => canvasApi?.fit()}
+              disabled={!dagData()}
+            >
+              Fit View
+            </Button>
+          </Show>
+          <Show when={openTaskIds().length > 0}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={clearAllWindows}
+            >
+              Close All ({openTaskIds().length})
+            </Button>
+          </Show>
 
           <StatsBar
             tasks={dagData()?.tasks ?? []}
@@ -190,12 +211,16 @@ export default function App() {
           </div>
         </Show>
 
-        <DagCanvas
-          data={dagData()}
-          onNodeClick={(task) => openTask(task)}
-          onBackgroundClick={() => {}}
-          ref={(api) => (canvasApi = api)}
-        />
+        <Show when={viewMode() === 'dag'} fallback={
+          <IsometricView data={dagData()} onNodeClick={openTask} onBackgroundClick={() => {}} />
+        }>
+          <DagCanvas
+            data={dagData()}
+            onNodeClick={(task) => openTask(task)}
+            onBackgroundClick={() => {}}
+            ref={(api) => (canvasApi = api)}
+          />
+        </Show>
       </div>
 
       <Legend />

@@ -1,6 +1,7 @@
 export type TaskStatus =
   | 'Waiting'
   | 'Pending'
+  | 'Claimed'
   | 'Running'
   | 'Success'
   | 'Failure'
@@ -49,6 +50,7 @@ export interface DagResponse {
 export interface BatchStatusCounts {
   waiting: number;
   pending: number;
+  claimed: number;
   running: number;
   success: number;
   failure: number;

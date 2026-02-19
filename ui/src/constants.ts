@@ -3,6 +3,7 @@ import type { TaskStatus } from './types';
 export const STATUS_COLORS: Record<TaskStatus, string> = {
   Waiting: '#666666',
   Pending: '#f39c12',
+  Claimed: '#1abc9c',
   Running: '#3498db',
   Success: '#27ae60',
   Failure: '#e74c3c',
@@ -13,6 +14,7 @@ export const STATUS_COLORS: Record<TaskStatus, string> = {
 export const STATUS_BG_CLASSES: Record<TaskStatus, string> = {
   Waiting: 'bg-gray-500',
   Pending: 'bg-amber-500',
+  Claimed: 'bg-teal-500',
   Running: 'bg-blue-500',
   Success: 'bg-emerald-500',
   Failure: 'bg-red-500',
@@ -23,6 +25,7 @@ export const STATUS_BG_CLASSES: Record<TaskStatus, string> = {
 export const ALL_STATUSES: TaskStatus[] = [
   'Waiting',
   'Pending',
+  'Claimed',
   'Running',
   'Success',
   'Failure',

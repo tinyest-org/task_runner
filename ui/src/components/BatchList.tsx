@@ -13,6 +13,7 @@ interface Props {
 
 const STATUS_ORDER: TaskStatus[] = [
   'Running',
+  'Claimed',
   'Pending',
   'Waiting',
   'Success',
