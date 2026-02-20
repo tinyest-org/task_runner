@@ -27,6 +27,7 @@ pub fn test_config() -> Arc<Config> {
         worker: task_runner::config::WorkerConfig {
             loop_interval: std::time::Duration::from_secs(1),
             timeout_check_interval: std::time::Duration::from_secs(1),
+            claim_timeout: std::time::Duration::from_secs(30),
             batch_flush_interval: std::time::Duration::from_millis(100),
             batch_channel_capacity: 100,
         },
