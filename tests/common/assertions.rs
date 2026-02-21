@@ -86,6 +86,10 @@ pub async fn claim_and_complete(
         .await
         .unwrap();
     assert!(claimed, "Failed to claim task {}", task_id);
+    let marked = task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+        .await
+        .unwrap();
+    assert!(marked, "Failed to mark task {} as running", task_id);
     let dto = task_runner::dtos::UpdateTaskDto {
         status: Some(status),
         metadata: None,

@@ -63,9 +63,12 @@ async fn test_update_task_status_via_api() {
     let created = create_tasks_ok(&app, &tasks).await;
     let task_id = created[0].id;
 
-    // Claim the task (Pending -> Running)
+    // Claim the task (Pending -> Claimed -> Running)
     let mut conn = state.pool.get().await.unwrap();
     task_runner::db_operation::claim_task(&mut conn, &task_id)
+        .await
+        .unwrap();
+    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 
@@ -93,9 +96,12 @@ async fn test_update_task_with_failure_reason() {
     let created = create_tasks_ok(&app, &tasks).await;
     let task_id = created[0].id;
 
-    // Claim the task (Pending -> Running)
+    // Claim the task (Pending -> Claimed -> Running)
     let mut conn = state.pool.get().await.unwrap();
     task_runner::db_operation::claim_task(&mut conn, &task_id)
+        .await
+        .unwrap();
+    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 

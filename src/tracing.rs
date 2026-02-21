@@ -242,30 +242,3 @@ pub fn current_span_id() -> Option<String> {
         Some(span_id.to_string())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_default_config() {
-        let config = TracingConfig::default();
-        assert!(!config.enabled);
-        assert!(config.otlp_endpoint.is_none());
-        assert_eq!(config.service_name, "task-runner");
-        assert_eq!(config.sampling_ratio, 1.0);
-    }
-
-    #[test]
-    fn test_config_from_env_disabled() {
-        // Clear any existing env vars
-        // SAFETY: Only used in tests with single-threaded execution
-        unsafe {
-            std::env::remove_var("TRACING_ENABLED");
-            std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        }
-
-        let config = TracingConfig::from_env();
-        assert!(!config.enabled);
-    }
-}

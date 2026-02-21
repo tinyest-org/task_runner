@@ -52,7 +52,7 @@ async fn test_bug1_claim_task_atomic_prevents_duplicate_execution() {
         claim2
     );
 
-    assert_task_status(&app, task_id, StatusKind::Running, "task should be Running").await;
+    assert_task_status(&app, task_id, StatusKind::Claimed, "task should be Claimed").await;
 }
 
 /// Bug #2: Repeated end-task propagation causing negative counters.
@@ -89,6 +89,9 @@ async fn test_bug2_double_update_no_negative_counters() {
 
     let mut conn = state.pool.get().await.unwrap();
     task_runner::db_operation::claim_task(&mut conn, &parent_id)
+        .await
+        .unwrap();
+    task_runner::db_operation::mark_task_running(&mut conn, &parent_id)
         .await
         .unwrap();
 
@@ -164,6 +167,9 @@ async fn test_bug3_double_success_update_returns_zero_second_time() {
     task_runner::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
+    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+        .await
+        .unwrap();
 
     let res1 = task_runner::db_operation::update_running_task(
         &state.action_executor,
@@ -216,6 +222,9 @@ async fn test_bug3_double_update_via_api_second_call_not_200() {
     task_runner::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
+    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+        .await
+        .unwrap();
 
     // First PATCH: Success
     let patch1 = actix_web::test::TestRequest::patch()
@@ -262,6 +271,9 @@ async fn test_bug4_update_rejects_invalid_status_transitions() {
     task_runner::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
+    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+        .await
+        .unwrap();
 
     for invalid_status in &["Running", "Pending", "Waiting"] {
         let req = actix_web::test::TestRequest::patch()
@@ -298,6 +310,9 @@ async fn test_bug4_failure_requires_reason() {
 
     let mut conn = state.pool.get().await.unwrap();
     task_runner::db_operation::claim_task(&mut conn, &task_id)
+        .await
+        .unwrap();
+    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 
@@ -339,6 +354,9 @@ async fn test_bug4_rejects_negative_counters() {
 
     let mut conn = state.pool.get().await.unwrap();
     task_runner::db_operation::claim_task(&mut conn, &task_id)
+        .await
+        .unwrap();
+    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 

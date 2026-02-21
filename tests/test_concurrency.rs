@@ -207,7 +207,7 @@ async fn test_concurrency_blocks_when_limit_reached() {
         "First task should be claimed"
     );
 
-    // Try to claim second task — should be blocked (max_concurency=1, one already Running)
+    // Try to claim second task — should be blocked (max_concurency=1, one already Claimed)
     let t2 = make_task_for_claim(id2, "enforce-kind", metadata.clone(), rules.clone());
     let result2 = claim_task_with_rules(&mut conn, &t2).await.unwrap();
     assert_eq!(
@@ -217,10 +217,13 @@ async fn test_concurrency_blocks_when_limit_reached() {
     );
 
     // Verify statuses
-    assert_task_status(&app, id1, StatusKind::Running, "first task Running").await;
+    assert_task_status(&app, id1, StatusKind::Claimed, "first task Claimed").await;
     assert_task_status(&app, id2, StatusKind::Pending, "second task still Pending").await;
 
-    // Complete first task (already Running, so use update_running_task directly)
+    // Mark first task as Running then complete it
+    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+        .await
+        .unwrap();
     let update_result = task_runner::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
@@ -243,7 +246,7 @@ async fn test_concurrency_blocks_when_limit_reached() {
         "Second task should be claimable after first completes"
     );
 
-    assert_task_status(&app, id2, StatusKind::Running, "second task now Running").await;
+    assert_task_status(&app, id2, StatusKind::Claimed, "second task now Claimed").await;
 }
 
 /// Concurrency enforcement with metadata fields: tasks with different metadata
@@ -305,8 +308,8 @@ async fn test_concurrency_allows_different_metadata() {
         "Tasks with different projectId should not block each other"
     );
 
-    assert_task_status(&app, id1, StatusKind::Running, "task 1 Running").await;
-    assert_task_status(&app, id2, StatusKind::Running, "task 2 Running").await;
+    assert_task_status(&app, id1, StatusKind::Claimed, "task 1 Claimed").await;
+    assert_task_status(&app, id2, StatusKind::Claimed, "task 2 Claimed").await;
 }
 
 /// Concurrency enforcement with metadata fields: tasks with the SAME metadata
