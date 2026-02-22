@@ -63,6 +63,7 @@ pub fn success_dto() -> UpdateTaskDto {
         new_success: None,
         new_failures: None,
         failure_reason: None,
+        expected_count: None,
     }
 }
 
@@ -74,5 +75,6 @@ pub fn failure_dto(reason: &str) -> UpdateTaskDto {
         new_success: None,
         new_failures: None,
         failure_reason: Some(reason.to_string()),
+        expected_count: None,
     }
 }

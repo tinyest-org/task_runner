@@ -33,6 +33,7 @@ fn make_task_for_claim(
         failures: 0,
         failure_reason: None,
         batch_id: None,
+        expected_count: None,
     }
 }
 

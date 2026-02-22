@@ -52,6 +52,7 @@ pub async fn update_running_task<'a>(
                     dto.metadata.map(|m| metadata.eq(m)),
                     dto.status.as_ref().map(|m| status.eq(m)),
                     dto.failure_reason.map(|m| failure_reason.eq(m)),
+                    dto.expected_count.map(|c| expected_count.eq(c)),
                 ))
                 .execute(conn)
                 .await?;
@@ -75,6 +76,7 @@ pub async fn update_running_task<'a>(
                 dto.new_success.map(|e| success.eq(success + e)),
                 dto.new_failures.map(|e| failures.eq(failures + e)),
                 dto.metadata.map(|m| metadata.eq(m)),
+                dto.expected_count.map(|c| expected_count.eq(c)),
             ))
             .execute(conn)
             .await?

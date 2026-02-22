@@ -69,6 +69,7 @@ diesel::table! {
         failures -> Int4,
         failure_reason -> Nullable<Text>,
         batch_id -> Nullable<Uuid>,
+        expected_count -> Nullable<Int4>,
     }
 }
 

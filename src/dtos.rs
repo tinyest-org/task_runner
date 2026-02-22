@@ -127,6 +127,11 @@ pub struct NewTaskDto {
     /// and transitions to `Pending` only when all dependencies are met.
     pub dependencies: Option<Vec<Dependency>>,
 
+    /// Expected total count for progress tracking. Purely informational — the task is NOT
+    /// auto-completed when `success + failures` reaches this value. Use it to compute
+    /// `progress = (success + failures) / expected_count`. Must be >= 0 if provided.
+    pub expected_count: Option<i32>,
+
     /// Webhook actions called when this task ends with `Failure` status. Multiple actions supported.
     pub on_failure: Option<Vec<NewActionDto>>,
     /// Webhook actions called when this task ends with `Success` status. Multiple actions supported.
@@ -164,6 +169,8 @@ pub struct BasicTaskDto {
     pub success: i32,
     /// Accumulated failure counter (incremented via PUT endpoint).
     pub failures: i32,
+    /// Expected total count for progress tracking (`progress = (success + failures) / expected_count`).
+    pub expected_count: Option<i32>,
     /// When the task reached a terminal state (Success, Failure, Canceled). Null if still active.
     pub ended_at: Option<chrono::DateTime<Utc>>,
     /// The batch this task belongs to. All tasks created in the same POST /task call share a batch_id.
@@ -191,6 +198,8 @@ pub struct UpdateTaskDto {
     pub new_failures: Option<i32>,
     /// Reason for failure. Required when `status` is `Failure`, ignored otherwise.
     pub failure_reason: Option<String>,
+    /// Updated expected count for progress tracking. Must be >= 0 if provided.
+    pub expected_count: Option<i32>,
 }
 
 /// Input DTO for creating actions. The trigger (Start/End/Cancel) is determined by context:
@@ -262,6 +271,8 @@ pub struct TaskDto {
     pub success: i32,
     /// Accumulated failure counter.
     pub failures: i32,
+    /// Expected total count for progress tracking (`progress = (success + failures) / expected_count`).
+    pub expected_count: Option<i32>,
     /// Reason for failure (set via API or by the system for timeouts/dependency failures).
     pub failure_reason: Option<String>,
     /// Batch UUID grouping tasks created in the same POST /task call.
@@ -392,6 +403,7 @@ impl From<Task> for BasicTaskDto {
             started_at: t.started_at,
             success: t.success,
             failures: t.failures,
+            expected_count: t.expected_count,
             ended_at: t.ended_at,
             batch_id: t.batch_id,
         }
@@ -411,6 +423,7 @@ impl TaskDto {
             created_at: base_task.created_at,
             success: base_task.success,
             failures: base_task.failures,
+            expected_count: base_task.expected_count,
             ended_at: base_task.ended_at,
             last_updated: base_task.last_updated,
             started_at: base_task.started_at,

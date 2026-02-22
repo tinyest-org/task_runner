@@ -58,6 +58,16 @@ pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
         }
     }
 
+    // Validate expected_count
+    if let Some(expected_count) = dto.expected_count {
+        if expected_count < 0 {
+            errors.push(ValidationError {
+                field: "expected_count".to_string(),
+                message: "expected_count cannot be negative".to_string(),
+            });
+        }
+    }
+
     // Validate metadata size (prevent extremely large payloads)
     if let Some(ref metadata) = dto.metadata {
         let metadata_str = serde_json::to_string(metadata).unwrap_or_default();
@@ -198,6 +208,16 @@ pub fn validate_update_task(dto: &UpdateTaskDto) -> ValidationResult {
             field: "new_failures".to_string(),
             message: "new_failures cannot be negative".to_string(),
         });
+    }
+
+    // Validate expected_count
+    if let Some(expected_count) = dto.expected_count {
+        if expected_count < 0 {
+            errors.push(ValidationError {
+                field: "expected_count".to_string(),
+                message: "expected_count cannot be negative".to_string(),
+            });
+        }
     }
 
     // Validate failure_reason is provided when status is Failure
@@ -410,6 +430,7 @@ mod tests {
             rules: None,
             on_start: make_valid_action(),
             dependencies: None,
+            expected_count: None,
             on_failure: None,
             on_success: None,
         }

@@ -171,6 +171,7 @@ pub(crate) async fn insert_new_task<'a>(
         wait_success,
         wait_finished,
         batch_id,
+        expected_count: dto.expected_count,
     };
 
     let new_task = diesel::insert_into(task)
