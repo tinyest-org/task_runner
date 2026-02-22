@@ -5,7 +5,8 @@ use utoipa::ToSchema;
 
 use crate::{
     dtos::NewActionDto,
-    models::{Action, ActionKindEnum, Task},
+    metrics,
+    models::{Action, ActionKindEnum, Task, TriggerCondition, TriggerKind},
 };
 
 /// HTTP method for webhook calls.
@@ -63,9 +64,37 @@ pub struct WebhookParams {
     pub headers: Option<HashMap<String, String>>,
 }
 
+/// Build an idempotency key for a webhook trigger event.
+///
+/// Format:
+/// - Start → `"{task_id}:start"`
+/// - End+Success → `"{task_id}:end:success"`
+/// - End+Failure → `"{task_id}:end:failure"`
+/// - Cancel → `"{task_id}:cancel"`
+pub fn idempotency_key(
+    task_id: uuid::Uuid,
+    trigger: &TriggerKind,
+    condition: &TriggerCondition,
+) -> String {
+    match trigger {
+        TriggerKind::Start => format!("{}:start", task_id),
+        TriggerKind::End => {
+            let cond = match condition {
+                TriggerCondition::Success => "success",
+                TriggerCondition::Failure => "failure",
+            };
+            format!("{}:end:{}", task_id, cond)
+        }
+        TriggerKind::Cancel => format!("{}:cancel", task_id),
+    }
+}
+
 #[derive(Clone)]
 pub struct ActionContext {
     pub host_address: String,
+    /// Controls how long a pending webhook execution can remain uncompleted
+    /// before being eligible for retry.
+    pub webhook_idempotency_timeout: std::time::Duration,
 }
 
 #[derive(Clone)]
@@ -89,6 +118,7 @@ impl ActionExecutor {
         &self,
         action: &Action,
         task: &Task,
+        idem_key: Option<&str>,
     ) -> Result<Option<NewActionDto>, String> {
         match action.kind {
             ActionKindEnum::Webhook => {
@@ -96,6 +126,12 @@ impl ActionExecutor {
                 let params: WebhookParams = serde_json::from_value(action.params.clone())
                     .map_err(|e| format!("Failed to parse webhook params: {}", e))?;
                 let url = params.url;
+                let trigger_str = match action.trigger {
+                    TriggerKind::Start => "start",
+                    TriggerKind::End => "end",
+                    TriggerKind::Cancel => "cancel",
+                };
+                let started_at = std::time::Instant::now();
                 let mut request = self.client.request(params.verb.into(), &url);
                 // enable the runner to send update of the task
                 request = request.query(&[("handle", format!("{}/task/{}", my_address, &task.id))]);
@@ -107,12 +143,29 @@ impl ActionExecutor {
                         request = request.header(key, value);
                     }
                 }
-                let response = request
-                    .send()
-                    .await
-                    .map_err(|e| format!("Failed to send request: {}", e))?;
+                // Inject idempotency and diagnostics headers
+                if let Some(key) = idem_key {
+                    request = request.header("Idempotency-Key", key);
+                }
+                request = request
+                    .header("X-Task-Id", task.id.to_string())
+                    .header("X-Task-Trigger", trigger_str);
+
+                let response = request.send().await.map_err(|e| {
+                    metrics::record_webhook_execution(
+                        trigger_str,
+                        "failure",
+                        started_at.elapsed().as_secs_f64(),
+                    );
+                    format!("Failed to send request: {}", e)
+                })?;
                 let status = response.status();
                 if status.is_redirection() {
+                    metrics::record_webhook_execution(
+                        trigger_str,
+                        "failure",
+                        started_at.elapsed().as_secs_f64(),
+                    );
                     log::warn!(
                         "Webhook for task {} returned redirect status {} — redirects are disabled for SSRF protection",
                         task.id,
@@ -124,6 +177,11 @@ impl ActionExecutor {
                     ));
                 }
                 if status.is_success() {
+                    metrics::record_webhook_execution(
+                        trigger_str,
+                        "success",
+                        started_at.elapsed().as_secs_f64(),
+                    );
                     // try to parse cancel
                     Ok(match response.text().await {
                         Ok(body) => {
@@ -136,6 +194,11 @@ impl ActionExecutor {
                         }
                     })
                 } else {
+                    metrics::record_webhook_execution(
+                        trigger_str,
+                        "failure",
+                        started_at.elapsed().as_secs_f64(),
+                    );
                     let body = response.text().await.unwrap_or_default();
                     log::error!("Response ({}): {}", status, body);
                     Err(format!("Request failed with status: {}", status))

@@ -63,15 +63,17 @@ pub fn test_circuit_breaker() -> Arc<CircuitBreaker> {
 /// Create app state for tests (without batch updater)
 pub fn create_test_state(pool: DbPool) -> AppState {
     let (sender, _receiver) = mpsc::channel(100);
+    let config = test_config();
     AppState {
         pool,
         sender,
         action_executor: task_runner::action::ActionExecutor::new(
             task_runner::action::ActionContext {
                 host_address: "http://localhost:8080".to_string(),
+                webhook_idempotency_timeout: config.worker.claim_timeout,
             },
         ),
-        config: test_config(),
+        config,
         circuit_breaker: test_circuit_breaker(),
     }
 }
@@ -85,6 +87,7 @@ pub struct TestStateWithBatchUpdater {
 /// Create app state with batch updater running (for batch update tests)
 pub fn create_test_state_with_batch_updater(pool: DbPool) -> TestStateWithBatchUpdater {
     let (sender, receiver) = mpsc::channel(100);
+    let config = test_config();
 
     // Spawn the batch updater background task with a shutdown channel
     let pool_clone = pool.clone();
@@ -102,9 +105,10 @@ pub fn create_test_state_with_batch_updater(pool: DbPool) -> TestStateWithBatchU
             action_executor: task_runner::action::ActionExecutor::new(
                 task_runner::action::ActionContext {
                     host_address: "http://localhost:8080".to_string(),
+                    webhook_idempotency_timeout: config.worker.claim_timeout,
                 },
             ),
-            config: test_config(),
+            config,
             circuit_breaker: test_circuit_breaker(),
         },
         _shutdown_tx: shutdown_tx,

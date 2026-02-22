@@ -3,6 +3,7 @@ mod cleanup;
 mod task_crud;
 mod task_lifecycle;
 mod task_query;
+mod webhook_execution;
 
 use crate::Conn;
 use diesel_async::RunQueryDsl;
@@ -30,6 +31,9 @@ pub(crate) use batch_listing::list_batches;
 
 // Re-exports from cleanup
 pub(crate) use cleanup::cleanup_old_terminal_tasks;
+
+// Re-exports from webhook_execution
+pub use webhook_execution::{complete_webhook_execution, try_claim_webhook_execution};
 
 /// Execute a closure within a database transaction.
 /// Automatically rolls back on error. Commits on success.

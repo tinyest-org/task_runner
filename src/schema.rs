@@ -16,6 +16,10 @@ pub mod sql_types {
     #[derive(diesel::query_builder::QueryId, Clone, diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "trigger_kind"))]
     pub struct TriggerKind;
+
+    #[derive(diesel::query_builder::QueryId, Clone, diesel::sql_types::SqlType)]
+    #[diesel(postgres_type(name = "webhook_execution_status"))]
+    pub struct WebhookExecutionStatus;
 }
 
 diesel::table! {
@@ -68,6 +72,26 @@ diesel::table! {
     }
 }
 
-diesel::joinable!(action -> task (task_id));
+diesel::table! {
+    use diesel::sql_types::*;
+    use super::sql_types::TriggerKind;
+    use super::sql_types::TriggerCondition;
+    use super::sql_types::WebhookExecutionStatus;
 
-diesel::allow_tables_to_appear_in_same_query!(action, link, task,);
+    webhook_execution (id) {
+        id -> Uuid,
+        task_id -> Uuid,
+        trigger -> TriggerKind,
+        condition -> TriggerCondition,
+        idempotency_key -> Text,
+        status -> WebhookExecutionStatus,
+        attempts -> Int4,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::joinable!(action -> task (task_id));
+diesel::joinable!(webhook_execution -> task (task_id));
+
+diesel::allow_tables_to_appear_in_same_query!(action, link, task, webhook_execution,);

@@ -5,3 +5,4 @@
 - update le front -> solidjs
 - update la CI
 - audit de perfo
+- gérer le expected count comme champs sur une task pour suivre l'aancement

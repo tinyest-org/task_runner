@@ -15,6 +15,10 @@ Garantir que les webhooks (`on_start`, `on_success`, `on_failure`, `on_cancel`) 
   - `trigger` = `start|success|failure|cancel`
   - `attempt` optionnel si on introduit plus tard des retries explicites
 - Exemple: `c2b1...-uuid:start`
+  
+**Note condition**: pour `start` et `cancel`, la colonne `condition` reste **non nulle**
+et utilise le sentinel `Success` (la condition n'a pas de sens pour ces triggers).
+La clé d'idempotence ignore `condition` pour `start`/`cancel`.
 
 ### Transport
 - Header HTTP: `Idempotency-Key: <value>`
@@ -27,7 +31,7 @@ Garantir que les webhooks (`on_start`, `on_success`, `on_failure`, `on_cancel`) 
   - `id` UUID PK
   - `task_id` UUID FK
   - `trigger` ENUM (`start`, `end`, `cancel`)
-  - `condition` ENUM (`success`, `failure`, `none`)
+  - `condition` ENUM (`success`, `failure`) **(sentinel `success` pour `start`/`cancel`)**
   - `idempotency_key` TEXT UNIQUE
   - `status` ENUM (`pending`, `success`, `failure`)
   - `attempts` INT
@@ -51,8 +55,10 @@ Garantir que les webhooks (`on_start`, `on_success`, `on_failure`, `on_cancel`) 
   - Mettre `status=success` ou `failure` + `attempts += 1`.
 
 ### 4) Gestion des retries
-- Option minimale: pas de retry automatique côté runner (comportement actuel), mais l'enregistrement empêche les doublons.
-- Option avancée: si `status=failure`, permettre une stratégie de retry contrôlée (backoff + max attempts). Dans ce cas, la clé reste la même, on incrémente `attempts`.
+- Pas de retry automatique immédiat: `pending` bloque les doublons.
+- Retry autorisé si `status=failure`.
+- Retry autorisé si `status=pending` **et** l'exécution est considérée "stale"
+  (timeout configuré, même durée que `claim_timeout`).
 
 ### 5) Observabilité
 - Metrics:

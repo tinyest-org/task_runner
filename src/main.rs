@@ -137,6 +137,7 @@ fn run_migrations(database_url: &str) {
 fn new_action_executor(config: &Config) -> ActionExecutor {
     ActionExecutor::new(ActionContext {
         host_address: config.host_url.clone(),
+        webhook_idempotency_timeout: config.worker.claim_timeout,
     })
 }
 

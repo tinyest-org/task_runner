@@ -1,6 +1,6 @@
 use crate::{
     Conn,
-    action::ActionExecutor,
+    action::{ActionExecutor, idempotency_key},
     db_operation::{self, DbError},
     metrics,
     models::{Action, StatusKind, Task, TriggerCondition, TriggerKind},
@@ -20,27 +20,68 @@ pub(crate) async fn fire_end_webhooks<'a>(
 ) -> Result<(), DbError> {
     use crate::schema::action::dsl::{condition, trigger};
     use crate::schema::task::dsl::*;
-    let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
+
     let expected_condition = match result_status {
         StatusKind::Success => TriggerCondition::Success,
         _ => TriggerCondition::Failure,
     };
+
+    // Idempotency guard: claim the end trigger slot
+    let key = idempotency_key(*task_id, &TriggerKind::End, &expected_condition);
+    let claimed = db_operation::try_claim_webhook_execution(
+        conn,
+        *task_id,
+        TriggerKind::End,
+        expected_condition,
+        &key,
+        Some(evaluator.ctx.webhook_idempotency_timeout),
+    )
+    .await?;
+
+    if !claimed {
+        let trigger_label = match expected_condition {
+            TriggerCondition::Success => "end_success",
+            TriggerCondition::Failure => "end_failure",
+        };
+        log::info!(
+            "Skipping end webhooks for task {} — already executed (key={})",
+            task_id,
+            key
+        );
+        metrics::record_webhook_idempotent_skip(trigger_label);
+        metrics::record_webhook_idempotent_conflict();
+        return Ok(());
+    }
+
+    let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
     let actions = Action::belonging_to(&t)
         .filter(trigger.eq(TriggerKind::End))
         .filter(condition.eq(expected_condition))
         .load::<Action>(conn)
         .await?;
+
+    let mut all_succeeded = true;
     for act in actions.iter() {
-        let res = evaluator.execute(act, &t).await;
+        let res = evaluator.execute(act, &t, Some(&key)).await;
         match res {
             Ok(_) => {
                 log::debug!("Action {} executed successfully", act.id);
             }
             Err(e) => {
                 log::error!("Action {} failed: {}", act.id, e);
+                all_succeeded = false;
             }
         }
     }
+
+    if let Err(e) = db_operation::complete_webhook_execution(conn, &key, all_succeeded).await {
+        log::error!(
+            "Failed to complete webhook execution record for key {}: {}",
+            key,
+            e
+        );
+    }
+
     Ok(())
 }
 
@@ -232,20 +273,55 @@ pub async fn cancel_task<'a>(
     .await?;
 
     if prev_status == StatusKind::Running {
-        let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
-        let actions = Action::belonging_to(&t)
-            .filter(trigger.eq(TriggerKind::Cancel))
-            .load::<Action>(conn)
-            .await?;
-        for act in actions.iter() {
-            let res = evaluator.execute(act, &t).await;
-            match res {
-                Ok(_) => {
-                    log::debug!("Action {} executed successfully", act.id);
+        // Idempotency guard for cancel webhooks
+        let key = idempotency_key(task_id, &TriggerKind::Cancel, &TriggerCondition::Success);
+        let claimed = db_operation::try_claim_webhook_execution(
+            conn,
+            task_id,
+            TriggerKind::Cancel,
+            TriggerCondition::Success,
+            &key,
+            Some(evaluator.ctx.webhook_idempotency_timeout),
+        )
+        .await?;
+
+        if !claimed {
+            log::info!(
+                "Skipping cancel webhooks for task {} — already executed (key={})",
+                task_id,
+                key
+            );
+            metrics::record_webhook_idempotent_skip("cancel");
+            metrics::record_webhook_idempotent_conflict();
+        } else {
+            let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
+            let actions = Action::belonging_to(&t)
+                .filter(trigger.eq(TriggerKind::Cancel))
+                .load::<Action>(conn)
+                .await?;
+
+            let mut all_succeeded = true;
+            for act in actions.iter() {
+                let res = evaluator.execute(act, &t, Some(&key)).await;
+                match res {
+                    Ok(_) => {
+                        log::debug!("Action {} executed successfully", act.id);
+                    }
+                    Err(e) => {
+                        log::error!("Action {} failed: {}", act.id, e);
+                        all_succeeded = false;
+                    }
                 }
-                Err(e) => {
-                    log::error!("Action {} failed: {}", act.id, e);
-                }
+            }
+
+            if let Err(e) =
+                db_operation::complete_webhook_execution(conn, &key, all_succeeded).await
+            {
+                log::error!(
+                    "Failed to complete webhook execution record for key {}: {}",
+                    key,
+                    e
+                );
             }
         }
     }

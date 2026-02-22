@@ -259,6 +259,11 @@ Webhook params:
 
 Supported HTTP verbs: `Get`, `Post`, `Put`, `Patch`, `Delete`.
 
+The runner sends these headers on webhook requests:
+- `Idempotency-Key`: `"<task_id>:start"`, `"<task_id>:end:success"`, `"<task_id>:end:failure"`, `"<task_id>:cancel"`
+- `X-Task-Id`: task UUID
+- `X-Task-Trigger`: `start`, `end`, or `cancel`
+
 The `on_start` webhook response body can optionally contain a `NewActionDto` JSON to register a cancel action for the task.
 
 ## Task Lifecycle
@@ -456,7 +461,10 @@ Prometheus metrics exposed at `GET /metrics`:
 | Metric | Labels | Description |
 |--------|--------|-------------|
 | `webhook_executions_total` | `trigger`, `outcome` | Webhook calls |
+| `webhook_attempts_total` | `trigger`, `outcome` | Webhook attempts (includes failures) |
 | `webhook_duration_seconds` | `trigger` | Webhook duration histogram |
+| `webhook_idempotent_skips_total` | `trigger` | Webhook executions skipped due to idempotency |
+| `webhook_idempotent_conflicts_total` | - | Idempotency conflicts when claiming executions |
 
 ### Concurrency
 | Metric | Labels | Description |

@@ -122,6 +122,46 @@ pub enum TriggerCondition {
     Failure,
 }
 
+/// Status of a webhook execution record for idempotency tracking.
+#[derive(Debug, PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, Copy)]
+#[db_enum(existing_type_path = "crate::schema::sql_types::WebhookExecutionStatus")]
+pub enum WebhookExecutionStatus {
+    /// Webhook execution claimed but not yet completed.
+    Pending,
+    /// Webhook executed successfully.
+    Success,
+    /// Webhook execution failed.
+    Failure,
+}
+
+/// Tracks webhook executions for idempotency. Each trigger event for a task
+/// gets at most one record, keyed by `idempotency_key`.
+/// Note: for Start/Cancel triggers, `condition` is stored as `Success` sentinel.
+#[derive(Identifiable, Queryable, Selectable, Debug, Clone)]
+#[diesel(table_name = crate::schema::webhook_execution)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct WebhookExecution {
+    pub id: uuid::Uuid,
+    pub task_id: uuid::Uuid,
+    pub trigger: TriggerKind,
+    pub condition: TriggerCondition,
+    pub idempotency_key: String,
+    pub status: WebhookExecutionStatus,
+    pub attempts: i32,
+    pub created_at: chrono::DateTime<Utc>,
+    pub updated_at: chrono::DateTime<Utc>,
+}
+
+/// Insertable struct for creating a new webhook execution record.
+#[derive(Debug, Insertable)]
+#[diesel(table_name = crate::schema::webhook_execution)]
+pub struct NewWebhookExecution<'a> {
+    pub task_id: uuid::Uuid,
+    pub trigger: &'a TriggerKind,
+    pub condition: &'a TriggerCondition,
+    pub idempotency_key: &'a str,
+}
+
 /// Task lifecycle status. See the API description for the full state machine.
 ///
 /// Valid transitions:

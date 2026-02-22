@@ -1,10 +1,10 @@
 use crate::{
     Conn, DbPool,
-    action::ActionExecutor,
+    action::{ActionExecutor, idempotency_key},
     db_operation,
     dtos::NewActionDto,
     metrics,
-    models::{Action, Task, TriggerKind},
+    models::{Action, Task, TriggerCondition, TriggerKind},
     rule::Strategy,
 };
 use actix_web::rt;
@@ -19,6 +19,12 @@ use tokio::sync::watch;
 /// two tasks with the same rule but different metadata values get different lock keys.
 struct EvaluationContext {
     ko: HashSet<i64>,
+}
+
+struct StartTaskResult {
+    cancel_tasks: Vec<NewActionDto>,
+    idempotency_key: String,
+    claimed: bool,
 }
 
 pub async fn start_loop(
@@ -54,7 +60,12 @@ pub async fn start_loop(
                                 metrics::record_status_transition("Pending", "Claimed");
                                 // Task claimed, now execute the on_start webhook
                                 match start_task(evaluator, &t, &mut conn).await {
-                                    Ok(cancel_tasks) => {
+                                    Ok(start_result) => {
+                                        let StartTaskResult {
+                                            cancel_tasks,
+                                            idempotency_key,
+                                            claimed,
+                                        } = start_result;
                                         match db_operation::mark_task_running(&mut conn, &t.id)
                                             .await
                                         {
@@ -89,6 +100,23 @@ pub async fn start_loop(
                                                 log::error!(
                                                     "Start worker: failed to mark task {} as running: {:?}",
                                                     t.id,
+                                                    e
+                                                );
+                                            }
+                                        }
+
+                                        if claimed {
+                                            if let Err(e) =
+                                                db_operation::complete_webhook_execution(
+                                                    &mut conn,
+                                                    &idempotency_key,
+                                                    true,
+                                                )
+                                                .await
+                                            {
+                                                log::error!(
+                                                    "Failed to complete webhook execution record for key {}: {}",
+                                                    idempotency_key,
                                                     e
                                                 );
                                             }
@@ -191,8 +219,37 @@ async fn start_task<'a>(
     evaluator: &ActionExecutor,
     task: &Task,
     conn: &mut Conn<'a>,
-) -> Result<Vec<NewActionDto>, String> {
+) -> Result<StartTaskResult, String> {
     use crate::schema::action::dsl::*;
+
+    // Idempotency guard: claim the start trigger slot
+    let key = idempotency_key(task.id, &TriggerKind::Start, &TriggerCondition::Success);
+    let claimed = db_operation::try_claim_webhook_execution(
+        conn,
+        task.id,
+        TriggerKind::Start,
+        TriggerCondition::Success,
+        &key,
+        Some(evaluator.ctx.webhook_idempotency_timeout),
+    )
+    .await
+    .map_err(|e| format!("Failed to claim webhook execution: {}", e))?;
+
+    if !claimed {
+        log::info!(
+            "Start worker: skipping on_start webhooks for task {} — already executed (key={})",
+            task.id,
+            key
+        );
+        metrics::record_webhook_idempotent_skip("start");
+        metrics::record_webhook_idempotent_conflict();
+        return Ok(StartTaskResult {
+            cancel_tasks: vec![],
+            idempotency_key: key,
+            claimed: false,
+        });
+    }
+
     let actions = Action::belonging_to(&task)
         .filter(trigger.eq(TriggerKind::Start))
         .load::<Action>(conn)
@@ -201,7 +258,7 @@ async fn start_task<'a>(
     let mut tasks = vec![];
     let mut errors: Vec<String> = Vec::new();
     for act in actions.iter() {
-        let res = evaluator.execute(act, task).await;
+        let res = evaluator.execute(act, task, Some(&key)).await;
         match res {
             Ok(r) => {
                 if let Some(t) = r {
@@ -215,12 +272,25 @@ async fn start_task<'a>(
             }
         }
     }
-    if !errors.is_empty() {
+
+    let succeeded = errors.is_empty();
+    if !succeeded {
+        if let Err(e) = db_operation::complete_webhook_execution(conn, &key, false).await {
+            log::error!(
+                "Failed to complete webhook execution record for key {}: {}",
+                key,
+                e
+            );
+        }
         return Err(format!(
             "one or more on_start actions failed for task {}: {}",
             task.id,
             errors.join("; ")
         ));
     }
-    Ok(tasks)
+    Ok(StartTaskResult {
+        cancel_tasks: tasks,
+        idempotency_key: key,
+        claimed: true,
+    })
 }

@@ -166,12 +166,34 @@ register_int_counter_vec!(
     "Number of webhook executions",
     &["trigger", "outcome"]
 );
+register_int_counter_vec!(
+    WEBHOOK_ATTEMPTS_TOTAL,
+    "webhook_attempts_total",
+    "Number of webhook attempts (including failures)",
+    &["trigger", "outcome"]
+);
 register_histogram_vec!(
     WEBHOOK_DURATION_SECONDS,
     "webhook_duration_seconds",
     "Webhook execution duration in seconds",
     &["trigger"],
     vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+);
+
+// ============================================================================
+// Webhook Idempotency Metrics
+// ============================================================================
+
+register_int_counter_vec!(
+    WEBHOOK_IDEMPOTENT_SKIPS,
+    "webhook_idempotent_skips_total",
+    "Number of webhook executions skipped due to idempotency (already succeeded)",
+    &["trigger"]
+);
+register_int_counter!(
+    WEBHOOK_IDEMPOTENT_CONFLICTS,
+    "webhook_idempotent_conflicts_total",
+    "Number of idempotency conflicts when claiming webhook executions"
 );
 
 // ============================================================================
@@ -333,8 +355,19 @@ pub fn record_batch_update_failure() {
     BATCH_UPDATE_FAILURES.inc();
 }
 
+pub fn record_webhook_idempotent_skip(trigger: &str) {
+    WEBHOOK_IDEMPOTENT_SKIPS.with_label_values(&[trigger]).inc();
+}
+
+pub fn record_webhook_idempotent_conflict() {
+    WEBHOOK_IDEMPOTENT_CONFLICTS.inc();
+}
+
 pub fn record_webhook_execution(trigger: &str, outcome: &str, duration_secs: f64) {
     WEBHOOK_EXECUTIONS
+        .with_label_values(&[trigger, outcome])
+        .inc();
+    WEBHOOK_ATTEMPTS_TOTAL
         .with_label_values(&[trigger, outcome])
         .inc();
     WEBHOOK_DURATION_SECONDS
@@ -425,6 +458,7 @@ pub fn init_metrics() {
     let _ = &*BATCH_UPDATE_FAILURES;
     let _ = &*WEBHOOK_EXECUTIONS;
     let _ = &*WEBHOOK_DURATION_SECONDS;
+    let _ = &*WEBHOOK_IDEMPOTENT_SKIPS;
     let _ = &*TASKS_BLOCKED_BY_CONCURRENCY;
     let _ = &*TASK_DURATION_SECONDS;
     let _ = &*TASK_WAIT_SECONDS;
