@@ -1,5 +1,7 @@
 use crate::Conn;
-use crate::models::{TriggerCondition, TriggerKind};
+use crate::models::{TriggerCondition, TriggerKind, WebhookExecutionStatus};
+use diesel::ExpressionMethods;
+use diesel::QueryDsl;
 use diesel_async::RunQueryDsl;
 
 use super::DbError;
@@ -20,25 +22,17 @@ pub async fn try_claim_webhook_execution<'a>(
     key: &str,
     stale_after: Option<std::time::Duration>,
 ) -> Result<bool, DbError> {
+    use crate::schema::sql_types as st;
+
     let stale_after_micros = stale_after.map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX));
-    let trigger_str = match trigger_kind {
-        TriggerKind::Start => "start",
-        TriggerKind::End => "end",
-        TriggerKind::Cancel => "cancel",
-    };
-    let condition_str = match trigger_condition {
-        TriggerCondition::Success => "success",
-        TriggerCondition::Failure => "failure",
-    };
 
     // INSERT ... ON CONFLICT with a WHERE filter on the DO UPDATE.
     // - If status = 'success' → no update (0 rows affected)
     // - If status = 'failure' → update, reset to pending (retry allowed)
     // - If status = 'pending' → update only if stale_after is provided and elapsed
-    // We cast text params to the enum types explicitly so Diesel binds as plain Text.
     let result: usize = diesel::sql_query(
         "INSERT INTO webhook_execution (task_id, trigger, condition, idempotency_key, status, attempts)
-         VALUES ($1, $2::trigger_kind, $3::trigger_condition, $4, 'pending', 1)
+         VALUES ($1, $2, $3, $4, 'pending', 1)
          ON CONFLICT (idempotency_key) DO UPDATE
          SET attempts = webhook_execution.attempts + 1,
              status = 'pending',
@@ -51,8 +45,8 @@ pub async fn try_claim_webhook_execution<'a>(
             )"
     )
     .bind::<diesel::sql_types::Uuid, _>(task_id)
-    .bind::<diesel::sql_types::Text, _>(trigger_str)
-    .bind::<diesel::sql_types::Text, _>(condition_str)
+    .bind::<st::TriggerKind, _>(trigger_kind)
+    .bind::<st::TriggerCondition, _>(trigger_condition)
     .bind::<diesel::sql_types::Text, _>(key)
     .bind::<diesel::sql_types::Nullable<diesel::sql_types::BigInt>, _>(stale_after_micros)
     .execute(conn)
@@ -67,15 +61,21 @@ pub async fn complete_webhook_execution<'a>(
     key: &str,
     succeeded: bool,
 ) -> Result<(), DbError> {
-    let status_str = if succeeded { "success" } else { "failure" };
+    use crate::schema::webhook_execution::dsl;
 
-    diesel::sql_query(
-        "UPDATE webhook_execution SET status = $1::webhook_execution_status, updated_at = now() WHERE idempotency_key = $2",
-    )
-    .bind::<diesel::sql_types::Text, _>(status_str)
-    .bind::<diesel::sql_types::Text, _>(key)
-    .execute(conn)
-    .await?;
+    let new_status = if succeeded {
+        WebhookExecutionStatus::Success
+    } else {
+        WebhookExecutionStatus::Failure
+    };
+
+    diesel::update(dsl::webhook_execution.filter(dsl::idempotency_key.eq(key)))
+        .set((
+            dsl::status.eq(new_status),
+            dsl::updated_at.eq(diesel::dsl::now),
+        ))
+        .execute(conn)
+        .await?;
 
     Ok(())
 }
