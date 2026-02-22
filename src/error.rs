@@ -27,7 +27,7 @@ pub enum TaskRunnerError {
 
     /// Validation errors
     #[error("Validation error: {0}")]
-    Validation(#[from] ValidationError),
+    Validation(String),
 
     /// Action execution error
     #[error("Action execution failed: {0}")]
@@ -52,46 +52,6 @@ pub enum TaskRunnerError {
     /// Internal error (unexpected)
     #[error("Internal error: {0}")]
     Internal(String),
-}
-
-/// Validation-specific errors with detailed field information.
-#[derive(Error, Debug)]
-pub enum ValidationError {
-    #[error("Field '{field}' is required")]
-    Required { field: String },
-
-    #[error("Field '{field}' is invalid: {reason}")]
-    Invalid { field: String, reason: String },
-
-    #[error("Field '{field}' exceeds maximum length of {max_length}")]
-    TooLong { field: String, max_length: usize },
-
-    #[error("Field '{field}' must be positive")]
-    MustBePositive { field: String },
-
-    #[error("Field '{field}' is out of range: {reason}")]
-    OutOfRange { field: String, reason: String },
-
-    #[error("Circular dependency detected: {details}")]
-    CircularDependency { details: String },
-
-    #[error("Self-referencing dependency in task '{task_id}'")]
-    SelfReference { task_id: String },
-
-    #[error("Duplicate dependency: '{dep_id}' in task '{task_id}'")]
-    DuplicateDependency { task_id: String, dep_id: String },
-
-    #[error("Unknown dependency: '{dep_id}' not found")]
-    UnknownDependency { dep_id: String },
-
-    #[error("Invalid URL: {url}")]
-    InvalidUrl { url: String },
-
-    #[error("Invalid status transition from {from} to {to}")]
-    InvalidStatusTransition { from: String, to: String },
-
-    #[error("Multiple validation errors: {0:?}")]
-    Multiple(Vec<String>),
 }
 
 /// Error type for API operations (converts to HTTP responses).
@@ -136,7 +96,7 @@ impl From<TaskRunnerError> for ApiError {
                 ApiError::NotFound(format!("Task {} not found", id))
             }
             TaskRunnerError::InvalidState { message } => ApiError::BadRequest(message),
-            TaskRunnerError::Validation(e) => ApiError::BadRequest(e.to_string()),
+            TaskRunnerError::Validation(e) => ApiError::BadRequest(e),
             TaskRunnerError::ConcurrencyLimit { kind } => {
                 ApiError::Conflict(format!("Concurrency limit reached for kind: {}", kind))
             }

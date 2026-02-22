@@ -18,7 +18,9 @@ use crate::{
     action::ActionExecutor,
     circuit_breaker::CircuitBreaker,
     config::Config,
-    db_operation, dtos, metrics, validation,
+    db_operation, dtos,
+    error::ApiError,
+    metrics, validation,
     workers::{self, UpdateEvent},
 };
 
@@ -225,7 +227,7 @@ pub async fn list_task(
 
     let tasks = db_operation::list_task_filtered_paged(&mut conn, pagination, filter)
         .await
-        .map_err(error::ErrorInternalServerError)?;
+        .map_err(ApiError::from)?;
     Ok(HttpResponse::Ok().json(tasks))
 }
 
@@ -270,7 +272,7 @@ pub async fn update_task(
     let result =
         db_operation::update_running_task(&state.action_executor, &mut conn, *task_id, form.0)
             .await
-            .map_err(error::ErrorInternalServerError)?;
+            .map_err(ApiError::from)?;
     Ok(match result {
         db_operation::UpdateTaskResult::Updated => {
             HttpResponse::Ok().body("Task updated successfully")
@@ -304,7 +306,7 @@ pub async fn get_task(
 
     let task = db_operation::find_detailed_task_by_id(&mut conn, *task_id)
         .await
-        .map_err(error::ErrorInternalServerError)?;
+        .map_err(ApiError::from)?;
 
     Ok(match task {
         Some(t) => HttpResponse::Ok().json(t),
@@ -447,7 +449,7 @@ pub async fn add_task(
     .await
     .map_err(|e| {
         log::error!("[batch_id={}] Failed to create task batch: {}", batch_id, e);
-        error::ErrorInternalServerError(e)
+        ApiError::from(e)
     })?;
 
     log::info!(
@@ -547,7 +549,7 @@ pub async fn list_batches(
 
     let batches = db_operation::list_batches(&mut conn, pagination, filter.0)
         .await
-        .map_err(error::ErrorInternalServerError)?;
+        .map_err(ApiError::from)?;
     Ok(HttpResponse::Ok().json(batches))
 }
 
@@ -575,7 +577,7 @@ pub async fn get_dag(
 
     let dag = db_operation::get_dag_for_batch(&mut conn, *batch_id)
         .await
-        .map_err(error::ErrorInternalServerError)?;
+        .map_err(ApiError::from)?;
 
     Ok(HttpResponse::Ok().json(dag))
 }

@@ -30,7 +30,6 @@ actix = { version = "0.13.5", default-features = false }
 tokio-postgres = "0.7.15"
 diesel-async = { version = "0.7.4", features = ["postgres", "bb8"] }
 futures-util = "0.3.31"
-# ring = "0.17.8"
 rustls-platform-verifier = "0.5.0"
 tokio-postgres-rustls = "0.13.0"
 tokio = { version = "1.45.0", features = ["macros"], default-features = false }
@@ -71,6 +70,3 @@ path = "src/main.rs"
 name = "test-server"
 path = "src/test_server.rs"
 
-[[bin]]
-name = "cache"
-path = "src/cache_helper.rs"

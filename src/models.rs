@@ -86,18 +86,6 @@ pub struct NewAction<'a> {
     pub condition: &'a TriggerCondition,
 }
 
-// impl NewAction {
-//     pub fn new(task_id: uuid::Uuid, kind: ActionKindEnum, params: serde_json::Value, trigger: TriggerKind) -> Self {
-//         // should validate the params against the kind
-//         Self {
-//             task_id,
-//             kind,
-//             params,
-//             trigger,
-//         }
-//     }
-// }
-
 /// The type of action to execute. Currently only Webhook is supported.
 #[derive(
     Debug, PartialEq, Serialize, diesel_derive_enum::DbEnum, Deserialize, Clone, Copy, ToSchema,

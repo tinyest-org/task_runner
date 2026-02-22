@@ -4,7 +4,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     config::Config,
-    models::{ActionKindEnum, StatusKind, TriggerKind},
+    models::{Action, ActionKindEnum, StatusKind, Task, TriggerKind},
     rule::{Matcher, Rules},
 };
 
@@ -375,4 +375,55 @@ pub struct DagDto {
     pub tasks: Vec<BasicTaskDto>,
     /// Dependency links (parent -> child edges in the DAG).
     pub links: Vec<LinkDto>,
+}
+
+// =============================================================================
+// Conversions
+// =============================================================================
+
+impl From<Task> for BasicTaskDto {
+    fn from(t: Task) -> Self {
+        Self {
+            id: t.id,
+            name: t.name,
+            kind: t.kind,
+            status: t.status,
+            created_at: t.created_at,
+            started_at: t.started_at,
+            success: t.success,
+            failures: t.failures,
+            ended_at: t.ended_at,
+            batch_id: t.batch_id,
+        }
+    }
+}
+
+impl TaskDto {
+    pub fn new(base_task: Task, actions: Vec<Action>) -> Self {
+        Self {
+            id: base_task.id,
+            name: base_task.name,
+            kind: base_task.kind,
+            status: base_task.status,
+            timeout: base_task.timeout,
+            rules: base_task.start_condition,
+            metadata: base_task.metadata,
+            created_at: base_task.created_at,
+            success: base_task.success,
+            failures: base_task.failures,
+            ended_at: base_task.ended_at,
+            last_updated: base_task.last_updated,
+            started_at: base_task.started_at,
+            failure_reason: base_task.failure_reason,
+            batch_id: base_task.batch_id,
+            actions: actions
+                .into_iter()
+                .map(|a| ActionDto {
+                    kind: a.kind,
+                    params: a.params,
+                    trigger: a.trigger,
+                })
+                .collect(),
+        }
+    }
 }

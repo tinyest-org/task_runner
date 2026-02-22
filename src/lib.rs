@@ -1,11 +1,11 @@
 pub mod action;
 pub mod circuit_breaker;
 pub mod config;
-pub mod db_operation;
+pub mod db;
+pub use db as db_operation;
 pub mod dtos;
 pub mod error;
 pub mod handlers;
-pub(crate) mod helper;
 pub mod metrics;
 pub mod models;
 pub mod rule;
