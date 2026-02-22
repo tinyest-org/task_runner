@@ -70,3 +70,7 @@ path = "src/main.rs"
 name = "test-server"
 path = "src/test_server.rs"
 
+
+[[bin]]
+name = "cache"
+path = "src/cache_helper.rs"
