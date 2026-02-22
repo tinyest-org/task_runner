@@ -1,7 +1,6 @@
-use crate::{Conn, DbPool, db_operation::DbError, metrics, models};
+use crate::{Conn, DbPool, db_operation::DbError, metrics};
 use actix_web::rt;
 use dashmap::DashMap;
-use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use std::sync::{Arc, atomic::AtomicI32, atomic::Ordering};
 use tokio::sync::{mpsc, watch};
@@ -58,27 +57,22 @@ pub async fn batch_updater(
                 .filter(|(_, s, f)| *s != 0 || *f != 0)
                 .collect();
 
-            // Process updates
-            for (task_id, success_count, failure_count) in updates {
-                log::debug!(
-                    "Batch update for task {}: success={}, failures={}",
-                    &task_id,
-                    success_count,
-                    failure_count
-                );
+            // Process updates in a single batched SQL query
+            if !updates.is_empty() {
+                log::debug!("Batch update: {} tasks to persist", updates.len());
 
-                if let Err(e) =
-                    handle_one_with_counts(task_id, &mut conn, success_count, failure_count).await
-                {
+                if let Err(e) = handle_batch_with_counts(&updates, &mut conn).await {
                     log::error!(
-                        "Failed to apply batch update for task {}: {:?}, re-queuing counts",
-                        task_id,
+                        "Failed to apply batched update for {} tasks: {:?}, re-queuing all counts",
+                        updates.len(),
                         e
                     );
-                    // Re-add the counts back for retry - single entry() holds shard lock
-                    let entry = data.entry(task_id).or_default();
-                    entry.success.fetch_add(success_count, Ordering::Relaxed);
-                    entry.failures.fetch_add(failure_count, Ordering::Relaxed);
+                    // Re-add all counts back for retry
+                    for (task_id, success_count, failure_count) in updates {
+                        let entry = data.entry(task_id).or_default();
+                        entry.success.fetch_add(success_count, Ordering::Relaxed);
+                        entry.failures.fetch_add(failure_count, Ordering::Relaxed);
+                    }
                     metrics::record_batch_update_failure();
                 }
             }
@@ -135,29 +129,41 @@ async fn final_flush_batch_data(data: &DashMap<uuid::Uuid, Entry>, pool: &DbPool
     }
 }
 
+/// Apply counter updates for multiple tasks in a single SQL statement using UNNEST.
+/// This reduces N round-trips to 1 for the common case.
+async fn handle_batch_with_counts<'a>(
+    updates: &[(uuid::Uuid, i32, i32)],
+    conn: &mut Conn<'a>,
+) -> Result<(), DbError> {
+    let ids: Vec<uuid::Uuid> = updates.iter().map(|(id, _, _)| *id).collect();
+    let successes: Vec<i32> = updates.iter().map(|(_, s, _)| *s).collect();
+    let fail_counts: Vec<i32> = updates.iter().map(|(_, _, f)| *f).collect();
+
+    diesel::sql_query(
+        "UPDATE task SET \
+            success = task.success + batch.s, \
+            failures = task.failures + batch.f, \
+            last_updated = NOW() \
+        FROM UNNEST($1::uuid[], $2::int[], $3::int[]) AS batch(id, s, f) \
+        WHERE task.id = batch.id \
+            AND task.status NOT IN ('success'::status_kind, 'failure'::status_kind, 'canceled'::status_kind)",
+    )
+    .bind::<diesel::sql_types::Array<diesel::sql_types::Uuid>, _>(&ids)
+    .bind::<diesel::sql_types::Array<diesel::sql_types::Integer>, _>(&successes)
+    .bind::<diesel::sql_types::Array<diesel::sql_types::Integer>, _>(&fail_counts)
+    .execute(conn)
+    .await?;
+
+    Ok(())
+}
+
+/// Apply counter update for a single task. Used during final shutdown flush
+/// where individual error handling per task is needed.
 async fn handle_one_with_counts<'a>(
     task_id: uuid::Uuid,
     conn: &mut Conn<'a>,
     success_count: i32,
     failure_count: i32,
 ) -> Result<(), DbError> {
-    use crate::schema::task::dsl::*;
-    let _res = diesel::update(
-        task.filter(
-            id.eq(task_id)
-                // Don't update failed tasks
-                .and(status.ne(models::StatusKind::Failure))
-                .and(status.ne(models::StatusKind::Success))
-                .and(status.ne(models::StatusKind::Canceled)),
-        ),
-    )
-    .set((
-        last_updated.eq(diesel::dsl::now),
-        success.eq(success + success_count),
-        failures.eq(failures + failure_count),
-    ))
-    .execute(conn)
-    .await?;
-
-    Ok(())
+    handle_batch_with_counts(&[(task_id, success_count, failure_count)], conn).await
 }
