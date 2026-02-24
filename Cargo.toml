@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "sdk"]
+
 [package]
 name = "task-runner"
 version = "0.1.0"

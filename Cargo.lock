@@ -3196,6 +3196,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "task-runner-sdk"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "uuid",
+]
+
+[[package]]
 name = "testcontainers"
 version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
