@@ -1,4 +1,4 @@
-import type { BasicTask, Link } from '../types';
+import type { BasicTask, Link, TaskStatus } from '../types';
 
 export interface GroupLayout {
   key: { kind: string; step: number };
@@ -89,6 +89,78 @@ export function computeTopologicalDepth(
 }
 
 /**
+ * Status shell priority for radial placement within a group cube.
+ * 0 = outermost (edge of the cube), 2 = innermost (center).
+ */
+function statusShellPriority(status: TaskStatus): number {
+  switch (status) {
+    case 'Running':
+    case 'Failure':
+    case 'Canceled':
+      return 0; // outermost
+    case 'Pending':
+    case 'Claimed':
+    case 'Waiting':
+    case 'Paused':
+      return 1; // middle
+    case 'Success':
+      return 2; // innermost
+    default:
+      return 1;
+  }
+}
+
+/**
+ * Reorder tasks so that when placed sequentially in a 3D grid (cols x rows x layers),
+ * Running/Failed tasks end up near the edges and Success tasks near the center.
+ */
+function sortTasksForRadialPlacement(
+  tasks: BasicTask[],
+  cols: number,
+  rows: number,
+): BasicTask[] {
+  const n = tasks.length;
+  if (n <= 1) return tasks;
+
+  const sliceSize = cols * rows;
+  const layers = Math.ceil(n / sliceSize);
+  const centerCol = (cols - 1) / 2;
+  const centerRow = (rows - 1) / 2;
+  const centerLayer = (layers - 1) / 2;
+
+  // Compute distance from center for each grid index
+  const indexDistances: { index: number; dist: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    const layer = Math.floor(i / sliceSize);
+    const inSlice = i % sliceSize;
+    const col = inSlice % cols;
+    const row = Math.floor(inSlice / cols);
+
+    const dx = cols > 1 ? (col - centerCol) / centerCol : 0;
+    const dz = rows > 1 ? (row - centerRow) / centerRow : 0;
+    const dy = layers > 1 ? (layer - centerLayer) / centerLayer : 0;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    indexDistances.push({ index: i, dist });
+  }
+
+  // Sort slots: outermost first (descending distance)
+  indexDistances.sort((a, b) => b.dist - a.dist);
+
+  // Sort tasks: outermost-priority first (Running/Failed -> Pending -> Success)
+  const sortedTasks = [...tasks].sort(
+    (a, b) => statusShellPriority(a.status) - statusShellPriority(b.status),
+  );
+
+  // Assign: first sorted task (Running/Failed) -> outermost slot, etc.
+  const result = new Array<BasicTask>(n);
+  for (let i = 0; i < n; i++) {
+    result[indexDistances[i].index] = sortedTasks[i];
+  }
+
+  return result;
+}
+
+/**
  * Group tasks by (kind, step) and return layout information.
  */
 export function computeGroupLayout(
@@ -141,7 +213,7 @@ export function computeGroupLayout(
     if (layers > maxLayers) maxLayers = layers;
     groups.push({
       key: { kind, step },
-      tasks: groupTasks,
+      tasks: sortTasksForRadialPlacement(groupTasks, cols, rows),
       kindIndex: kindIndex.get(kind)!,
       stepIndex: step,
       cols,

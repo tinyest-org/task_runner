@@ -58,6 +58,7 @@ export default function IsometricView(props: Props) {
   const taskToMesh = new Map<string, THREE.Mesh>();
   let currentNodeIds = new Set<string>();
   let currentEdgeIds = new Set<string>();
+  let currentStatuses = new Map<string, string>();
   let hoveredMesh: THREE.Mesh | null = null;
 
   const raycaster = new THREE.Raycaster();
@@ -354,6 +355,7 @@ export default function IsometricView(props: Props) {
 
     currentNodeIds = new Set(data.tasks.map((t) => t.id));
     currentEdgeIds = new Set(data.links.map((l) => `${l.parent_id}-${l.child_id}`));
+    currentStatuses = new Map(data.tasks.map((t) => [t.id, t.status]));
   }
 
   function updateColorsInPlace(tasks: BasicTask[]) {
@@ -371,6 +373,7 @@ export default function IsometricView(props: Props) {
     if (tasks.length !== currentNodeIds.size) return true;
     for (const t of tasks) {
       if (!currentNodeIds.has(t.id)) return true;
+      if (currentStatuses.get(t.id) !== t.status) return true;
     }
     const newEdgeIds = new Set(links.map((l) => `${l.parent_id}-${l.child_id}`));
     if (newEdgeIds.size !== currentEdgeIds.size) return true;
@@ -388,6 +391,7 @@ export default function IsometricView(props: Props) {
           clearScene();
           currentNodeIds.clear();
           currentEdgeIds.clear();
+          currentStatuses.clear();
           return;
         }
 
