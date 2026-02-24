@@ -323,7 +323,7 @@ impl Client {
     }
 
     // =========================================================================
-    // Internal helpers
+    // Internal
     // =========================================================================
 
     async fn parse_json<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
@@ -349,5 +349,105 @@ impl Client {
                 details: None,
             },
         }
+    }
+}
+
+// =============================================================================
+// TaskHandle — opaque handle for external workers
+// =============================================================================
+
+/// A handle to a single task, constructed from the opaque `?handle=` URL
+/// passed to your `on_start` webhook.
+///
+/// This is the primary interface for external workers. It only exposes
+/// the operations a worker needs: reporting progress and completion.
+///
+/// ```rust,no_run
+/// use task_runner_sdk::TaskHandle;
+///
+/// async fn my_webhook(handle_url: &str) -> task_runner_sdk::Result<()> {
+///     let handle = TaskHandle::new(handle_url);
+///
+///     // Report progress incrementally
+///     handle.report_progress(10, 2).await?;
+///
+///     // Done
+///     handle.succeed().await?;
+///     Ok(())
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct TaskHandle {
+    /// The raw handle URL (e.g. `http://host:8085/task/<uuid>`).
+    url: String,
+    http: reqwest::Client,
+}
+
+impl TaskHandle {
+    /// Create a handle from the opaque URL received in `?handle=`.
+    pub fn new(handle_url: impl Into<String>) -> Self {
+        Self {
+            url: handle_url.into(),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// Create a handle with a custom `reqwest::Client`.
+    pub fn with_http_client(handle_url: impl Into<String>, http: reqwest::Client) -> Self {
+        Self {
+            url: handle_url.into(),
+            http,
+        }
+    }
+
+    /// The raw handle URL.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Mark the task as succeeded (PATCH with status=Success).
+    pub async fn succeed(&self) -> Result<()> {
+        self.update(UpdateTaskDto {
+            status: Some(StatusKind::Success),
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// Mark the task as failed (PATCH with status=Failure).
+    pub async fn fail(&self, reason: impl Into<String>) -> Result<()> {
+        self.update(UpdateTaskDto {
+            status: Some(StatusKind::Failure),
+            failure_reason: Some(reason.into()),
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// Report incremental progress counters (PUT, batched on server side).
+    pub async fn report_progress(&self, success: i32, failures: i32) -> Result<()> {
+        let update = UpdateTaskDto {
+            new_success: Some(success),
+            new_failures: Some(failures),
+            ..Default::default()
+        };
+
+        let resp = self.http.put(&self.url).json(&update).send().await?;
+
+        let status = resp.status();
+        if !status.is_success() && status != reqwest::StatusCode::ACCEPTED {
+            return Err(Client::make_api_error(resp).await);
+        }
+        Ok(())
+    }
+
+    /// Update the task with an arbitrary payload (PATCH).
+    pub async fn update(&self, dto: UpdateTaskDto) -> Result<()> {
+        let resp = self.http.patch(&self.url).json(&dto).send().await?;
+
+        if !resp.status().is_success() {
+            return Err(Client::make_api_error(resp).await);
+        }
+        Ok(())
     }
 }
