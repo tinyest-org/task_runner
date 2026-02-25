@@ -1,6 +1,8 @@
 use crate::{
     Conn,
     dtos::{self, escape_like_pattern},
+    models::StatusKind,
+    rule::Rules,
 };
 use chrono::Utc;
 use diesel::prelude::*;
@@ -197,4 +199,52 @@ pub(crate) async fn get_batch_stats<'a>(
             canceled: r.canceled,
         },
     }))
+}
+
+/// Update the concurrency/capacity rules (`start_condition`) for all non-terminal
+/// tasks of a given kind in a batch. Returns the number of tasks updated, or
+/// NotFound if no tasks exist for the batch.
+#[tracing::instrument(name = "update_batch_rules", skip(conn, new_rules), fields(batch_id = %bid, kind = %task_kind))]
+pub(crate) async fn update_batch_rules<'a>(
+    conn: &mut Conn<'a>,
+    bid: uuid::Uuid,
+    task_kind: &str,
+    new_rules: Rules,
+) -> Result<i64, DbError> {
+    use crate::schema::task::dsl;
+
+    // Check that the batch exists
+    let total: i64 = dsl::task
+        .filter(dsl::batch_id.eq(bid))
+        .count()
+        .get_result(conn)
+        .await?;
+
+    if total == 0 {
+        return Err(crate::error::TaskRunnerError::NotFound {
+            message: format!("No tasks found for batch {}", bid),
+        });
+    }
+
+    // Update non-terminal tasks of the specified kind
+    let updated = diesel::update(
+        dsl::task.filter(
+            dsl::batch_id.eq(bid).and(dsl::kind.eq(task_kind)).and(
+                dsl::status
+                    .eq(StatusKind::Waiting)
+                    .or(dsl::status.eq(StatusKind::Pending))
+                    .or(dsl::status.eq(StatusKind::Claimed))
+                    .or(dsl::status.eq(StatusKind::Running))
+                    .or(dsl::status.eq(StatusKind::Paused)),
+            ),
+        ),
+    )
+    .set((
+        dsl::start_condition.eq(new_rules),
+        dsl::last_updated.eq(diesel::dsl::now),
+    ))
+    .execute(conn)
+    .await? as i64;
+
+    Ok(updated)
 }

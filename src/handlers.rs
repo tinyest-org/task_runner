@@ -650,6 +650,72 @@ pub async fn get_batch_stats(
 }
 
 // =============================================================================
+// Batch Rules Update Handler
+// =============================================================================
+
+#[utoipa::path(
+    patch,
+    path = "/batch/{batch_id}/rules",
+    summary = "Update batch rules by kind",
+    description = "Update the concurrency/capacity rules for all non-terminal tasks of a given kind in a batch. Terminal tasks (Success, Failure, Canceled) are not modified. Pass an empty rules array to remove all rules.
+
+This is useful when you need to adjust capacity limits or concurrency constraints after a batch has been created — for example, scaling up allowed concurrency mid-run. The `kind` field targets only tasks of that category within the batch.",
+    params(("batch_id" = Uuid, Path, description = "The batch UUID (from the X-Batch-ID response header of POST /task)")),
+    request_body(content = dtos::UpdateBatchRulesDto, description = "Kind to target and new rules to apply."),
+    responses(
+        (status = 200, description = "Rules updated. Returns the count of affected tasks.", body = dtos::UpdateBatchRulesResponseDto),
+        (status = 400, description = "Validation failed (invalid rules or empty kind)."),
+        (status = 404, description = "No tasks found for this batch_id"),
+    ),
+    tag = "batches"
+)]
+/// Update concurrency/capacity rules for non-terminal tasks of a given kind in a batch
+pub async fn update_batch_rules(
+    state: web::Data<AppState>,
+    batch_id: web::Path<Uuid>,
+    form: web::Json<dtos::UpdateBatchRulesDto>,
+) -> actix_web::Result<HttpResponse> {
+    // Validate kind
+    if form.kind.trim().is_empty() {
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Validation failed",
+            "details": ["kind: Task kind cannot be empty"]
+        })));
+    }
+
+    // Validate the rules
+    if let Err(errors) = validation::validate_rules(&form.rules) {
+        let error_messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Validation failed",
+            "details": error_messages
+        })));
+    }
+
+    let mut conn = state.conn().await?;
+    let batch_id = *batch_id;
+    let kind = form.0.kind;
+    let rules = form.0.rules;
+
+    let updated_count = db_operation::update_batch_rules(&mut conn, batch_id, &kind, rules)
+        .await
+        .map_err(ApiError::from)?;
+
+    log::info!(
+        "Batch {} rules updated for kind '{}': {} tasks affected",
+        batch_id,
+        kind,
+        updated_count,
+    );
+
+    Ok(HttpResponse::Ok().json(dtos::UpdateBatchRulesResponseDto {
+        batch_id,
+        kind,
+        updated_count,
+    }))
+}
+
+// =============================================================================
 // Batch Listing Handlers
 // =============================================================================
 
@@ -744,6 +810,7 @@ pub async fn view_dag_page() -> HttpResponse {
         pause_task,
         get_batch_stats,
         stop_batch,
+        update_batch_rules,
         list_batches,
         get_dag,
         view_dag_page,
@@ -760,6 +827,8 @@ pub async fn view_dag_page() -> HttpResponse {
         dtos::LinkDto,
         dtos::DagDto,
         dtos::StopBatchResponseDto,
+        dtos::UpdateBatchRulesDto,
+        dtos::UpdateBatchRulesResponseDto,
         dtos::BatchSummaryDto,
         dtos::BatchStatsDto,
         dtos::BatchStatusCounts,
@@ -770,6 +839,7 @@ pub async fn view_dag_page() -> HttpResponse {
         crate::rule::Strategy,
         crate::rule::Rules,
         crate::rule::ConcurencyRule,
+        crate::rule::CapacityRule,
         crate::rule::Matcher,
         crate::action::HttpVerb,
         crate::action::WebhookParams,
@@ -806,6 +876,10 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/task/pause/{task_id}", web::patch().to(pause_task))
         .route("/batch/{batch_id}", web::get().to(get_batch_stats))
         .route("/batch/{batch_id}", web::delete().to(stop_batch))
+        .route(
+            "/batch/{batch_id}/rules",
+            web::patch().to(update_batch_rules),
+        )
         .route("/batches", web::get().to(list_batches))
         .route("/dag/{batch_id}", web::get().to(get_dag))
         .route("/view", web::get().to(view_dag_page))

@@ -29,7 +29,7 @@ pub(crate) use task_query::{
 };
 
 // Re-exports from batch_listing
-pub(crate) use batch_listing::{get_batch_stats, list_batches};
+pub(crate) use batch_listing::{get_batch_stats, list_batches, update_batch_rules};
 
 // Re-exports from cleanup
 pub(crate) use cleanup::cleanup_old_terminal_tasks;

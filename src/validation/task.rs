@@ -299,6 +299,56 @@ pub fn validate_update_task_counters(dto: &UpdateTaskDto) -> ValidationResult {
     }
 }
 
+/// Validates rules for a batch rules update.
+pub fn validate_rules(rules: &crate::rule::Rules) -> ValidationResult {
+    let mut errors = Vec::new();
+
+    for (i, rule) in rules.0.iter().enumerate() {
+        match rule {
+            crate::rule::Strategy::Concurency(concurrency_rule) => {
+                if concurrency_rule.max_concurency <= 0 {
+                    errors.push(ValidationError {
+                        field: format!("rules[{}].max_concurency", i),
+                        message: "max_concurency must be a positive integer".to_string(),
+                    });
+                }
+                if concurrency_rule.matcher.kind.trim().is_empty() {
+                    errors.push(ValidationError {
+                        field: format!("rules[{}].matcher.kind", i),
+                        message: "Matcher kind cannot be empty".to_string(),
+                    });
+                }
+            }
+            crate::rule::Strategy::Capacity(capacity_rule) => {
+                if capacity_rule.max_capacity <= 0 {
+                    errors.push(ValidationError {
+                        field: format!("rules[{}].max_capacity", i),
+                        message: "max_capacity must be a positive integer".to_string(),
+                    });
+                }
+                if capacity_rule.matcher.kind.trim().is_empty() {
+                    errors.push(ValidationError {
+                        field: format!("rules[{}].matcher.kind", i),
+                        message: "Matcher kind cannot be empty".to_string(),
+                    });
+                }
+                if capacity_rule.matcher.status != StatusKind::Running {
+                    errors.push(ValidationError {
+                        field: format!("rules[{}].matcher.status", i),
+                        message: "Capacity rules only support matcher.status = Running".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 /// Validates a batch of new tasks, checking for duplicate IDs, unknown/forward
 /// dependency references, and circular dependencies.
 pub fn validate_task_batch(tasks: &[NewTaskDto]) -> ValidationResult {

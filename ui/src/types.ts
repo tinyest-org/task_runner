@@ -91,6 +91,12 @@ export interface StopBatchResponse {
   already_terminal: number;
 }
 
+export interface UpdateBatchRulesResponse {
+  batch_id: string;
+  kind: string;
+  updated_count: number;
+}
+
 export interface BatchSummary {
   batch_id: string;
   total_tasks: number;

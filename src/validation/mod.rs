@@ -12,7 +12,8 @@ use std::sync::OnceLock;
 pub use action::validate_action_params;
 pub use ssrf::validate_webhook_url;
 pub use task::{
-    validate_new_task, validate_task_batch, validate_update_task, validate_update_task_counters,
+    validate_new_task, validate_rules, validate_task_batch, validate_update_task,
+    validate_update_task_counters,
 };
 
 /// Global security configuration for validation.

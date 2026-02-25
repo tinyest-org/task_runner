@@ -2,7 +2,7 @@ import "glass-ui-solid/styles.css";
 import "glass-ui-solid/theme.css";
 import { createSignal, onCleanup, Show, For, Switch, Match } from 'solid-js';
 import { useSearchParams } from '@solidjs/router';
-import type { DagResponse, BasicTask, StopBatchResponse, TaskStatus } from './types';
+import type { DagResponse, BasicTask, StopBatchResponse, TaskStatus, UpdateBatchRulesResponse } from './types';
 import { fetchDag, stopBatch } from './api';
 import { addRecentBatch } from './storage';
 import { AUTO_REFRESH_INTERVAL } from './constants';
@@ -15,6 +15,7 @@ import Legend from './components/Legend';
 import StatsBar from './components/StatsBar';
 import StatusFilter from './components/StatusFilter';
 import TaskTable from './components/TaskTable';
+import BatchRulesEditor from './components/BatchRulesEditor';
 
 
 export default function App() {
@@ -33,6 +34,7 @@ export default function App() {
   );
   const [showCancelConfirm, setShowCancelConfirm] = createSignal(false);
   const [canceling, setCanceling] = createSignal(false);
+  const [showRulesEditor, setShowRulesEditor] = createSignal(false);
 
   const windowManager = useWindowManager();
   const windowHandles = new Map<string, ReturnType<typeof windowManager.register>>();
@@ -189,6 +191,12 @@ export default function App() {
     }
   }
 
+  async function handleRulesUpdated(result: UpdateBatchRulesResponse) {
+    setShowRulesEditor(false);
+    setMessage(`Rules updated for kind "${result.kind}": ${result.updated_count} task${result.updated_count !== 1 ? 's' : ''} affected`);
+    await loadDag(batchId());
+  }
+
   onCleanup(() => {
     if (refreshTimer) clearInterval(refreshTimer);
   });
@@ -314,6 +322,14 @@ export default function App() {
             <Button
               variant="secondary"
               size="sm"
+              onClick={() => setShowRulesEditor(true)}
+              class="!border-cyan-500/40 !text-cyan-400 hover:!bg-cyan-500/20"
+            >
+              Edit Rules
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => setShowCancelConfirm(true)}
               class="!border-red-500/40 !text-red-400 hover:!bg-red-500/20"
             >
@@ -389,6 +405,14 @@ export default function App() {
         open={batchListOpen()}
         onClose={() => setBatchListOpen(false)}
         onSelect={handleBatchSelect}
+      />
+
+      <BatchRulesEditor
+        open={showRulesEditor()}
+        batchId={batchId()}
+        dagData={dagData()}
+        onClose={() => setShowRulesEditor(false)}
+        onUpdated={handleRulesUpdated}
       />
 
       <Show when={error()}>

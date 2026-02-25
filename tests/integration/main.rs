@@ -6,6 +6,7 @@
 mod common;
 
 mod test_actions;
+mod test_batch_rules;
 mod test_batch_update;
 mod test_bug_audit1;
 mod test_bug_audit2;

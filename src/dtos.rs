@@ -415,6 +415,32 @@ pub struct DagDto {
 }
 
 // =============================================================================
+// Batch Rules Update DTOs
+// =============================================================================
+
+/// Payload for updating concurrency/capacity rules on non-terminal tasks in a batch,
+/// filtered by task kind.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateBatchRulesDto {
+    /// The task kind to target. Only non-terminal tasks with this kind will be updated.
+    pub kind: String,
+    /// The new concurrency/capacity rules to apply.
+    /// Pass an empty array to remove all rules.
+    pub rules: Rules,
+}
+
+/// Response from updating batch rules. Reports how many tasks were affected.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateBatchRulesResponseDto {
+    /// The batch UUID that was updated.
+    pub batch_id: uuid::Uuid,
+    /// The task kind that was targeted.
+    pub kind: String,
+    /// Number of tasks whose rules were updated.
+    pub updated_count: i64,
+}
+
+// =============================================================================
 // Batch Stop DTOs
 // =============================================================================
 
