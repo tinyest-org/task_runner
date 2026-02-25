@@ -28,12 +28,14 @@ function buildNodeData(task: BasicTask) {
     status: task.status,
     color,
     borderColor: color,
+    borderStyle: task.dead_end_barrier ? 'dashed' : 'solid',
     created_at: task.created_at,
     started_at: task.started_at,
     ended_at: task.ended_at,
     success: task.success,
     failures: task.failures,
     batch_id: task.batch_id,
+    dead_end_barrier: task.dead_end_barrier,
   };
 }
 
@@ -67,6 +69,7 @@ export default function DagCanvas(props: Props) {
             shape: 'round-rectangle',
             'border-width': 2,
             'border-color': 'data(borderColor)',
+            'border-style': 'data(borderStyle)',
           } as any,
         },
         {
@@ -112,6 +115,7 @@ export default function DagCanvas(props: Props) {
         success: data.success,
         failures: data.failures,
         batch_id: data.batch_id ?? null,
+        dead_end_barrier: data.dead_end_barrier ?? false,
       };
       props.onNodeClick(task);
     });

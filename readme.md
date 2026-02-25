@@ -342,6 +342,27 @@ Control concurrent execution with rules:
 
 This limits to 3 concurrent `data-processing` tasks with the same `tenant_id` in metadata.
 
+## Capacity Rules
+
+Capacity rules limit total remaining work across Running (and Claimed) tasks that match the same `kind` and metadata `fields`. Remaining work is computed as `max(coalesce(expected_count, 0) - success - failures, 0)`; tasks without `expected_count` contribute `0`. Tasks that use Capacity rules must set `expected_count`, and `matcher.status` must be `Running`.
+
+```json
+{
+  "rules": [
+    {
+      "type": "Capacity",
+      "matcher": {
+        "kind": "data-processing",
+        "status": "Running",
+        "fields": ["tenant_id"]
+      },
+      "max_capacity": 500
+    }
+  ],
+  "expected_count": 1000
+}
+```
+
 ## Deduplication
 
 Skip creating duplicate tasks based on metadata fields:

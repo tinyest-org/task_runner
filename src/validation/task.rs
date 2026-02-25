@@ -147,6 +147,7 @@ pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
 
     // Validate rules (concurrency conditions)
     if let Some(ref rules) = dto.rules {
+        let mut has_capacity_rule = false;
         for (i, rule) in rules.0.iter().enumerate() {
             match rule {
                 crate::rule::Strategy::Concurency(concurrency_rule) => {
@@ -163,7 +164,37 @@ pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
                         });
                     }
                 }
+                crate::rule::Strategy::Capacity(capacity_rule) => {
+                    has_capacity_rule = true;
+                    if capacity_rule.max_capacity <= 0 {
+                        errors.push(ValidationError {
+                            field: format!("rules[{}].max_capacity", i),
+                            message: "max_capacity must be a positive integer".to_string(),
+                        });
+                    }
+                    if capacity_rule.matcher.kind.trim().is_empty() {
+                        errors.push(ValidationError {
+                            field: format!("rules[{}].matcher.kind", i),
+                            message: "Matcher kind cannot be empty".to_string(),
+                        });
+                    }
+                    if capacity_rule.matcher.status != StatusKind::Running {
+                        errors.push(ValidationError {
+                            field: format!("rules[{}].matcher.status", i),
+                            message: "Capacity rules only support matcher.status = Running"
+                                .to_string(),
+                        });
+                    }
+                }
             }
+        }
+        // A task with a Capacity rule must have expected_count set, otherwise it would
+        // be permanently blocked at runtime (worker blocks every iteration).
+        if has_capacity_rule && dto.expected_count.is_none() {
+            errors.push(ValidationError {
+                field: "expected_count".to_string(),
+                message: "expected_count is required when a Capacity rule is used".to_string(),
+            });
         }
     }
 

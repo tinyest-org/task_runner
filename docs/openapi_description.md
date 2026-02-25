@@ -42,7 +42,11 @@ Webhook params are stored as JSON in the `params` field of `NewActionDto`:
 
 ## Concurrency Rules
 
-Tasks can have `rules` (array of `Strategy`) that limit concurrent execution. A `Concurency` rule specifies: match currently `Running` tasks by `kind` and metadata `fields`, and block if `max_concurency` is reached. Fields are keys in the task's `metadata` JSON -- two tasks match if they share the same values for all listed fields.
+Tasks can have `rules` (array of `Strategy`) that limit concurrent execution.
+
+A `Concurency` rule specifies: match currently `Running` tasks by `kind` and metadata `fields`, and block if `max_concurency` is reached. Fields are keys in the task's `metadata` JSON -- two tasks match if they share the same values for all listed fields.
+
+A `Capacity` rule limits total remaining work across matching Running (and Claimed) tasks. Remaining work is `max(coalesce(expected_count, 0) - success - failures, 0)`; tasks without `expected_count` contribute `0`. Tasks that use Capacity rules must set `expected_count`, and `matcher.status` must be `Running`.
 
 ## Deduplication
 

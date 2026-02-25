@@ -151,7 +151,9 @@ pub async fn start_loop(
                             }
                             Ok(db_operation::ClaimResult::RuleBlocked) => {
                                 // Cache the blocked lock keys for this iteration so subsequent
-                                // tasks with the same rule+metadata combo are skipped without a DB call
+                                // tasks with the same rule+metadata combo are skipped without a DB call.
+                                // Only cache Concurency keys; Capacity sums change with task progress
+                                // and cannot be reliably cached within a loop iteration.
                                 for strategy in &t.start_condition.0 {
                                     match strategy {
                                         Strategy::Concurency(rule) => {
@@ -160,6 +162,9 @@ pub async fn start_loop(
                                                 &t.metadata,
                                             );
                                             ctx.ko.insert(key);
+                                        }
+                                        Strategy::Capacity(_) => {
+                                            // Skip: capacity sum depends on live progress, can't cache
                                         }
                                     }
                                 }
@@ -214,6 +219,7 @@ fn is_prefilter_blocked(task: &Task, ctx: &EvaluationContext) -> bool {
             let key = db_operation::concurrency_lock_key(rule, &task.metadata);
             ctx.ko.contains(&key)
         }
+        Strategy::Capacity(_) => false, // Can't prefilter: sum depends on live progress
     })
 }
 

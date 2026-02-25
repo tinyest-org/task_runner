@@ -19,6 +19,7 @@ export interface BasicTask {
   success: number;
   failures: number;
   batch_id: string | null;
+  dead_end_barrier: boolean;
 }
 
 export interface TaskDetail extends BasicTask {

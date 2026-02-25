@@ -273,11 +273,13 @@ async fn test_cicd_pipeline_failure_cascade() {
         "Integration Tests should fail because required parent (build) failed",
     )
     .await;
+    // Lint would normally become Pending (build finished, doesn't require success),
+    // but dead-end detection cancels it because its only child (deploy) is already terminal.
     assert_task_status(
         &app,
         lint_id,
-        StatusKind::Pending,
-        "Lint should be Pending (build finished, doesn't require success)",
+        StatusKind::Canceled,
+        "Lint should be Canceled (dead-end: its only child deploy is already terminal)",
     )
     .await;
 

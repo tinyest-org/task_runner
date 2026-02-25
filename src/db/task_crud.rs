@@ -3,7 +3,7 @@ use crate::{
     dtos::{self, TaskDto},
     metrics,
     models::{self, Action, Link, NewAction, StatusKind, Task},
-    rule::{Matcher, Strategy},
+    rule::{CapacityRule, Matcher, Strategy},
 };
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
@@ -344,6 +344,22 @@ pub(crate) fn concurrency_lock_key(
     hasher.finish() as i64
 }
 
+/// Compute a deterministic i64 advisory lock key for a capacity rule and task metadata.
+/// Uses a "capacity" prefix to avoid collisions with concurrency lock keys.
+pub(crate) fn capacity_lock_key(rule: &CapacityRule, task_metadata: &serde_json::Value) -> i64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    "capacity".hash(&mut hasher);
+    rule.matcher.kind.hash(&mut hasher);
+    rule.matcher.status.hash(&mut hasher);
+    for field in &rule.matcher.fields {
+        field.hash(&mut hasher);
+        if let Some(val) = task_metadata.get(field) {
+            val.to_string().hash(&mut hasher);
+        }
+    }
+    hasher.finish() as i64
+}
+
 /// Atomically check concurrency rules and claim a task within a single transaction,
 /// using `pg_advisory_xact_lock` to serialize workers checking the same rule/metadata combo.
 ///
@@ -369,6 +385,7 @@ pub async fn claim_task_with_rules<'a>(
 
     let mut lock_keys = Vec::new();
     let mut rule_checks: Vec<(crate::rule::ConcurencyRule, serde_json::Value, bool)> = Vec::new();
+    let mut capacity_checks: Vec<(CapacityRule, serde_json::Value)> = Vec::new();
 
     for strategy in rules {
         match strategy {
@@ -399,6 +416,42 @@ pub async fn claim_task_with_rules<'a>(
                 let is_same_kind = concurrency_rule.matcher.kind == t.kind;
                 lock_keys.push(lock_key);
                 rule_checks.push((concurrency_rule.clone(), m, is_same_kind));
+            }
+            Strategy::Capacity(capacity_rule) => {
+                let mut m = json!({});
+                let mut fields_ok = true;
+                for field in &capacity_rule.matcher.fields {
+                    match t.metadata.get(field) {
+                        Some(v) => {
+                            m[field] = v.clone();
+                        }
+                        None => {
+                            log::warn!(
+                                "Task {} missing metadata field '{}' required by capacity rule, blocking",
+                                task_id,
+                                field
+                            );
+                            fields_ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !fields_ok {
+                    return Ok(ClaimResult::RuleBlocked);
+                }
+
+                // Candidate must have expected_count set
+                if t.expected_count.is_none() {
+                    log::warn!(
+                        "Task {} has a Capacity rule but no expected_count, blocking",
+                        task_id,
+                    );
+                    return Ok(ClaimResult::RuleBlocked);
+                }
+
+                let lock_key = capacity_lock_key(capacity_rule, &t.metadata);
+                lock_keys.push(lock_key);
+                capacity_checks.push((capacity_rule.clone(), m));
             }
         }
     }
@@ -445,6 +498,31 @@ pub async fn claim_task_with_rules<'a>(
                 };
 
                 if !allowed {
+                    return Ok(ClaimResult::RuleBlocked);
+                }
+            }
+
+            // Check all capacity rules
+            #[derive(diesel::QueryableByName)]
+            struct CapacitySum {
+                #[diesel(sql_type = diesel::sql_types::BigInt)]
+                total: i64,
+            }
+
+            for (capacity_rule, metadata_filter) in &capacity_checks {
+                let sum: CapacitySum = diesel::sql_query(
+                    "SELECT COALESCE(SUM(GREATEST(COALESCE(expected_count, 0) - success - failures, 0)), 0) as total \
+                     FROM task \
+                     WHERE kind = $1 \
+                     AND (status = 'running' OR status = 'claimed') \
+                     AND metadata @> $2"
+                )
+                .bind::<diesel::sql_types::Text, _>(&capacity_rule.matcher.kind)
+                .bind::<diesel::sql_types::Jsonb, _>(metadata_filter)
+                .get_result(&mut *conn)
+                .await?;
+
+                if sum.total >= capacity_rule.max_capacity as i64 {
                     return Ok(ClaimResult::RuleBlocked);
                 }
             }

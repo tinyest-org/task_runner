@@ -5,7 +5,7 @@ use common::*;
 use serde_json::json;
 use task_runner::db_operation::{ClaimResult, claim_task_with_rules};
 use task_runner::models::{StatusKind, Task};
-use task_runner::rule::{ConcurencyRule, Matcher, Rules, Strategy};
+use task_runner::rule::{CapacityRule, ConcurencyRule, Matcher, Rules, Strategy};
 
 /// Helper: build a minimal Task struct from a TaskDto and known metadata/rules.
 /// Only the fields used by `claim_task_with_rules` matter (id, kind, metadata, start_condition).
@@ -361,5 +361,787 @@ async fn test_concurrency_blocks_same_metadata() {
         result2,
         ClaimResult::RuleBlocked,
         "Tasks with same projectId should block each other"
+    );
+}
+
+// =============================================================================
+// Capacity rule helpers
+// =============================================================================
+
+/// Helper: build the Rules for a capacity rule with max_capacity and optional metadata fields.
+fn capacity_rules(kind: &str, max_capacity: i32, fields: Vec<&str>) -> Rules {
+    Rules(vec![Strategy::Capacity(CapacityRule {
+        max_capacity,
+        matcher: Matcher {
+            kind: kind.to_string(),
+            status: StatusKind::Running,
+            fields: fields.into_iter().map(String::from).collect(),
+        },
+    })])
+}
+
+/// Helper: build a Task struct for claim with expected_count set.
+fn make_task_for_claim_with_expected(
+    id: uuid::Uuid,
+    kind: &str,
+    metadata: serde_json::Value,
+    rules: Rules,
+    expected_count: Option<i32>,
+) -> Task {
+    Task {
+        id,
+        name: String::new(),
+        kind: kind.to_string(),
+        status: StatusKind::Pending,
+        timeout: 60,
+        created_at: chrono::Utc::now(),
+        started_at: None,
+        last_updated: chrono::Utc::now(),
+        metadata,
+        ended_at: None,
+        start_condition: rules,
+        wait_success: 0,
+        wait_finished: 0,
+        success: 0,
+        failures: 0,
+        failure_reason: None,
+        batch_id: None,
+        expected_count,
+        dead_end_barrier: false,
+    }
+}
+
+/// Helper: directly set success/failures counters on a task via raw SQL.
+async fn set_task_counters(
+    pool: &task_runner::DbPool,
+    task_id: uuid::Uuid,
+    success: i32,
+    failures: i32,
+) {
+    use diesel_async::RunQueryDsl;
+    let mut conn = pool.get().await.unwrap();
+    diesel::sql_query("UPDATE task SET success = $1, failures = $2 WHERE id = $3")
+        .bind::<diesel::sql_types::Integer, _>(success)
+        .bind::<diesel::sql_types::Integer, _>(failures)
+        .bind::<diesel::sql_types::Uuid, _>(task_id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+}
+
+// =============================================================================
+// Capacity storage tests
+// =============================================================================
+
+/// Roundtrip: create a task with a Capacity rule, GET it, verify the rule is stored.
+#[tokio::test]
+async fn test_capacity_rule_stored_on_task() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let task = json!({
+        "id": "cap-store",
+        "name": "Capacity Storage Test",
+        "kind": "cap-kind",
+        "timeout": 60,
+        "expected_count": 1000,
+        "metadata": {"test": true},
+        "on_start": webhook_action(),
+        "rules": [{
+            "type": "Capacity",
+            "max_capacity": 500,
+            "matcher": {
+                "kind": "cap-kind",
+                "status": "Running",
+                "fields": []
+            }
+        }]
+    });
+
+    let body = create_tasks_ok(&app, &[task]).await;
+    assert_eq!(body[0].status, StatusKind::Pending);
+    assert_eq!(body[0].rules.0.len(), 1);
+    match &body[0].rules.0[0] {
+        Strategy::Capacity(rule) => {
+            assert_eq!(rule.max_capacity, 500);
+            assert_eq!(rule.matcher.kind, "cap-kind");
+        }
+        other => panic!("Expected Capacity rule, got {:?}", other),
+    }
+}
+
+// =============================================================================
+// Capacity enforcement tests
+// =============================================================================
+
+/// sum=200 < max_capacity=500 → second task is allowed.
+#[tokio::test]
+async fn test_capacity_allows_when_under_limit() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let cap_rules_json = json!([{
+        "type": "Capacity",
+        "max_capacity": 500,
+        "matcher": { "kind": "cap-enforce", "status": "Running", "fields": [] }
+    }]);
+
+    // Task 1: expected_count=200 (will be Running with remaining=200)
+    // Task 2: candidate expected_count=300
+    let tasks = vec![
+        json!({
+            "id": "cap-t1",
+            "name": "Cap Task 1",
+            "kind": "cap-enforce",
+            "timeout": 60,
+            "expected_count": 200,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+        json!({
+            "id": "cap-t2",
+            "name": "Cap Task 2",
+            "kind": "cap-enforce",
+            "timeout": 60,
+            "expected_count": 300,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+    ];
+
+    let created = create_tasks_ok(&app, &tasks).await;
+    let id1 = created[0].id;
+    let id2 = created[1].id;
+
+    let rules = capacity_rules("cap-enforce", 500, vec![]);
+
+    // Claim + mark running task 1 (remaining = 200 - 0 - 0 = 200)
+    let mut conn = state.pool.get().await.unwrap();
+    let t1 =
+        make_task_for_claim_with_expected(id1, "cap-enforce", json!({}), rules.clone(), Some(200));
+    let result1 = claim_task_with_rules(&mut conn, &t1).await.unwrap();
+    assert_eq!(result1, ClaimResult::Claimed);
+    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+        .await
+        .unwrap();
+
+    // Now try claiming task 2: sum_running=200 < 500 → should be allowed
+    let t2 =
+        make_task_for_claim_with_expected(id2, "cap-enforce", json!({}), rules.clone(), Some(300));
+    let result2 = claim_task_with_rules(&mut conn, &t2).await.unwrap();
+    assert_eq!(
+        result2,
+        ClaimResult::Claimed,
+        "sum=200 < 500, candidate should be allowed"
+    );
+}
+
+/// sum=500 >= max_capacity=500 → candidate is blocked.
+#[tokio::test]
+async fn test_capacity_blocks_when_at_limit() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let cap_rules_json = json!([{
+        "type": "Capacity",
+        "max_capacity": 500,
+        "matcher": { "kind": "cap-block", "status": "Running", "fields": [] }
+    }]);
+
+    let tasks = vec![
+        json!({
+            "id": "cap-b1",
+            "name": "Cap Block 1",
+            "kind": "cap-block",
+            "timeout": 60,
+            "expected_count": 500,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+        json!({
+            "id": "cap-b2",
+            "name": "Cap Block 2",
+            "kind": "cap-block",
+            "timeout": 60,
+            "expected_count": 100,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+    ];
+
+    let created = create_tasks_ok(&app, &tasks).await;
+    let id1 = created[0].id;
+    let id2 = created[1].id;
+
+    let rules = capacity_rules("cap-block", 500, vec![]);
+
+    // Claim + mark running task 1 (remaining = 500)
+    let mut conn = state.pool.get().await.unwrap();
+    let t1 =
+        make_task_for_claim_with_expected(id1, "cap-block", json!({}), rules.clone(), Some(500));
+    let result1 = claim_task_with_rules(&mut conn, &t1).await.unwrap();
+    assert_eq!(result1, ClaimResult::Claimed);
+    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+        .await
+        .unwrap();
+
+    // Try claiming task 2: sum_running=500 >= 500 → blocked
+    let t2 =
+        make_task_for_claim_with_expected(id2, "cap-block", json!({}), rules.clone(), Some(100));
+    let result2 = claim_task_with_rules(&mut conn, &t2).await.unwrap();
+    assert_eq!(
+        result2,
+        ClaimResult::RuleBlocked,
+        "sum=500 >= 500, candidate should be blocked"
+    );
+
+    assert_task_status(&app, id2, StatusKind::Pending, "blocked task stays Pending").await;
+}
+
+/// Candidate with expected_count=2000 starts when sum=200 < 500 (candidate size irrelevant).
+#[tokio::test]
+async fn test_capacity_allows_large_candidate_when_room() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let cap_rules_json = json!([{
+        "type": "Capacity",
+        "max_capacity": 500,
+        "matcher": { "kind": "cap-large", "status": "Running", "fields": [] }
+    }]);
+
+    let tasks = vec![
+        json!({
+            "id": "cap-l1",
+            "name": "Small Running",
+            "kind": "cap-large",
+            "timeout": 60,
+            "expected_count": 200,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+        json!({
+            "id": "cap-l2",
+            "name": "Large Candidate",
+            "kind": "cap-large",
+            "timeout": 60,
+            "expected_count": 2000,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+    ];
+
+    let created = create_tasks_ok(&app, &tasks).await;
+    let id1 = created[0].id;
+    let id2 = created[1].id;
+
+    let rules = capacity_rules("cap-large", 500, vec![]);
+
+    // Claim + mark running task 1 (remaining = 200)
+    let mut conn = state.pool.get().await.unwrap();
+    let t1 =
+        make_task_for_claim_with_expected(id1, "cap-large", json!({}), rules.clone(), Some(200));
+    let result1 = claim_task_with_rules(&mut conn, &t1).await.unwrap();
+    assert_eq!(result1, ClaimResult::Claimed);
+    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+        .await
+        .unwrap();
+
+    // Candidate with expected_count=2000: sum=200 < 500 → allowed (candidate size doesn't matter)
+    let t2 =
+        make_task_for_claim_with_expected(id2, "cap-large", json!({}), rules.clone(), Some(2000));
+    let result2 = claim_task_with_rules(&mut conn, &t2).await.unwrap();
+    assert_eq!(
+        result2,
+        ClaimResult::Claimed,
+        "Candidate size is irrelevant, sum=200 < 500"
+    );
+}
+
+/// Progress updates (success counter) reduce remaining, unblocking candidates.
+#[tokio::test]
+async fn test_capacity_accounts_for_progress() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let cap_rules_json = json!([{
+        "type": "Capacity",
+        "max_capacity": 500,
+        "matcher": { "kind": "cap-progress", "status": "Running", "fields": [] }
+    }]);
+
+    let tasks = vec![
+        json!({
+            "id": "cap-p1",
+            "name": "Running Progress",
+            "kind": "cap-progress",
+            "timeout": 60,
+            "expected_count": 600,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+        json!({
+            "id": "cap-p2",
+            "name": "Waiting Candidate",
+            "kind": "cap-progress",
+            "timeout": 60,
+            "expected_count": 100,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+    ];
+
+    let created = create_tasks_ok(&app, &tasks).await;
+    let id1 = created[0].id;
+    let id2 = created[1].id;
+
+    let rules = capacity_rules("cap-progress", 500, vec![]);
+
+    // Claim + mark running task 1 (remaining = 600 - 0 - 0 = 600)
+    let mut conn = state.pool.get().await.unwrap();
+    let t1 =
+        make_task_for_claim_with_expected(id1, "cap-progress", json!({}), rules.clone(), Some(600));
+    let result1 = claim_task_with_rules(&mut conn, &t1).await.unwrap();
+    assert_eq!(result1, ClaimResult::Claimed);
+    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+        .await
+        .unwrap();
+
+    // sum=600 >= 500 → blocked
+    let t2 =
+        make_task_for_claim_with_expected(id2, "cap-progress", json!({}), rules.clone(), Some(100));
+    let result2 = claim_task_with_rules(&mut conn, &t2).await.unwrap();
+    assert_eq!(
+        result2,
+        ClaimResult::RuleBlocked,
+        "sum=600 >= 500, should be blocked"
+    );
+
+    // Simulate progress: task 1 completed 200 items (remaining = 600 - 200 = 400)
+    set_task_counters(&state.pool, id1, 200, 0).await;
+
+    // Now sum=400 < 500 → candidate should be allowed
+    let result3 = claim_task_with_rules(&mut conn, &t2).await.unwrap();
+    assert_eq!(
+        result3,
+        ClaimResult::Claimed,
+        "After progress, sum=400 < 500, should be allowed"
+    );
+}
+
+/// Candidate without expected_count is blocked: validation rejects creation,
+/// and the runtime claim also blocks as defense-in-depth.
+#[tokio::test]
+async fn test_capacity_requires_expected_count() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    // Validation rejects: Capacity rule without expected_count → 400
+    let cap_rules_json = json!([{
+        "type": "Capacity",
+        "max_capacity": 500,
+        "matcher": { "kind": "cap-nocount", "status": "Running", "fields": [] }
+    }]);
+
+    let req = actix_web::test::TestRequest::post()
+        .uri("/task")
+        .insert_header(("requester", "test"))
+        .set_json(&[json!({
+            "id": "cap-nc",
+            "name": "No Expected Count",
+            "kind": "cap-nocount",
+            "timeout": 60,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json
+        })])
+        .to_request();
+    let resp = actix_web::test::call_service(&app, req).await;
+    assert_eq!(
+        resp.status(),
+        actix_web::http::StatusCode::BAD_REQUEST,
+        "Task with Capacity rule but no expected_count should be rejected at creation"
+    );
+
+    // Runtime defense-in-depth: create a plain task (no capacity rule) then
+    // try to claim it with a capacity rule and no expected_count.
+    let tasks = vec![json!({
+        "id": "cap-nc-plain",
+        "name": "Plain Task",
+        "kind": "cap-nocount",
+        "timeout": 60,
+        "metadata": {},
+        "on_start": webhook_action()
+    })];
+    let created = create_tasks_ok(&app, &tasks).await;
+    let id = created[0].id;
+
+    let rules = capacity_rules("cap-nocount", 500, vec![]);
+
+    // claim_task_with_rules checks expected_count at runtime → RuleBlocked
+    let mut conn = state.pool.get().await.unwrap();
+    let t = make_task_for_claim_with_expected(id, "cap-nocount", json!({}), rules.clone(), None);
+    let result = claim_task_with_rules(&mut conn, &t).await.unwrap();
+    assert_eq!(
+        result,
+        ClaimResult::RuleBlocked,
+        "Candidate without expected_count should be blocked at runtime"
+    );
+}
+
+/// Capacity rules only support matcher.status = Running.
+#[tokio::test]
+async fn test_capacity_requires_running_status() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let cap_rules_json = json!([{
+        "type": "Capacity",
+        "max_capacity": 500,
+        "matcher": { "kind": "cap-status", "status": "Pending", "fields": [] }
+    }]);
+
+    let req = actix_web::test::TestRequest::post()
+        .uri("/task")
+        .insert_header(("requester", "test"))
+        .set_json(&[json!({
+            "id": "cap-bad-status",
+            "name": "Bad Capacity Status",
+            "kind": "cap-status",
+            "timeout": 60,
+            "expected_count": 10,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json
+        })])
+        .to_request();
+    let resp = actix_web::test::call_service(&app, req).await;
+    assert_eq!(
+        resp.status(),
+        actix_web::http::StatusCode::BAD_REQUEST,
+        "Capacity rule with matcher.status != Running should be rejected at creation"
+    );
+}
+
+/// Running tasks with expected_count = 0 or NULL contribute 0 remaining capacity.
+#[tokio::test]
+async fn test_capacity_zero_or_null_expected_count_contributes_zero() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let cap_rules_json = json!([{
+        "type": "Capacity",
+        "max_capacity": 1,
+        "matcher": { "kind": "cap-zero", "status": "Running", "fields": [] }
+    }]);
+
+    let tasks = vec![
+        json!({
+            "id": "cap-null",
+            "name": "Running Null Expected",
+            "kind": "cap-zero",
+            "timeout": 60,
+            "metadata": {},
+            "on_start": webhook_action()
+        }),
+        json!({
+            "id": "cap-zero",
+            "name": "Running Zero Expected",
+            "kind": "cap-zero",
+            "timeout": 60,
+            "expected_count": 0,
+            "metadata": {},
+            "on_start": webhook_action()
+        }),
+        json!({
+            "id": "cap-candidate",
+            "name": "Capacity Candidate",
+            "kind": "cap-zero",
+            "timeout": 60,
+            "expected_count": 10,
+            "metadata": {},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+    ];
+
+    let created = create_tasks_ok(&app, &tasks).await;
+    let id_null = created[0].id;
+    let id_zero = created[1].id;
+    let id_candidate = created[2].id;
+
+    let rules_empty = Rules(vec![]);
+    let rules_capacity = capacity_rules("cap-zero", 1, vec![]);
+
+    let mut conn = state.pool.get().await.unwrap();
+
+    // Claim + mark running task with expected_count = NULL
+    let t_null = make_task_for_claim_with_expected(
+        id_null,
+        "cap-zero",
+        json!({}),
+        rules_empty.clone(),
+        None,
+    );
+    let result_null = claim_task_with_rules(&mut conn, &t_null).await.unwrap();
+    assert_eq!(result_null, ClaimResult::Claimed);
+    task_runner::db_operation::mark_task_running(&mut conn, &id_null)
+        .await
+        .unwrap();
+
+    // Claim + mark running task with expected_count = 0
+    let t_zero = make_task_for_claim_with_expected(
+        id_zero,
+        "cap-zero",
+        json!({}),
+        rules_empty.clone(),
+        Some(0),
+    );
+    let result_zero = claim_task_with_rules(&mut conn, &t_zero).await.unwrap();
+    assert_eq!(result_zero, ClaimResult::Claimed);
+    task_runner::db_operation::mark_task_running(&mut conn, &id_zero)
+        .await
+        .unwrap();
+
+    // Candidate should be allowed since both running tasks contribute 0 remaining.
+    let t_candidate = make_task_for_claim_with_expected(
+        id_candidate,
+        "cap-zero",
+        json!({}),
+        rules_capacity.clone(),
+        Some(10),
+    );
+    let result_candidate = claim_task_with_rules(&mut conn, &t_candidate)
+        .await
+        .unwrap();
+    assert_eq!(
+        result_candidate,
+        ClaimResult::Claimed,
+        "expected_count NULL/0 should contribute 0 remaining capacity"
+    );
+}
+
+/// Different metadata fields → independent capacity pools.
+#[tokio::test]
+async fn test_capacity_respects_metadata_fields() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let cap_rules_json = json!([{
+        "type": "Capacity",
+        "max_capacity": 500,
+        "matcher": { "kind": "cap-meta", "status": "Running", "fields": ["projectId"] }
+    }]);
+
+    let tasks = vec![
+        json!({
+            "id": "cap-m1",
+            "name": "Project A Running",
+            "kind": "cap-meta",
+            "timeout": 60,
+            "expected_count": 500,
+            "metadata": {"projectId": "A"},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+        json!({
+            "id": "cap-m2",
+            "name": "Project B Candidate",
+            "kind": "cap-meta",
+            "timeout": 60,
+            "expected_count": 100,
+            "metadata": {"projectId": "B"},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+        json!({
+            "id": "cap-m3",
+            "name": "Project A Candidate",
+            "kind": "cap-meta",
+            "timeout": 60,
+            "expected_count": 100,
+            "metadata": {"projectId": "A"},
+            "on_start": webhook_action(),
+            "rules": cap_rules_json.clone()
+        }),
+    ];
+
+    let created = create_tasks_ok(&app, &tasks).await;
+    let id1 = created[0].id;
+    let id2 = created[1].id;
+    let id3 = created[2].id;
+
+    let rules_a = capacity_rules("cap-meta", 500, vec!["projectId"]);
+
+    // Claim + mark running task 1 (project A, remaining = 500)
+    let mut conn = state.pool.get().await.unwrap();
+    let t1 = make_task_for_claim_with_expected(
+        id1,
+        "cap-meta",
+        json!({"projectId": "A"}),
+        rules_a.clone(),
+        Some(500),
+    );
+    let result1 = claim_task_with_rules(&mut conn, &t1).await.unwrap();
+    assert_eq!(result1, ClaimResult::Claimed);
+    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+        .await
+        .unwrap();
+
+    // Project B candidate: different pool, sum_B=0 < 500 → allowed
+    let t2 = make_task_for_claim_with_expected(
+        id2,
+        "cap-meta",
+        json!({"projectId": "B"}),
+        rules_a.clone(),
+        Some(100),
+    );
+    let result2 = claim_task_with_rules(&mut conn, &t2).await.unwrap();
+    assert_eq!(
+        result2,
+        ClaimResult::Claimed,
+        "Different project should not be blocked"
+    );
+
+    // Project A candidate: sum_A=500 >= 500 → blocked
+    let t3 = make_task_for_claim_with_expected(
+        id3,
+        "cap-meta",
+        json!({"projectId": "A"}),
+        rules_a.clone(),
+        Some(100),
+    );
+    let result3 = claim_task_with_rules(&mut conn, &t3).await.unwrap();
+    assert_eq!(
+        result3,
+        ClaimResult::RuleBlocked,
+        "Same project with sum=500 should be blocked"
+    );
+}
+
+/// Combined Concurency + Capacity: both rules must pass (AND semantics).
+#[tokio::test]
+async fn test_capacity_combined_with_concurrency() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    let combined_rules_json = json!([
+        {
+            "type": "Concurency",
+            "max_concurency": 3,
+            "matcher": { "kind": "cap-combo", "status": "Running", "fields": [] }
+        },
+        {
+            "type": "Capacity",
+            "max_capacity": 500,
+            "matcher": { "kind": "cap-combo", "status": "Running", "fields": [] }
+        }
+    ]);
+
+    // Create 4 tasks: 3 will run, 4th tests the combined rules
+    let tasks: Vec<serde_json::Value> = (1..=4)
+        .map(|i| {
+            json!({
+                "id": format!("combo-{}", i),
+                "name": format!("Combo Task {}", i),
+                "kind": "cap-combo",
+                "timeout": 60,
+                "expected_count": 100,
+                "metadata": {},
+                "on_start": webhook_action(),
+                "rules": combined_rules_json.clone()
+            })
+        })
+        .collect();
+
+    let created = create_tasks_ok(&app, &tasks).await;
+    let ids: Vec<uuid::Uuid> = created.iter().map(|t| t.id).collect();
+
+    let combined_rules = Rules(vec![
+        Strategy::Concurency(ConcurencyRule {
+            max_concurency: 3,
+            matcher: Matcher {
+                kind: "cap-combo".to_string(),
+                status: StatusKind::Running,
+                fields: vec![],
+            },
+        }),
+        Strategy::Capacity(CapacityRule {
+            max_capacity: 500,
+            matcher: Matcher {
+                kind: "cap-combo".to_string(),
+                status: StatusKind::Running,
+                fields: vec![],
+            },
+        }),
+    ]);
+
+    let mut conn = state.pool.get().await.unwrap();
+
+    // Claim + run first 3 tasks (each remaining=100, sum=300, count=3)
+    for i in 0..3 {
+        let t = make_task_for_claim_with_expected(
+            ids[i],
+            "cap-combo",
+            json!({}),
+            combined_rules.clone(),
+            Some(100),
+        );
+        let result = claim_task_with_rules(&mut conn, &t).await.unwrap();
+        assert_eq!(
+            result,
+            ClaimResult::Claimed,
+            "Task {} should be claimed",
+            i + 1
+        );
+        task_runner::db_operation::mark_task_running(&mut conn, &ids[i])
+            .await
+            .unwrap();
+    }
+
+    // Task 4: sum=300 < 500 OK, but count=3 >= max_concurency=3 → blocked by concurrency
+    let t4 = make_task_for_claim_with_expected(
+        ids[3],
+        "cap-combo",
+        json!({}),
+        combined_rules.clone(),
+        Some(100),
+    );
+    let result4 = claim_task_with_rules(&mut conn, &t4).await.unwrap();
+    assert_eq!(
+        result4,
+        ClaimResult::RuleBlocked,
+        "Should be blocked: capacity OK (300 < 500) but concurrency limit reached (3 >= 3)"
+    );
+
+    // Complete task 1 so concurrency has room (count=2)
+    let update_result = task_runner::db_operation::update_running_task(
+        &state.action_executor,
+        &mut conn,
+        ids[0],
+        success_dto(),
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        update_result,
+        task_runner::db_operation::UpdateTaskResult::Updated
+    );
+
+    // Now count=2 < 3 and sum=200 < 500 → both pass
+    let result5 = claim_task_with_rules(&mut conn, &t4).await.unwrap();
+    assert_eq!(
+        result5,
+        ClaimResult::Claimed,
+        "After completing task 1: concurrency OK (2 < 3) and capacity OK (200 < 500)"
     );
 }

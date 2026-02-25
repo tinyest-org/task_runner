@@ -351,17 +351,17 @@ pub(crate) async fn cancel_dead_end_ancestors<'a>(
                 SELECT t.id, t.status::text AS prev_status, t.dead_end_barrier AS is_barrier
                 FROM task t
                 JOIN candidates c ON c.parent_id = t.id
-                WHERE t.status NOT IN ('Success', 'Failure', 'Canceled')
+                WHERE t.status NOT IN ('success', 'failure', 'canceled')
                   AND NOT EXISTS (
                       SELECT 1 FROM link l2
                       JOIN task c2 ON c2.id = l2.child_id
                       WHERE l2.parent_id = t.id
-                        AND c2.status NOT IN ('Success', 'Failure', 'Canceled')
+                        AND c2.status NOT IN ('success', 'failure', 'canceled')
                   )
                 FOR UPDATE OF t SKIP LOCKED
             )
             UPDATE task
-            SET status = 'Canceled',
+            SET status = 'canceled',
                 failure_reason = 'All child tasks already terminated',
                 ended_at = now(),
                 last_updated = now()
@@ -395,7 +395,7 @@ pub(crate) async fn cancel_dead_end_ancestors<'a>(
             );
             all_canceled.push(CanceledAncestor {
                 id: row.id,
-                was_running: row.prev_status == "Running",
+                was_running: row.prev_status == "running",
             });
         }
     }
