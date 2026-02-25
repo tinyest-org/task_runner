@@ -34,6 +34,7 @@ function buildNodeData(task: BasicTask) {
     ended_at: task.ended_at,
     success: task.success,
     failures: task.failures,
+    expected_count: task.expected_count,
     batch_id: task.batch_id,
     dead_end_barrier: task.dead_end_barrier,
   };
@@ -114,6 +115,7 @@ export default function DagCanvas(props: Props) {
         ended_at: data.ended_at,
         success: data.success,
         failures: data.failures,
+        expected_count: data.expected_count ?? null,
         batch_id: data.batch_id ?? null,
         dead_end_barrier: data.dead_end_barrier ?? false,
       };

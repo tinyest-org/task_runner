@@ -7,7 +7,7 @@ interface Props {
   onTaskClick: (task: BasicTask) => void;
 }
 
-type SortKey = 'name' | 'kind' | 'status' | 'created_at' | 'started_at' | 'ended_at' | 'success' | 'failures';
+type SortKey = 'name' | 'kind' | 'status' | 'created_at' | 'started_at' | 'ended_at' | 'success' | 'failures' | 'progress';
 
 const COLUMNS: { key: SortKey; label: string }[] = [
   { key: 'name', label: 'Name' },
@@ -18,9 +18,23 @@ const COLUMNS: { key: SortKey; label: string }[] = [
   { key: 'ended_at', label: 'Ended' },
   { key: 'success', label: 'Success' },
   { key: 'failures', label: 'Failures' },
+  { key: 'progress', label: 'Progress' },
 ];
 
+function progressPct(t: BasicTask): number | null {
+  if (t.expected_count == null || t.expected_count === 0) return null;
+  return Math.min(100, Math.round(((t.success + t.failures) / t.expected_count) * 100));
+}
+
 function compare(a: BasicTask, b: BasicTask, key: SortKey): number {
+  if (key === 'progress') {
+    const ap = progressPct(a);
+    const bp = progressPct(b);
+    if (ap == null && bp == null) return 0;
+    if (ap == null) return 1;
+    if (bp == null) return -1;
+    return ap - bp;
+  }
   const av = a[key];
   const bv = b[key];
   if (av == null && bv == null) return 0;
@@ -110,6 +124,20 @@ export default function TaskTable(props: Props) {
                   <td class="px-3 py-2 text-white/50">{formatDate(task.ended_at)}</td>
                   <td class="px-3 py-2 text-center">{task.success}</td>
                   <td class="px-3 py-2 text-center">{task.failures}</td>
+                  <td class="px-3 py-2 text-center">
+                    {(() => {
+                      const pct = progressPct(task);
+                      if (pct == null) return <span class="text-white/30">—</span>;
+                      return (
+                        <div class="flex items-center gap-1.5">
+                          <div class="h-1.5 w-16 rounded-full bg-white/10 overflow-hidden">
+                            <div class="h-full bg-emerald-500" style={{ width: `${pct}%` }} />
+                          </div>
+                          <span class="text-xs text-white/60">{pct}%</span>
+                        </div>
+                      );
+                    })()}
+                  </td>
                 </tr>
               )}
             </For>

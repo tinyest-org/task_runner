@@ -1,5 +1,5 @@
 import { Show, For, createSignal, createEffect, on } from 'solid-js';
-import type { BasicTask, TaskDetail, ActionDto } from '../types';
+import type { BasicTask, TaskDetail, ActionDto, Strategy } from '../types';
 import { fetchTask, cancelTask } from '../api';
 import StatusBadge from './StatusBadge';
 import { JsonViewer, urlRenderer, Window, Collapsible, Button } from 'glass-ui-solid';
@@ -53,6 +53,7 @@ export default function TaskInfoPanel(props: Props) {
   const [loading, setLoading] = createSignal(false);
   const [metadataOpen, setMetadataOpen] = createSignal(false);
   const [actionsOpen, setActionsOpen] = createSignal(false);
+  const [rulesOpen, setRulesOpen] = createSignal(false);
   const [showCancelConfirm, setShowCancelConfirm] = createSignal(false);
   const [canceling, setCanceling] = createSignal(false);
   const [cancelError, setCancelError] = createSignal<string | null>(null);
@@ -105,6 +106,10 @@ export default function TaskInfoPanel(props: Props) {
     const det = d();
     return det && det.actions && det.actions.length > 0;
   };
+  const hasRules = () => {
+    const det = d();
+    return det && det.rules && det.rules.length > 0;
+  };
 
   const offset = props.index * WINDOW_OFFSET;
 
@@ -148,6 +153,39 @@ export default function TaskInfoPanel(props: Props) {
       </div>
       <InfoRow label="Success" value={String(task().success)} />
       <InfoRow label="Failures" value={String(task().failures)} />
+
+      {/* Progress bar when expected_count is set */}
+      <Show when={task().expected_count != null}>
+        {(() => {
+          const expected = task().expected_count!;
+          const done = task().success + task().failures;
+          const pct = expected > 0 ? Math.min(100, Math.round((done / expected) * 100)) : 0;
+          const successPct = expected > 0 ? Math.min(100, Math.round((task().success / expected) * 100)) : 0;
+          const failurePct = expected > 0 ? Math.min(100 - successPct, Math.round((task().failures / expected) * 100)) : 0;
+          return (
+            <div class="border-b border-white/10 py-1.5">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-white/50">Progress</span>
+                <span class="font-mono text-xs text-white/90">
+                  {done} / {expected} ({pct}%)
+                </span>
+              </div>
+              <div class="h-2 w-full rounded-full bg-white/10 overflow-hidden flex">
+                <div
+                  class="h-full bg-emerald-500 transition-all duration-300"
+                  style={{ width: `${successPct}%` }}
+                />
+                <Show when={failurePct > 0}>
+                  <div
+                    class="h-full bg-red-500 transition-all duration-300"
+                    style={{ width: `${failurePct}%` }}
+                  />
+                </Show>
+              </div>
+            </div>
+          );
+        })()}
+      </Show>
 
       <Show when={loading()}>
         <div class="mt-2 text-center text-xs text-white/40">Loading details...</div>
@@ -203,6 +241,48 @@ export default function TaskInfoPanel(props: Props) {
                       </span>
                     </div>
                     <JsonViewer data={action.params} initialExpandDepth={2} maxHeight="10rem" valueRenderers={[urlRenderer]} />
+                  </div>
+                )}
+              </For>
+            </div>
+          </Collapsible>
+        </Show>
+
+        <Show when={hasRules()}>
+          <Collapsible
+            open={rulesOpen()}
+            onOpenChange={setRulesOpen}
+            trigger={
+              <span class="text-xs font-semibold text-white/60">
+                Rules ({d()!.rules.length})
+              </span>
+            }
+            class="mt-2"
+          >
+            <div class="space-y-2">
+              <For each={d()!.rules}>
+                {(rule) => (
+                  <div class="rounded border border-white/10 bg-black/20 p-2">
+                    <div class="mb-1 flex items-center gap-2">
+                      <span class={`text-[10px] font-semibold uppercase ${rule.type === 'Concurency' ? 'text-cyan-400' : 'text-orange-400'}`}>
+                        {rule.type}
+                      </span>
+                      <span class="rounded bg-white/10 px-1 py-0.5 text-[10px] text-white/60">
+                        max: {rule.type === 'Concurency' ? rule.max_concurency : rule.max_capacity}
+                      </span>
+                    </div>
+                    <div class="text-[11px] text-white/70 space-y-0.5">
+                      <div>
+                        <span class="text-white/40">kind:</span>{' '}
+                        <span class="font-mono">{rule.matcher.kind}</span>
+                      </div>
+                      <Show when={rule.matcher.fields.length > 0}>
+                        <div>
+                          <span class="text-white/40">fields:</span>{' '}
+                          <span class="font-mono">{rule.matcher.fields.join(', ')}</span>
+                        </div>
+                      </Show>
+                    </div>
                   </div>
                 )}
               </For>

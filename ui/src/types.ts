@@ -18,16 +18,38 @@ export interface BasicTask {
   ended_at: string | null;
   success: number;
   failures: number;
+  expected_count: number | null;
   batch_id: string | null;
   dead_end_barrier: boolean;
 }
+
+export interface Matcher {
+  status: TaskStatus;
+  kind: string;
+  fields: string[];
+}
+
+export interface ConcurencyRule {
+  type: 'Concurency';
+  max_concurency: number;
+  matcher: Matcher;
+}
+
+export interface CapacityRule {
+  type: 'Capacity';
+  max_capacity: number;
+  matcher: Matcher;
+}
+
+export type Strategy = ConcurencyRule | CapacityRule;
 
 export interface TaskDetail extends BasicTask {
   timeout: number;
   metadata: Record<string, unknown>;
   failure_reason: string | null;
   last_updated: string;
-  rules: unknown[];
+  expected_count: number | null;
+  rules: Strategy[];
   actions: ActionDto[];
 }
 
