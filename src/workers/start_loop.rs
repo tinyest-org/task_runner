@@ -31,6 +31,7 @@ pub async fn start_loop(
     evaluator: &ActionExecutor,
     pool: DbPool,
     interval: std::time::Duration,
+    dead_end_enabled: bool,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -135,6 +136,7 @@ pub async fn start_loop(
                                             &mut conn,
                                             &t.id,
                                             "on_start webhook failed",
+                                            dead_end_enabled,
                                         )
                                         .await
                                         {

@@ -34,6 +34,7 @@ fn make_task_for_claim(
         failure_reason: None,
         batch_id: None,
         expected_count: None,
+        dead_end_barrier: false,
     }
 }
 
@@ -230,6 +231,7 @@ async fn test_concurrency_blocks_when_limit_reached() {
         &mut conn,
         id1,
         success_dto(),
+        true,
     )
     .await
     .unwrap();

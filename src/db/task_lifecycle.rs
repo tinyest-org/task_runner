@@ -26,6 +26,7 @@ pub async fn update_running_task<'a>(
     conn: &mut Conn<'a>,
     task_id: Uuid,
     dto: dtos::UpdateTaskDto,
+    dead_end_enabled: bool,
 ) -> Result<UpdateTaskResult, DbError> {
     use crate::schema::task::dsl::*;
     use tracing::Instrument;
@@ -37,10 +38,11 @@ pub async fn update_running_task<'a>(
     // Collect cascade-failed task IDs from propagation (inside transaction)
     // so we can fire their on_failure webhooks after commit.
     let mut cascade_failed_ids: Vec<uuid::Uuid> = Vec::new();
+    let mut canceled_ancestors: Vec<workers::propagation::CanceledAncestor> = Vec::new();
 
     let res = if has_status_change {
         // Status change: transaction needed for atomic UPDATE + propagation
-        let (rows, cascade_failed) = run_in_transaction(conn, |conn| {
+        let (rows, cascade_failed, ancestors) = run_in_transaction(conn, |conn| {
             Box::pin(async move {
                 let res = diesel::update(
                     task.filter(id.eq(task_id).and(status.eq(models::StatusKind::Running))),
@@ -62,19 +64,29 @@ pub async fn update_running_task<'a>(
                 .await?;
 
                 let mut cascade = Vec::new();
+                let mut ancestors = Vec::new();
                 if res == 1 {
                     if let Some(ref final_status) = dto.status {
                         cascade =
                             workers::propagate_to_children(&task_id, final_status, conn).await?;
+
+                        // Dead-end ancestor cancellation
+                        if dead_end_enabled {
+                            let mut terminal_ids = vec![task_id];
+                            terminal_ids.extend_from_slice(&cascade);
+                            ancestors =
+                                workers::cancel_dead_end_ancestors(&terminal_ids, conn).await?;
+                        }
                     }
                 }
 
-                Ok((res, cascade))
+                Ok((res, cascade, ancestors))
             })
         })
         .instrument(tracing::info_span!("tx_update_and_propagate"))
         .await?;
         cascade_failed_ids = cascade_failed;
+        canceled_ancestors = ancestors;
         rows
     } else {
         // Counter-only update: no transaction needed, autocommit for minimal row lock
@@ -108,6 +120,9 @@ pub async fn update_running_task<'a>(
             )
             .instrument(tracing::info_span!("fire_end_webhooks_with_cascade"))
             .await;
+
+            workers::fire_webhooks_for_canceled_ancestors(evaluator, &canceled_ancestors, conn)
+                .await;
         } else {
             log::warn!(
                 "update_running_task: task {} was not in Running state, skipping webhooks/propagation",
@@ -197,18 +212,26 @@ pub(crate) async fn fail_task_and_propagate<'a>(
     conn: &mut Conn<'a>,
     task_id: &uuid::Uuid,
     reason: &str,
+    dead_end_enabled: bool,
 ) -> Result<(), DbError> {
     // Wrap status update + propagation in a transaction
     let tid = *task_id;
     let reason_owned = reason.to_string();
-    let (updated, cascade_failed) = run_in_transaction(conn, |conn| {
+    let (updated, cascade_failed, canceled_ancestors) = run_in_transaction(conn, |conn| {
         Box::pin(async move {
             let updated = mark_task_failed(conn, &tid, &reason_owned).await?;
             let mut cascade = Vec::new();
+            let mut ancestors = Vec::new();
             if updated {
                 cascade = workers::propagate_to_children(&tid, &StatusKind::Failure, conn).await?;
+
+                if dead_end_enabled {
+                    let mut terminal_ids = vec![tid];
+                    terminal_ids.extend_from_slice(&cascade);
+                    ancestors = workers::cancel_dead_end_ancestors(&terminal_ids, conn).await?;
+                }
             }
-            Ok((updated, cascade))
+            Ok((updated, cascade, ancestors))
         })
     })
     .await?;
@@ -230,6 +253,8 @@ pub(crate) async fn fail_task_and_propagate<'a>(
         conn,
     )
     .await;
+
+    workers::fire_webhooks_for_canceled_ancestors(evaluator, &canceled_ancestors, conn).await;
 
     Ok(())
 }

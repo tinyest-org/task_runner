@@ -1,8 +1,8 @@
 import { Show, For, createSignal, createEffect, on } from 'solid-js';
 import type { BasicTask, TaskDetail, ActionDto } from '../types';
-import { fetchTask } from '../api';
+import { fetchTask, cancelTask } from '../api';
 import StatusBadge from './StatusBadge';
-import { JsonViewer, urlRenderer, Window, Collapsible } from 'glass-ui-solid';
+import { JsonViewer, urlRenderer, Window, Collapsible, Button } from 'glass-ui-solid';
 
 const WINDOW_OFFSET = 30;
 
@@ -10,6 +10,7 @@ interface Props {
   task: BasicTask;
   index: number;
   onClose: () => void;
+  onCanceled?: () => void;
   zIndex: () => number;
   onFocus: () => void;
 }
@@ -52,6 +53,9 @@ export default function TaskInfoPanel(props: Props) {
   const [loading, setLoading] = createSignal(false);
   const [metadataOpen, setMetadataOpen] = createSignal(false);
   const [actionsOpen, setActionsOpen] = createSignal(false);
+  const [showCancelConfirm, setShowCancelConfirm] = createSignal(false);
+  const [canceling, setCanceling] = createSignal(false);
+  const [cancelError, setCancelError] = createSignal<string | null>(null);
 
   // Fetch full task detail on mount
   setLoading(true);
@@ -76,6 +80,22 @@ export default function TaskInfoPanel(props: Props) {
   const task = () => props.task;
   const d = () => detail();
   const isRunning = () => task().status === 'Running';
+  const isCancelable = () =>
+    ['Pending', 'Waiting', 'Running', 'Paused'].includes(task().status);
+
+  async function handleCancel() {
+    setCanceling(true);
+    setCancelError(null);
+    try {
+      await cancelTask(task().id);
+      setShowCancelConfirm(false);
+      props.onCanceled?.();
+    } catch (e) {
+      setCancelError(e instanceof Error ? e.message : 'Failed to cancel task');
+    } finally {
+      setCanceling(false);
+    }
+  }
   const hasMetadata = () => {
     const det = d();
     if (!det) return false;
@@ -180,6 +200,54 @@ export default function TaskInfoPanel(props: Props) {
               </For>
             </div>
           </Collapsible>
+        </Show>
+      </Show>
+
+      {/* Cancel task */}
+      <Show when={isCancelable()}>
+        <Show
+          when={showCancelConfirm()}
+          fallback={
+            <div class="mt-3 border-t border-white/10 pt-3">
+              <Button
+                variant="secondary"
+                size="sm"
+                class="!border-red-500/40 !text-red-400 hover:!bg-red-500/20 w-full"
+                onClick={() => setShowCancelConfirm(true)}
+              >
+                Cancel Task
+              </Button>
+            </div>
+          }
+        >
+          <div class="mt-3 rounded border border-red-500/30 bg-red-500/5 p-3">
+            <p class="mb-2 text-xs text-white/70">
+              Cancel this task? This will propagate to dependents.
+            </p>
+            <Show when={cancelError()}>
+              <p class="mb-2 text-xs text-red-400">{cancelError()}</p>
+            </Show>
+            <div class="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                class="flex-1"
+                onClick={() => setShowCancelConfirm(false)}
+                disabled={canceling()}
+              >
+                Keep
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                class="!bg-red-600 hover:!bg-red-700 flex-1"
+                onClick={handleCancel}
+                disabled={canceling()}
+              >
+                {canceling() ? 'Canceling...' : 'Confirm'}
+              </Button>
+            </div>
+          </div>
         </Show>
       </Show>
     </Window>

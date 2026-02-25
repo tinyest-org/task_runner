@@ -90,6 +90,9 @@ pub struct WorkerConfig {
 
     /// Batch update channel capacity
     pub batch_channel_capacity: usize,
+
+    /// Whether dead-end ancestor cancellation is enabled (safety valve)
+    pub dead_end_cancel_enabled: bool,
 }
 
 /// Circuit breaker configuration for connection pool resilience.
@@ -191,6 +194,7 @@ impl Default for WorkerConfig {
             claim_timeout: Duration::from_secs(30),
             batch_flush_interval: Duration::from_millis(100),
             batch_channel_capacity: 100,
+            dead_end_cancel_enabled: true,
         }
     }
 }
@@ -332,6 +336,7 @@ impl Config {
             loop_interval: Duration::from_millis(parse_env_or("WORKER_LOOP_INTERVAL_MS", 1000)?),
             claim_timeout: Duration::from_secs(parse_env_or("WORKER_CLAIM_TIMEOUT_SECS", 30)?),
             batch_channel_capacity: parse_env_or("BATCH_CHANNEL_CAPACITY", 100)?,
+            dead_end_cancel_enabled: parse_env_or("DEAD_END_CANCEL_ENABLED", 1)? != 0,
             ..Default::default()
         };
 

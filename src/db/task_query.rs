@@ -35,12 +35,21 @@ pub(crate) async fn find_timed_out_tasks<'a>(
 }
 
 /// Atomically mark a single task as timed-out (Failed) and propagate to children,
-/// all within one transaction. Returns the failed task and cascade-failed child IDs.
+/// all within one transaction. Returns the failed task, cascade-failed child IDs,
+/// and any ancestors canceled by dead-end detection.
 /// Uses FOR UPDATE SKIP LOCKED to avoid conflicts with concurrent workers.
 pub(crate) async fn timeout_task_and_propagate<'a>(
     conn: &mut Conn<'a>,
     task_id: uuid::Uuid,
-) -> Result<Option<(Task, Vec<uuid::Uuid>)>, DbError> {
+    dead_end_enabled: bool,
+) -> Result<
+    Option<(
+        Task,
+        Vec<uuid::Uuid>,
+        Vec<crate::workers::propagation::CanceledAncestor>,
+    )>,
+    DbError,
+> {
     use super::run_in_transaction;
     use {crate::schema::task::dsl::*, diesel::dsl::now};
     const TIMEOUT_REASON: &str = "Timeout";
@@ -77,7 +86,16 @@ pub(crate) async fn timeout_task_and_propagate<'a>(
                 crate::workers::propagate_to_children(&task_id, &models::StatusKind::Failure, conn)
                     .await?;
 
-            Ok(Some((t, cascade_failed)))
+            // Dead-end ancestor cancellation (inside tx)
+            let canceled_ancestors = if dead_end_enabled {
+                let mut terminal_ids = vec![task_id];
+                terminal_ids.extend_from_slice(&cascade_failed);
+                crate::workers::cancel_dead_end_ancestors(&terminal_ids, conn).await?
+            } else {
+                vec![]
+            };
+
+            Ok(Some((t, cascade_failed, canceled_ancestors)))
         })
     })
     .await

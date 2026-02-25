@@ -203,9 +203,17 @@ fn spawn_workers(
         let pool = pool.clone();
         let executor = action_executor.clone();
         let interval = config.worker.loop_interval;
+        let dead_end_enabled = config.worker.dead_end_cancel_enabled;
         let shutdown = shutdown_rx.clone();
         actix_web::rt::spawn(async move {
-            task_runner::workers::start_loop(executor.as_ref(), pool, interval, shutdown).await;
+            task_runner::workers::start_loop(
+                executor.as_ref(),
+                pool,
+                interval,
+                dead_end_enabled,
+                shutdown,
+            )
+            .await;
         })
     };
 
@@ -214,10 +222,18 @@ fn spawn_workers(
         let executor = action_executor.clone();
         let interval = config.worker.timeout_check_interval;
         let claim_timeout = config.worker.claim_timeout;
+        let dead_end_enabled = config.worker.dead_end_cancel_enabled;
         let shutdown = shutdown_rx.clone();
         actix_web::rt::spawn(async move {
-            task_runner::workers::timeout_loop(executor, pool, interval, claim_timeout, shutdown)
-                .await;
+            task_runner::workers::timeout_loop(
+                executor,
+                pool,
+                interval,
+                claim_timeout,
+                dead_end_enabled,
+                shutdown,
+            )
+            .await;
         })
     };
 

@@ -103,6 +103,7 @@ pub async fn claim_and_complete(
         &mut conn,
         task_id,
         dto,
+        true, // dead_end_cancel_enabled
     )
     .await
     .unwrap();

@@ -375,6 +375,7 @@ export default function App() {
                   task={t()}
                   index={i()}
                   onClose={() => closeTask(taskId)}
+                  onCanceled={() => loadDag()}
                   zIndex={handle.zIndex}
                   onFocus={handle.focus}
                 />

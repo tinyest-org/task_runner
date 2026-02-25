@@ -42,6 +42,7 @@ async fn test_start_loop_marks_task_failed_on_start_webhook_error() {
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),
+            true,
             shutdown_rx,
         )
         .await;
@@ -125,6 +126,7 @@ async fn test_timeout_loop_fires_on_failure_webhook() {
             pool,
             std::time::Duration::from_millis(50),
             std::time::Duration::from_secs(30),
+            true,
             shutdown_rx,
         )
         .await;
@@ -220,6 +222,7 @@ async fn test_recent_batch_update_prevents_timeout() {
             pool,
             std::time::Duration::from_millis(50),
             std::time::Duration::from_secs(30),
+            true,
             shutdown_rx,
         )
         .await;
@@ -292,6 +295,7 @@ async fn test_timeout_propagates_failure_to_children() {
             pool,
             std::time::Duration::from_millis(50),
             std::time::Duration::from_secs(30),
+            true,
             shutdown_rx,
         )
         .await;

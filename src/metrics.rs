@@ -146,6 +146,11 @@ register_int_counter!(
     "Total number of tasks failed due to required dependency failure"
 );
 register_int_counter!(
+    TASKS_CANCELED_DEAD_END_TOTAL,
+    "tasks_canceled_dead_end_total",
+    "Total number of ancestor tasks canceled by dead-end detection"
+);
+register_int_counter!(
     TASKS_DB_SAVE_FAILURES,
     "tasks_db_save_failures_total",
     "Total number of tasks where database save failed after max retries"
@@ -347,6 +352,10 @@ pub fn record_task_failed_by_dependency() {
     TASKS_FAILED_BY_DEPENDENCY.inc();
 }
 
+pub fn record_task_canceled_dead_end() {
+    TASKS_CANCELED_DEAD_END_TOTAL.inc();
+}
+
 pub fn record_task_db_save_failure() {
     TASKS_DB_SAVE_FAILURES.inc();
 }
@@ -454,6 +463,7 @@ pub fn init_metrics() {
     let _ = &*DEPENDENCY_PROPAGATIONS;
     let _ = &*TASKS_UNBLOCKED;
     let _ = &*TASKS_FAILED_BY_DEPENDENCY;
+    let _ = &*TASKS_CANCELED_DEAD_END_TOTAL;
     let _ = &*TASKS_DB_SAVE_FAILURES;
     let _ = &*BATCH_UPDATE_FAILURES;
     let _ = &*WEBHOOK_EXECUTIONS;

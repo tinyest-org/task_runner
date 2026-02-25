@@ -3,7 +3,7 @@ use actix_web::rt;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-use super::propagation::fire_end_webhooks_with_cascade;
+use super::propagation::{fire_end_webhooks_with_cascade, fire_webhooks_for_canceled_ancestors};
 
 /// Background loop that detects timed-out Running tasks and failed stale claims.
 ///
@@ -15,6 +15,7 @@ pub async fn timeout_loop(
     pool: DbPool,
     interval: std::time::Duration,
     claim_timeout: std::time::Duration,
+    dead_end_enabled: bool,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -67,10 +68,12 @@ pub async fn timeout_loop(
 
             // Step 2: for each, atomically mark failed + propagate (in tx), then fire webhooks
             for task_id in timed_out_ids {
-                let result = db_operation::timeout_task_and_propagate(&mut conn, task_id).await;
+                let result =
+                    db_operation::timeout_task_and_propagate(&mut conn, task_id, dead_end_enabled)
+                        .await;
 
                 match result {
-                    Ok(Some((failed_task, cascade_failed))) => {
+                    Ok(Some((failed_task, cascade_failed, canceled_ancestors))) => {
                         metrics::record_task_timeout();
                         metrics::record_status_transition("Running", "Failure");
 
@@ -80,6 +83,13 @@ pub async fn timeout_loop(
                             &failed_task.id,
                             StatusKind::Failure,
                             &cascade_failed,
+                            &mut conn,
+                        )
+                        .await;
+
+                        fire_webhooks_for_canceled_ancestors(
+                            evaluator.as_ref(),
+                            &canceled_ancestors,
                             &mut conn,
                         )
                         .await;

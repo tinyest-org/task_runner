@@ -433,6 +433,7 @@ mod tests {
             expected_count: None,
             on_failure: None,
             on_success: None,
+            dead_end_barrier: None,
         }
     }
 

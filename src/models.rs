@@ -28,6 +28,7 @@ pub struct Task {
     pub failure_reason: Option<String>,
     pub batch_id: Option<uuid::Uuid>,
     pub expected_count: Option<i32>,
+    pub dead_end_barrier: bool,
 }
 
 #[derive(Identifiable, Queryable, Associations, Selectable, PartialEq)]
@@ -60,6 +61,7 @@ pub struct NewTask {
     pub wait_finished: i32,
     pub batch_id: Option<uuid::Uuid>,
     pub expected_count: Option<i32>,
+    pub dead_end_barrier: bool,
 }
 
 /// Link represents a dependency between two tasks (parent -> child).

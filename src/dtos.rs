@@ -154,6 +154,10 @@ pub struct NewTaskDto {
     pub on_failure: Option<Vec<NewActionDto>>,
     /// Webhook actions called when this task ends with `Success` status. Multiple actions supported.
     pub on_success: Option<Vec<NewActionDto>>,
+
+    /// If true, this task acts as a dead-end barrier: it can be canceled by dead-end detection,
+    /// but the upward cascade stops here — its parents are NOT checked. Defaults to false.
+    pub dead_end_barrier: Option<bool>,
 }
 
 /// A dependency on another task within the same batch.
@@ -193,6 +197,8 @@ pub struct BasicTaskDto {
     pub ended_at: Option<chrono::DateTime<Utc>>,
     /// The batch this task belongs to. All tasks created in the same POST /task call share a batch_id.
     pub batch_id: Option<uuid::Uuid>,
+    /// If true, dead-end upward cascade stops at this task.
+    pub dead_end_barrier: bool,
 }
 
 /// Payload for updating a task. Used by both `PATCH /task/{id}` (status update) and `PUT /task/{id}` (counter update).
@@ -295,6 +301,8 @@ pub struct TaskDto {
     pub failure_reason: Option<String>,
     /// Batch UUID grouping tasks created in the same POST /task call.
     pub batch_id: Option<uuid::Uuid>,
+    /// If true, dead-end upward cascade stops at this task.
+    pub dead_end_barrier: bool,
 }
 
 /// Pagination parameters for list endpoints.
@@ -447,6 +455,7 @@ impl From<Task> for BasicTaskDto {
             expected_count: t.expected_count,
             ended_at: t.ended_at,
             batch_id: t.batch_id,
+            dead_end_barrier: t.dead_end_barrier,
         }
     }
 }
@@ -470,6 +479,7 @@ impl TaskDto {
             started_at: base_task.started_at,
             failure_reason: base_task.failure_reason,
             batch_id: base_task.batch_id,
+            dead_end_barrier: base_task.dead_end_barrier,
             actions: actions
                 .into_iter()
                 .map(|a| ActionDto {

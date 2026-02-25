@@ -30,6 +30,7 @@ pub fn test_config() -> Arc<Config> {
             claim_timeout: std::time::Duration::from_secs(30),
             batch_flush_interval: std::time::Duration::from_millis(100),
             batch_channel_capacity: 100,
+            dead_end_cancel_enabled: true,
         },
         circuit_breaker: task_runner::config::CircuitBreakerConfig {
             enabled: true,

@@ -38,6 +38,16 @@ export async function stopBatch(batchId: string): Promise<StopBatchResponse> {
   return resp.json();
 }
 
+export async function cancelTask(taskId: string): Promise<void> {
+  const resp = await fetch(`/task/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE',
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`HTTP ${resp.status}: ${body || resp.statusText}`);
+  }
+}
+
 export async function listBatches(
   page = 0,
   pageSize = 20,

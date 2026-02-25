@@ -269,10 +269,15 @@ pub async fn update_task(
 
     let mut conn = state.conn().await?;
 
-    let result =
-        db_operation::update_running_task(&state.action_executor, &mut conn, *task_id, form.0)
-            .await
-            .map_err(ApiError::from)?;
+    let result = db_operation::update_running_task(
+        &state.action_executor,
+        &mut conn,
+        *task_id,
+        form.0,
+        state.config.worker.dead_end_cancel_enabled,
+    )
+    .await
+    .map_err(ApiError::from)?;
     Ok(match result {
         db_operation::UpdateTaskResult::Updated => {
             HttpResponse::Ok().body("Task updated successfully")
@@ -492,7 +497,14 @@ pub async fn cancel_task(
 ) -> actix_web::Result<HttpResponse> {
     let mut conn = state.conn().await?;
 
-    match workers::cancel_task(&state.action_executor, &task_id, &mut conn).await {
+    match workers::cancel_task(
+        &state.action_executor,
+        &task_id,
+        state.config.worker.dead_end_cancel_enabled,
+        &mut conn,
+    )
+    .await
+    {
         Ok(_) => Ok(HttpResponse::Ok().finish()),
         Err(_) => Ok(HttpResponse::BadRequest().finish()),
     }

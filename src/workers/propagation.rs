@@ -293,52 +293,203 @@ pub(crate) async fn propagate_to_children<'a>(
     Ok(all_cascade_failed)
 }
 
+// =============================================================================
+// Dead-end ancestor cancellation
+// =============================================================================
+
+/// An ancestor task that was canceled by dead-end detection.
+#[derive(Debug)]
+pub(crate) struct CanceledAncestor {
+    pub id: uuid::Uuid,
+    /// True if the task was Running before cancellation (needs cancel webhook).
+    pub was_running: bool,
+}
+
+/// Row returned by the writable CTE in `cancel_dead_end_ancestors`.
+#[derive(diesel::QueryableByName, Debug)]
+struct CanceledDeadEndRow {
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    id: uuid::Uuid,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    prev_status: String,
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    is_barrier: bool,
+}
+
+/// Detect and cancel ancestor tasks whose ALL children are already terminal
+/// (dead-end detection). Iterates upward through the DAG until no more
+/// dead-end ancestors are found.
+///
+/// Must be called inside a transaction (same conn as the status change
+/// that made children terminal).
+///
+/// Returns the list of canceled ancestors so callers can fire webhooks
+/// after the transaction commits.
+pub(crate) async fn cancel_dead_end_ancestors<'a>(
+    newly_terminal_ids: &[uuid::Uuid],
+    conn: &mut Conn<'a>,
+) -> Result<Vec<CanceledAncestor>, DbError> {
+    if newly_terminal_ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut all_canceled: Vec<CanceledAncestor> = Vec::new();
+    let mut check_ids: Vec<uuid::Uuid> = newly_terminal_ids.to_vec();
+
+    loop {
+        if check_ids.is_empty() {
+            break;
+        }
+
+        let canceled: Vec<CanceledDeadEndRow> = diesel::sql_query(
+            "WITH candidates AS (
+                SELECT DISTINCT l.parent_id
+                FROM link l
+                WHERE l.child_id = ANY($1)
+            ),
+            to_cancel AS (
+                SELECT t.id, t.status::text AS prev_status, t.dead_end_barrier AS is_barrier
+                FROM task t
+                JOIN candidates c ON c.parent_id = t.id
+                WHERE t.status NOT IN ('Success', 'Failure', 'Canceled')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM link l2
+                      JOIN task c2 ON c2.id = l2.child_id
+                      WHERE l2.parent_id = t.id
+                        AND c2.status NOT IN ('Success', 'Failure', 'Canceled')
+                  )
+                FOR UPDATE OF t SKIP LOCKED
+            )
+            UPDATE task
+            SET status = 'Canceled',
+                failure_reason = 'All child tasks already terminated',
+                ended_at = now(),
+                last_updated = now()
+            FROM to_cancel
+            WHERE task.id = to_cancel.id
+            RETURNING task.id, to_cancel.prev_status, to_cancel.is_barrier",
+        )
+        .bind::<diesel::sql_types::Array<diesel::sql_types::Uuid>, _>(&check_ids)
+        .load::<CanceledDeadEndRow>(conn)
+        .await?;
+
+        if canceled.is_empty() {
+            break;
+        }
+
+        // Next iteration: only propagate upward through non-barrier tasks
+        check_ids = canceled
+            .iter()
+            .filter(|r| !r.is_barrier)
+            .map(|r| r.id)
+            .collect();
+
+        for row in canceled {
+            metrics::record_task_canceled_dead_end();
+            metrics::record_status_transition(&row.prev_status, "Canceled");
+            log::info!(
+                "Dead-end detection: canceled ancestor task {} (was {}{})",
+                row.id,
+                row.prev_status,
+                if row.is_barrier { ", barrier" } else { "" }
+            );
+            all_canceled.push(CanceledAncestor {
+                id: row.id,
+                was_running: row.prev_status == "Running",
+            });
+        }
+    }
+
+    Ok(all_canceled)
+}
+
+/// Fire webhooks for ancestors canceled by dead-end detection.
+/// For previously-Running tasks: fire cancel webhooks.
+/// For all: fire on_failure end webhooks.
+/// Best-effort — errors are logged but not returned.
+pub(crate) async fn fire_webhooks_for_canceled_ancestors<'a>(
+    evaluator: &ActionExecutor,
+    ancestors: &[CanceledAncestor],
+    conn: &mut Conn<'a>,
+) {
+    for ancestor in ancestors {
+        if ancestor.was_running
+            && let Err(e) = fire_cancel_webhooks(evaluator, &ancestor.id, conn).await
+        {
+            log::error!(
+                "Failed to fire cancel webhooks for dead-end ancestor {}: {:?}",
+                ancestor.id,
+                e
+            );
+        }
+        if let Err(e) = fire_end_webhooks(evaluator, &ancestor.id, StatusKind::Failure, conn).await
+        {
+            log::error!(
+                "Failed to fire on_failure webhooks for dead-end ancestor {}: {:?}",
+                ancestor.id,
+                e
+            );
+        }
+    }
+}
+
 pub async fn cancel_task<'a>(
     evaluator: &ActionExecutor,
     task_id: &uuid::Uuid,
+    dead_end_enabled: bool,
     conn: &mut Conn<'a>,
 ) -> Result<(), DbError> {
     use crate::schema::task::dsl::*;
     let task_id = *task_id;
 
-    // Phase 1: transaction — cancel + propagation are atomic
-    let (prev_status, cascade_failed) = db_operation::run_in_transaction(conn, |conn| {
-        Box::pin(async move {
-            let t = task
-                .filter(id.eq(task_id))
-                .for_update()
-                .first::<Task>(conn)
-                .await?;
+    // Phase 1: transaction — cancel + propagation + dead-end detection are atomic
+    let (prev_status, cascade_failed, canceled_ancestors) =
+        db_operation::run_in_transaction(conn, |conn| {
+            Box::pin(async move {
+                let t = task
+                    .filter(id.eq(task_id))
+                    .for_update()
+                    .first::<Task>(conn)
+                    .await?;
 
-            match t.status {
-                StatusKind::Pending
-                | StatusKind::Paused
-                | StatusKind::Claimed
-                | StatusKind::Running => {}
-                _ => {
-                    return Err(crate::error::TaskRunnerError::InvalidState {
-                        message: "Invalid operation: cannot cancel task in this state".into(),
-                    });
+                match t.status {
+                    StatusKind::Pending
+                    | StatusKind::Paused
+                    | StatusKind::Claimed
+                    | StatusKind::Running => {}
+                    _ => {
+                        return Err(crate::error::TaskRunnerError::InvalidState {
+                            message: "Invalid operation: cannot cancel task in this state".into(),
+                        });
+                    }
                 }
-            }
 
-            diesel::update(task.filter(id.eq(task_id)))
-                .set((
-                    status.eq(StatusKind::Canceled),
-                    ended_at.eq(diesel::dsl::now),
-                    last_updated.eq(diesel::dsl::now),
-                ))
-                .execute(conn)
-                .await?;
+                diesel::update(task.filter(id.eq(task_id)))
+                    .set((
+                        status.eq(StatusKind::Canceled),
+                        ended_at.eq(diesel::dsl::now),
+                        last_updated.eq(diesel::dsl::now),
+                    ))
+                    .execute(conn)
+                    .await?;
 
-            // Propagate cancellation to dependent children (inside tx)
-            let cascade_failed =
-                propagate_to_children(&task_id, &StatusKind::Canceled, conn).await?;
+                // Propagate cancellation to dependent children (inside tx)
+                let cascade_failed =
+                    propagate_to_children(&task_id, &StatusKind::Canceled, conn).await?;
 
-            Ok((t.status, cascade_failed))
+                // Dead-end ancestor cancellation (inside tx)
+                let canceled_ancestors = if dead_end_enabled {
+                    let mut terminal_ids = vec![task_id];
+                    terminal_ids.extend_from_slice(&cascade_failed);
+                    cancel_dead_end_ancestors(&terminal_ids, conn).await?
+                } else {
+                    vec![]
+                };
+
+                Ok((t.status, cascade_failed, canceled_ancestors))
+            })
         })
-    })
-    .await?;
+        .await?;
 
     // Phase 2: best-effort webhooks (outside transaction, errors logged not returned)
     if prev_status == StatusKind::Running {
@@ -360,6 +511,8 @@ pub async fn cancel_task<'a>(
             );
         }
     }
+
+    fire_webhooks_for_canceled_ancestors(evaluator, &canceled_ancestors, conn).await;
 
     metrics::record_task_cancelled();
     Ok(())

@@ -101,6 +101,7 @@ async fn test_bug2_double_update_no_negative_counters() {
         &mut conn,
         parent_id,
         success_dto(),
+        true,
     )
     .await
     .unwrap();
@@ -116,6 +117,7 @@ async fn test_bug2_double_update_no_negative_counters() {
         &mut conn,
         parent_id,
         success_dto(),
+        true,
     )
     .await
     .unwrap();
@@ -176,6 +178,7 @@ async fn test_bug3_double_success_update_returns_zero_second_time() {
         &mut conn,
         task_id,
         success_dto(),
+        true,
     )
     .await
     .unwrap();
@@ -186,6 +189,7 @@ async fn test_bug3_double_success_update_returns_zero_second_time() {
         &mut conn,
         task_id,
         success_dto(),
+        true,
     )
     .await
     .unwrap();

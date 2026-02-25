@@ -70,6 +70,7 @@ diesel::table! {
         failure_reason -> Nullable<Text>,
         batch_id -> Nullable<Uuid>,
         expected_count -> Nullable<Int4>,
+        dead_end_barrier -> Bool,
     }
 }
 
