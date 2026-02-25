@@ -3,60 +3,133 @@ use diesel_async::AsyncPgConnection;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::pooled_connection::bb8::Pool;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicU64, Ordering},
+};
 use task_runner::DbPool;
 use testcontainers::{ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
-/// Test application state that owns the PostgreSQL container.
-/// The container is kept alive for the duration of the test via RAII.
-pub struct TestApp {
-    pub pool: DbPool,
-    pub _container: testcontainers::ContainerAsync<Postgres>,
+/// Counter for unique database names.
+static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Shared PostgreSQL container + base URL.
+/// Initialized once for the entire test binary.
+/// A template database with all migrations applied is created during init.
+///
+/// Init runs on a dedicated std::thread to avoid "runtime within runtime" errors
+/// when called from within a #[tokio::test] context.
+static SHARED_PG: LazyLock<SharedPg> = LazyLock::new(|| {
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to build runtime for shared PG setup");
+
+        rt.block_on(async {
+            let container = Postgres::default()
+                .with_tag("18-alpine")
+                .start()
+                .await
+                .expect("Failed to start shared PostgreSQL container");
+            let host_port = container.get_host_port_ipv4(5432).await.unwrap();
+            let base_url = format!(
+                "postgres://postgres:postgres@127.0.0.1:{}/postgres",
+                host_port
+            );
+
+            // Create a dedicated template database and run migrations on it.
+            // This avoids running migrations per-test.
+            {
+                let mut conn = PgConnection::establish(&base_url)
+                    .expect("Failed to connect to postgres for template setup");
+                diesel::sql_query("CREATE DATABASE test_template")
+                    .execute(&mut conn)
+                    .expect("Failed to create test_template database");
+            }
+
+            let template_url = replace_db_name(&base_url, "test_template");
+            run_migrations(&template_url);
+
+            SharedPg {
+                _container: container,
+                base_url,
+            }
+        })
+    })
+    .join()
+    .expect("Shared PG init thread panicked")
+});
+
+struct SharedPg {
+    _container: testcontainers::ContainerAsync<Postgres>,
+    base_url: String,
 }
 
-/// Setup a test database and return the pool
+/// Replace only the database name (last path segment) in a PostgreSQL URL.
+fn replace_db_name(url: &str, new_db: &str) -> String {
+    match url.rfind('/') {
+        Some(pos) => format!("{}/{}", &url[..pos], new_db),
+        None => url.to_string(),
+    }
+}
+
+// SAFETY: SharedPg is only mutated during LazyLock init (single-threaded).
+// After init, only `base_url` (String, which is Sync) is read.
+// `_container` is held solely to prevent drop; it is never accessed after init.
+unsafe impl Sync for SharedPg {}
+
+/// Test application state.
+/// No longer owns the container — the shared LazyLock keeps it alive.
+pub struct TestApp {
+    pub pool: DbPool,
+}
+
+/// Setup a test database and return the pool.
+///
+/// Each test gets its own database created instantly via
+/// `CREATE DATABASE ... TEMPLATE test_template`, skipping per-test migrations.
 pub async fn setup_test_db() -> TestApp {
-    let container = Postgres::default()
-        .with_tag("18-alpine")
-        .start()
-        .await
-        .unwrap();
-    let host_port = container.get_host_port_ipv4(5432).await.unwrap();
+    let shared = &*SHARED_PG;
 
-    let database_url = format!(
-        "postgres://postgres:postgres@127.0.0.1:{}/postgres",
-        host_port
-    );
+    // Generate a unique database name
+    let seq = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let db_name = format!("test_{}", seq);
 
-    // Run migrations using sync connection
-    run_migrations(&database_url);
+    // Create the test database from the pre-migrated template (near-instant)
+    {
+        let mut conn = PgConnection::establish(&shared.base_url)
+            .expect("Failed to connect to postgres for DB creation");
+        diesel::sql_query(format!(
+            "CREATE DATABASE {} TEMPLATE test_template",
+            db_name
+        ))
+        .execute(&mut conn)
+        .unwrap_or_else(|e| panic!("Failed to create database {}: {}", db_name, e));
+    }
 
-    // Create async pool
-    let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(&database_url);
+    let test_url = replace_db_name(&shared.base_url, &db_name);
+
+    // Create async pool for this test's isolated database
+    let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(&test_url);
     let pool = Pool::builder()
         .max_size(5)
         .build(config)
         .await
         .expect("Failed to create pool");
 
-    TestApp {
-        pool,
-        _container: container,
-    }
+    TestApp { pool }
 }
 
 /// Convert ALTER TYPE ... ADD VALUE to use IF NOT EXISTS for idempotency
 fn make_alter_type_idempotent(statement: &str) -> String {
     let upper = statement.to_uppercase();
     if upper.contains("IF NOT EXISTS") {
-        // Already idempotent
         statement.to_string()
     } else {
-        // Insert IF NOT EXISTS after ADD VALUE
-        // Pattern: ALTER TYPE <name> ADD VALUE '<value>'
-        // Convert to: ALTER TYPE <name> ADD VALUE IF NOT EXISTS '<value>'
         let add_value_pos = upper.find("ADD VALUE").unwrap_or(0);
         if add_value_pos > 0 {
             let before = &statement[..add_value_pos + 9]; // "ADD VALUE"
@@ -68,7 +141,7 @@ fn make_alter_type_idempotent(statement: &str) -> String {
     }
 }
 
-/// Run migrations, handling ALTER TYPE ... ADD VALUE specially
+/// Run migrations, handling ALTER TYPE ... ADD VALUE specially.
 ///
 /// PostgreSQL's ALTER TYPE ... ADD VALUE cannot run inside a transaction block.
 /// This function detects such migrations by reading their SQL content and runs
@@ -94,14 +167,11 @@ fn run_migrations(database_url: &str) {
         .pending_migrations(MIGRATIONS)
         .expect("Failed to get pending migrations");
 
-    // Collect migration info first
     let migrations_to_run: Vec<_> = pending
         .iter()
         .map(|m| (m.name().to_string(), m.name().version().to_string()))
         .collect();
 
-    // Build a map of migrations that contain ALTER TYPE ... ADD VALUE
-    // by reading the actual migration SQL files
     let migrations_dir = Path::new("migrations");
     let alter_type_migrations: std::collections::HashMap<String, Vec<String>> =
         if migrations_dir.exists() {
@@ -117,7 +187,6 @@ fn run_migrations(database_url: &str) {
                             if up_sql_path.exists() {
                                 let content = fs::read_to_string(&up_sql_path).ok()?;
 
-                                // Find all ALTER TYPE ... ADD VALUE statements
                                 let statements: Vec<String> = content
                                     .lines()
                                     .filter(|line| {
@@ -140,36 +209,26 @@ fn run_migrations(database_url: &str) {
             std::collections::HashMap::new()
         };
 
-    // Run each migration
     for (migration_name, version) in &migrations_to_run {
-        // Check if this migration contains ALTER TYPE ... ADD VALUE
-        // by looking for matching directory name in our map
         let alter_statements: Option<&Vec<String>> = alter_type_migrations
             .iter()
             .find(|(dir_name, _)| migration_name.contains(dir_name.as_str()))
             .map(|(_, stmts)| stmts);
 
         if let Some(statements) = alter_statements {
-            // This migration has ALTER TYPE ... ADD VALUE statements
-            // Run them outside of a transaction
-
-            // Ensure no transaction is active by reconnecting
             drop(conn);
             conn = PgConnection::establish(database_url)
                 .expect("Failed to reconnect for ALTER TYPE migration");
 
-            // Run each ALTER TYPE statement
             for stmt in statements {
                 diesel::sql_query(stmt.clone())
                     .execute(&mut conn)
                     .unwrap_or_else(|e| {
-                        // Log but don't fail - value might already exist in some PostgreSQL versions
                         eprintln!("Warning: ALTER TYPE statement may have failed (possibly already exists): {}", e);
                         0
                     });
             }
 
-            // Mark migration as run in diesel's schema_migrations table
             diesel::sql_query(format!(
                 "INSERT INTO __diesel_schema_migrations (version, run_on) VALUES ('{}', NOW()) ON CONFLICT DO NOTHING",
                 version
@@ -177,7 +236,6 @@ fn run_migrations(database_url: &str) {
             .execute(&mut conn)
             .expect("Failed to record migration");
         } else {
-            // Run migration normally within a transaction
             let pending_now = conn
                 .pending_migrations(MIGRATIONS)
                 .expect("Failed to get pending migrations");

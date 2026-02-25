@@ -1,6 +1,4 @@
-#[macro_use]
-mod common;
-use common::*;
+use crate::common::*;
 
 use task_runner::dtos::DagDto;
 use task_runner::models::StatusKind;

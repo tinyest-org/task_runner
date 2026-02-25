@@ -60,6 +60,9 @@ tokio = { version = "1.45.0", features = ["full", "test-util"] }
 actix-rt = "2.10"
 actix-http = "3"
 
+[profile.test]
+opt-level = 1     # Some optimization for faster test execution
+
 [profile.release]
 strip = true      # Automatically strip symbols from the binary.
 lto = true

@@ -1,6 +1,4 @@
-#[macro_use]
-mod common;
-use common::*;
+use crate::common::*;
 
 use serde_json::json;
 use task_runner::db_operation::{ClaimResult, claim_task_with_rules};

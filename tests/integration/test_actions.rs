@@ -1,6 +1,4 @@
-#[macro_use]
-mod common;
-use common::*;
+use crate::common::*;
 
 use serde_json::json;
 

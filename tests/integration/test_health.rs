@@ -1,6 +1,4 @@
-#[macro_use]
-mod common;
-use common::*;
+use crate::common::*;
 
 #[tokio::test]
 async fn test_health_check() {

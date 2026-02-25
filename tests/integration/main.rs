@@ -1,0 +1,23 @@
+// Single integration test binary.
+// All test modules share one PostgreSQL container via LazyLock,
+// with per-test isolation via CREATE DATABASE ... TEMPLATE.
+
+#[macro_use]
+mod common;
+
+mod test_actions;
+mod test_batch_update;
+mod test_bug_audit1;
+mod test_bug_audit2;
+mod test_concurrency;
+mod test_crud;
+mod test_dag;
+mod test_dead_end_cancel;
+mod test_dedupe;
+mod test_edge_cases;
+mod test_filtering;
+mod test_health;
+mod test_idempotency;
+mod test_propagation;
+mod test_regressions;
+mod test_status;
