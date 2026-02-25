@@ -558,7 +558,7 @@ pub async fn stop_batch(
     // Fire cancel webhooks for formerly-Running tasks (best-effort)
     for task_id in &result.canceled_running_ids {
         if let Err(e) =
-            fire_cancel_webhooks_for_task(&state.action_executor, task_id, &mut conn).await
+            workers::fire_cancel_webhooks(&state.action_executor, task_id, &mut conn).await
         {
             log::error!(
                 "stop_batch: failed to fire cancel webhooks for task {}: {:?}",
@@ -600,67 +600,6 @@ pub async fn stop_batch(
         canceled_paused: result.canceled_paused,
         already_terminal: result.already_terminal,
     }))
-}
-
-/// Fire cancel webhooks for a single task (extracted from workers::cancel_task pattern).
-async fn fire_cancel_webhooks_for_task<'a>(
-    evaluator: &ActionExecutor,
-    task_id: &Uuid,
-    conn: &mut crate::Conn<'a>,
-) -> Result<(), crate::error::TaskRunnerError> {
-    use crate::action::idempotency_key;
-    use crate::models::{Action, Task, TriggerCondition, TriggerKind};
-    use crate::schema::action::dsl::trigger;
-    use crate::schema::task::dsl::*;
-    use diesel::BelongingToDsl;
-    use diesel::prelude::*;
-    use diesel_async::RunQueryDsl;
-
-    let key = idempotency_key(*task_id, &TriggerKind::Cancel, &TriggerCondition::Success);
-    let claimed = db_operation::try_claim_webhook_execution(
-        conn,
-        *task_id,
-        TriggerKind::Cancel,
-        TriggerCondition::Success,
-        &key,
-        Some(evaluator.ctx.webhook_idempotency_timeout),
-    )
-    .await?;
-
-    if !claimed {
-        log::info!(
-            "stop_batch: skipping cancel webhooks for task {} — already executed",
-            task_id
-        );
-        return Ok(());
-    }
-
-    let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
-    let actions = Action::belonging_to(&t)
-        .filter(trigger.eq(TriggerKind::Cancel))
-        .load::<Action>(conn)
-        .await?;
-
-    let mut all_succeeded = true;
-    for act in actions.iter() {
-        match evaluator.execute(act, &t, Some(&key)).await {
-            Ok(_) => log::debug!("Cancel action {} executed successfully", act.id),
-            Err(e) => {
-                log::error!("Cancel action {} failed: {}", act.id, e);
-                all_succeeded = false;
-            }
-        }
-    }
-
-    if let Err(e) = db_operation::complete_webhook_execution(conn, &key, all_succeeded).await {
-        log::error!(
-            "Failed to complete webhook execution record for key {}: {}",
-            key,
-            e
-        );
-    }
-
-    Ok(())
 }
 
 // =============================================================================

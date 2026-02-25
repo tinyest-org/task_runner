@@ -41,13 +41,19 @@ pub(crate) async fn cleanup_old_terminal_tasks<'a>(
         Box::pin(async move {
             use crate::schema::action::dsl as action_dsl;
             use crate::schema::link::dsl as link_dsl;
+            use crate::schema::webhook_execution::dsl as we_dsl;
 
             // 1. Delete actions belonging to these tasks
             diesel::delete(action_dsl::action.filter(action_dsl::task_id.eq_any(&task_ids)))
                 .execute(&mut *conn)
                 .await?;
 
-            // 2. Delete links referencing these tasks (as parent or child)
+            // 2. Delete webhook_execution records (FK on task_id)
+            diesel::delete(we_dsl::webhook_execution.filter(we_dsl::task_id.eq_any(&task_ids)))
+                .execute(&mut *conn)
+                .await?;
+
+            // 3. Delete links referencing these tasks (as parent or child)
             diesel::delete(
                 link_dsl::link.filter(
                     link_dsl::parent_id
@@ -58,7 +64,7 @@ pub(crate) async fn cleanup_old_terminal_tasks<'a>(
             .execute(&mut *conn)
             .await?;
 
-            // 3. Delete the tasks themselves
+            // 4. Delete the tasks themselves
             diesel::delete(task_dsl::task.filter(task_dsl::id.eq_any(&task_ids)))
                 .execute(&mut *conn)
                 .await?;

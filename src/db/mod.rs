@@ -24,8 +24,8 @@ pub(crate) use task_lifecycle::{
 
 // Re-exports from task_query
 pub(crate) use task_query::{
-    ensure_pending_tasks_timeout, get_dag_for_batch, list_all_pending, list_task_filtered_paged,
-    requeue_stale_claimed_tasks,
+    find_timed_out_tasks, get_dag_for_batch, list_all_pending, list_task_filtered_paged,
+    requeue_stale_claimed_tasks, timeout_task_and_propagate,
 };
 
 // Re-exports from batch_listing

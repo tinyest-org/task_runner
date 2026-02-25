@@ -4,7 +4,7 @@ WORKDIR /ui
 COPY ui/package.json ui/bun.lockb* ./
 RUN bun install
 COPY ui/ .
-RUN bun run build
+RUN mkdir -p /static && bun run build
 
 # Stage 2: Build Rust
 FROM rust:1-alpine3.22

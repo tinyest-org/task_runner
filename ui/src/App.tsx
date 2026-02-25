@@ -1,8 +1,8 @@
 import "glass-ui-solid/styles.css";
 import "glass-ui-solid/theme.css";
-import { createSignal, onCleanup, Show, For } from 'solid-js';
+import { createSignal, onCleanup, Show, For, Switch, Match } from 'solid-js';
 import { useSearchParams } from '@solidjs/router';
-import type { DagResponse, BasicTask, StopBatchResponse } from './types';
+import type { DagResponse, BasicTask, StopBatchResponse, TaskStatus } from './types';
 import { fetchDag, stopBatch } from './api';
 import { addRecentBatch } from './storage';
 import { AUTO_REFRESH_INTERVAL } from './constants';
@@ -13,6 +13,8 @@ import TaskInfoPanel from './components/TaskInfoPanel';
 import BatchList from './components/BatchList';
 import Legend from './components/Legend';
 import StatsBar from './components/StatsBar';
+import StatusFilter from './components/StatusFilter';
+import TaskTable from './components/TaskTable';
 
 
 export default function App() {
@@ -23,7 +25,9 @@ export default function App() {
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [batchListOpen, setBatchListOpen] = createSignal(false);
-  const [viewMode, setViewMode] = createSignal<'dag' | 'iso'>('iso');
+  const [viewMode, setViewMode] = createSignal<'dag' | 'iso' | 'table'>('iso');
+  const [activeFilters, setActiveFilters] = createSignal<Set<TaskStatus>>(new Set());
+  const [isoGroupBy, setIsoGroupBy] = createSignal<'dag' | 'status'>('dag');
   const [message, setMessage] = createSignal<string | null>(
     'Enter a batch ID to visualize the task DAG',
   );
@@ -58,6 +62,26 @@ export default function App() {
     setOpenTaskIds([]);
   }
 
+  const filteredData = () => {
+    const data = dagData();
+    if (!data) return null;
+    const filters = activeFilters();
+    if (filters.size === 0) return data;
+    const tasks = data.tasks.filter((t) => filters.has(t.status));
+    const taskIds = new Set(tasks.map((t) => t.id));
+    const links = data.links.filter((l) => taskIds.has(l.parent_id) && taskIds.has(l.child_id));
+    return { tasks, links };
+  };
+
+  function toggleFilter(status: TaskStatus) {
+    setActiveFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      return next;
+    });
+  }
+
   let canvasApi: DagCanvasAPI | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -82,6 +106,7 @@ export default function App() {
 
     if (isNewBatch) {
       clearAllWindows();
+      setActiveFilters(new Set());
     }
 
     setLoading(true);
@@ -204,14 +229,41 @@ export default function App() {
           >
             List Batches
           </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setViewMode(v => v === 'dag' ? 'iso' : 'dag')}
-            disabled={!dagData()}
-          >
-            {viewMode() === 'dag' ? '3D View' : '2D View'}
-          </Button>
+          <div class="flex overflow-hidden rounded-md border border-white/20">
+            <button
+              class="px-2.5 py-1 text-xs font-medium transition-colors"
+              classList={{
+                'bg-white/15 text-white': viewMode() === 'dag',
+                'text-white/50 hover:bg-white/5 hover:text-white/80': viewMode() !== 'dag',
+              }}
+              disabled={!dagData()}
+              onClick={() => setViewMode('dag')}
+            >
+              2D
+            </button>
+            <button
+              class="border-x border-white/20 px-2.5 py-1 text-xs font-medium transition-colors"
+              classList={{
+                'bg-white/15 text-white': viewMode() === 'iso',
+                'text-white/50 hover:bg-white/5 hover:text-white/80': viewMode() !== 'iso',
+              }}
+              disabled={!dagData()}
+              onClick={() => setViewMode('iso')}
+            >
+              3D
+            </button>
+            <button
+              class="px-2.5 py-1 text-xs font-medium transition-colors"
+              classList={{
+                'bg-white/15 text-white': viewMode() === 'table',
+                'text-white/50 hover:bg-white/5 hover:text-white/80': viewMode() !== 'table',
+              }}
+              disabled={!dagData()}
+              onClick={() => setViewMode('table')}
+            >
+              Table
+            </button>
+          </div>
           <Show when={viewMode() === 'dag'}>
             <Button
               variant="secondary"
@@ -221,6 +273,33 @@ export default function App() {
             >
               Fit View
             </Button>
+          </Show>
+          <Show when={viewMode() === 'iso' && dagData()}>
+            <div class="flex items-center gap-1">
+              <span class="text-xs text-white/40">Group:</span>
+              <div class="flex overflow-hidden rounded-md border border-white/20">
+                <button
+                  class="px-2 py-0.5 text-xs font-medium transition-colors"
+                  classList={{
+                    'bg-white/15 text-white': isoGroupBy() === 'dag',
+                    'text-white/50 hover:bg-white/5 hover:text-white/80': isoGroupBy() !== 'dag',
+                  }}
+                  onClick={() => setIsoGroupBy('dag')}
+                >
+                  DAG
+                </button>
+                <button
+                  class="border-l border-white/20 px-2 py-0.5 text-xs font-medium transition-colors"
+                  classList={{
+                    'bg-white/15 text-white': isoGroupBy() === 'status',
+                    'text-white/50 hover:bg-white/5 hover:text-white/80': isoGroupBy() !== 'status',
+                  }}
+                  onClick={() => setIsoGroupBy('status')}
+                >
+                  Status
+                </button>
+              </div>
+            </div>
           </Show>
           <Show when={openTaskIds().length > 0}>
             <Button
@@ -247,6 +326,13 @@ export default function App() {
             linkCount={dagData()?.links.length ?? 0}
           />
         </div>
+        <Show when={dagData()}>
+          <StatusFilter
+            tasks={dagData()!.tasks}
+            activeFilters={activeFilters()}
+            onToggle={toggleFilter}
+          />
+        </Show>
       </header>
 
       {/* Main content */}
@@ -257,16 +343,22 @@ export default function App() {
           </div>
         </Show>
 
-        <Show when={viewMode() === 'dag'} fallback={
-          <IsometricView data={dagData()} onNodeClick={openTask} onBackgroundClick={() => {}} />
-        }>
-          <DagCanvas
-            data={dagData()}
-            onNodeClick={(task) => openTask(task)}
-            onBackgroundClick={() => {}}
-            ref={(api) => (canvasApi = api)}
-          />
-        </Show>
+        <Switch>
+          <Match when={viewMode() === 'dag'}>
+            <DagCanvas
+              data={filteredData()}
+              onNodeClick={(task) => openTask(task)}
+              onBackgroundClick={() => {}}
+              ref={(api) => (canvasApi = api)}
+            />
+          </Match>
+          <Match when={viewMode() === 'iso'}>
+            <IsometricView data={filteredData()} onNodeClick={openTask} onBackgroundClick={() => {}} groupBy={isoGroupBy()} />
+          </Match>
+          <Match when={viewMode() === 'table'}>
+            <TaskTable data={filteredData()} onTaskClick={openTask} />
+          </Match>
+        </Switch>
       </div>
 
       <Legend />

@@ -27,7 +27,7 @@ Task Runner is a Rust-based task orchestration service that manages task executi
 ### Action Model
 Actions are webhook calls triggered by task lifecycle events:
 - **TriggerKind**: `Start`, `End`, `Cancel`
-- **TriggerCondition**: `Success`, `Failure` (determines which end trigger fires)
+- **TriggerCondition**: `Success`, `Failure` (only meaningful for `End` triggers — determines which end action fires). For `Start` and `Cancel` triggers, the condition column is always stored as `Success` (sentinel value, since the column is NOT NULL).
 - **ActionKindEnum**: `Webhook` (only kind currently)
 
 The `on_start` action can return a `NewActionDto` in the response body to register a cancel action for the task.
@@ -239,7 +239,8 @@ Key file: `src/workers.rs`, function `propagate_to_children`
    - `wait_success` counts only `requires_success=true` dependencies
 4. **Actions are per-task**: Each task has its own action records, not shared
 5. **Route configuration is centralized**: All routes in `handlers::configure_routes`, shared by main server and test server
-6. **Timeout uses `last_updated`, not `started_at`**: The timeout loop must compare `last_updated` against the timeout duration. Using `started_at` would cause tasks that are actively receiving batch updates (failures/successes via PUT) to be incorrectly timed out. See `test_recent_batch_update_prevents_timeout` regression test.
+6. **Timeout uses `last_updated`, not `started_at`**: The timeout loop must compare `last_updated` against the timeout duration. Using `started_at` would cause tasks that are actively receiving batch updates (failures/successes via PUT) to be incorrectly timed out. See `test_recent_batch_update_prevents_timeout` regression test. Note: the timeout transition intentionally does NOT update `last_updated` — it preserves when the task last showed real activity (`ended_at` captures when timeout occurred).
+7. **Dependencies are intra-batch only**: `Dependency.id` references local IDs within the same `POST /task` batch. Cross-batch links are not possible via the API. This means `stop_batch` safely cancels all tasks without needing per-task propagation — both sides of every link are in the same batch.
 
 ## Database Schema
 
@@ -250,12 +251,22 @@ task (id, name, kind, status, metadata, timeout, batch_id, start_condition,
       created_at, started_at, ended_at, last_updated)
 action (id, task_id, kind, trigger, condition, params, success)
 link (parent_id, child_id, requires_success)
+webhook_execution (id, task_id, trigger, condition, idempotency_key, status,
+                   attempts, created_at, updated_at)
+
+-- FK constraints (relevant for cleanup ordering)
+action.task_id -> task.id
+webhook_execution.task_id -> task.id
+link.parent_id -> task.id
+link.child_id -> task.id
 
 -- Key indexes
 task_status_kind_idx ON task(status, kind)
 task_batch_id_idx ON task(batch_id)
 link_parent_id_idx ON link(parent_id)
 link_child_id_idx ON link(child_id)
+idx_webhook_execution_task_id ON webhook_execution(task_id)
+idx_webhook_execution_status ON webhook_execution(status)
 ```
 
 ## Metrics

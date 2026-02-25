@@ -9,42 +9,42 @@ use diesel::BelongingToDsl;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 
-/// Fire end webhooks (on_success or on_failure) for a task without propagation.
-/// Used after a transaction commits to fire webhooks best-effort.
-#[tracing::instrument(name = "fire_end_webhooks", skip(evaluator, conn), fields(task_id = %task_id, status = ?result_status))]
-pub(crate) async fn fire_end_webhooks<'a>(
+/// Fire webhooks for a specific trigger kind on a task.
+/// Handles idempotency (claim/complete), action loading, and execution.
+/// Used after a transaction commits — errors are intentionally non-fatal.
+#[tracing::instrument(name = "fire_webhooks", skip(evaluator, conn), fields(task_id = %task_id, trigger_kind = ?trigger_kind))]
+pub(crate) async fn fire_webhooks<'a>(
     evaluator: &ActionExecutor,
     task_id: &uuid::Uuid,
-    result_status: StatusKind,
+    trigger_kind: TriggerKind,
+    trigger_condition: TriggerCondition,
     conn: &mut Conn<'a>,
 ) -> Result<(), DbError> {
     use crate::schema::action::dsl::{condition, trigger};
     use crate::schema::task::dsl::*;
 
-    let expected_condition = match result_status {
-        StatusKind::Success => TriggerCondition::Success,
-        _ => TriggerCondition::Failure,
-    };
-
-    // Idempotency guard: claim the end trigger slot
-    let key = idempotency_key(*task_id, &TriggerKind::End, &expected_condition);
+    // Idempotency guard
+    let key = idempotency_key(*task_id, &trigger_kind, &trigger_condition);
     let claimed = db_operation::try_claim_webhook_execution(
         conn,
         *task_id,
-        TriggerKind::End,
-        expected_condition,
+        trigger_kind,
+        trigger_condition,
         &key,
         Some(evaluator.ctx.webhook_idempotency_timeout),
     )
     .await?;
 
     if !claimed {
-        let trigger_label = match expected_condition {
-            TriggerCondition::Success => "end_success",
-            TriggerCondition::Failure => "end_failure",
+        let trigger_label = match (&trigger_kind, &trigger_condition) {
+            (TriggerKind::End, TriggerCondition::Success) => "end_success",
+            (TriggerKind::End, TriggerCondition::Failure) => "end_failure",
+            (TriggerKind::Cancel, _) => "cancel",
+            (TriggerKind::Start, _) => "start",
         };
         log::info!(
-            "Skipping end webhooks for task {} — already executed (key={})",
+            "Skipping {} webhooks for task {} — already executed (key={})",
+            trigger_label,
             task_id,
             key
         );
@@ -55,18 +55,15 @@ pub(crate) async fn fire_end_webhooks<'a>(
 
     let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
     let actions = Action::belonging_to(&t)
-        .filter(trigger.eq(TriggerKind::End))
-        .filter(condition.eq(expected_condition))
+        .filter(trigger.eq(trigger_kind))
+        .filter(condition.eq(trigger_condition))
         .load::<Action>(conn)
         .await?;
 
     let mut all_succeeded = true;
     for act in actions.iter() {
-        let res = evaluator.execute(act, &t, Some(&key)).await;
-        match res {
-            Ok(_) => {
-                log::debug!("Action {} executed successfully", act.id);
-            }
+        match evaluator.execute(act, &t, Some(&key)).await {
+            Ok(_) => log::debug!("Action {} executed successfully", act.id),
             Err(e) => {
                 log::error!("Action {} failed: {}", act.id, e);
                 all_succeeded = false;
@@ -83,6 +80,62 @@ pub(crate) async fn fire_end_webhooks<'a>(
     }
 
     Ok(())
+}
+
+/// Convenience: fire end webhooks (on_success or on_failure) for a task.
+#[inline]
+pub(crate) async fn fire_end_webhooks<'a>(
+    evaluator: &ActionExecutor,
+    task_id: &uuid::Uuid,
+    result_status: StatusKind,
+    conn: &mut Conn<'a>,
+) -> Result<(), DbError> {
+    let cond = match result_status {
+        StatusKind::Success => TriggerCondition::Success,
+        _ => TriggerCondition::Failure,
+    };
+    fire_webhooks(evaluator, task_id, TriggerKind::End, cond, conn).await
+}
+
+/// Convenience: fire cancel webhooks for a task.
+#[inline]
+pub(crate) async fn fire_cancel_webhooks<'a>(
+    evaluator: &ActionExecutor,
+    task_id: &uuid::Uuid,
+    conn: &mut Conn<'a>,
+) -> Result<(), DbError> {
+    fire_webhooks(
+        evaluator,
+        task_id,
+        TriggerKind::Cancel,
+        TriggerCondition::Success,
+        conn,
+    )
+    .await
+}
+
+/// Fire end webhooks for a task, then on_failure webhooks for each cascade-failed child.
+/// All errors are logged but not returned — this is best-effort post-commit work.
+pub(crate) async fn fire_end_webhooks_with_cascade<'a>(
+    evaluator: &ActionExecutor,
+    task_id: &uuid::Uuid,
+    result_status: StatusKind,
+    cascade_failed_ids: &[uuid::Uuid],
+    conn: &mut Conn<'a>,
+) {
+    if let Err(e) = fire_end_webhooks(evaluator, task_id, result_status, conn).await {
+        log::error!("Failed to fire end webhooks for task {}: {:?}", task_id, e);
+    }
+
+    for child_id in cascade_failed_ids {
+        if let Err(e) = fire_end_webhooks(evaluator, child_id, StatusKind::Failure, conn).await {
+            log::error!(
+                "Failed to fire on_failure webhooks for cascade-failed child {}: {:?}",
+                child_id,
+                e
+            );
+        }
+    }
 }
 
 /// Propagates task completion to dependent children using batched queries.
@@ -245,11 +298,11 @@ pub async fn cancel_task<'a>(
     task_id: &uuid::Uuid,
     conn: &mut Conn<'a>,
 ) -> Result<(), DbError> {
-    use crate::schema::action::dsl::trigger;
     use crate::schema::task::dsl::*;
     let task_id = *task_id;
 
-    let prev_status = db_operation::run_in_transaction(conn, |conn| {
+    // Phase 1: transaction — cancel + propagation are atomic
+    let (prev_status, cascade_failed) = db_operation::run_in_transaction(conn, |conn| {
         Box::pin(async move {
             let t = task
                 .filter(id.eq(task_id))
@@ -278,82 +331,33 @@ pub async fn cancel_task<'a>(
                 .execute(conn)
                 .await?;
 
-            Ok(t.status)
+            // Propagate cancellation to dependent children (inside tx)
+            let cascade_failed =
+                propagate_to_children(&task_id, &StatusKind::Canceled, conn).await?;
+
+            Ok((t.status, cascade_failed))
         })
     })
     .await?;
 
+    // Phase 2: best-effort webhooks (outside transaction, errors logged not returned)
     if prev_status == StatusKind::Running {
-        // Idempotency guard for cancel webhooks
-        let key = idempotency_key(task_id, &TriggerKind::Cancel, &TriggerCondition::Success);
-        let claimed = db_operation::try_claim_webhook_execution(
-            conn,
-            task_id,
-            TriggerKind::Cancel,
-            TriggerCondition::Success,
-            &key,
-            Some(evaluator.ctx.webhook_idempotency_timeout),
-        )
-        .await?;
-
-        if !claimed {
-            log::info!(
-                "Skipping cancel webhooks for task {} — already executed (key={})",
+        if let Err(e) = fire_cancel_webhooks(evaluator, &task_id, conn).await {
+            log::error!(
+                "Failed to fire cancel webhooks for task {}: {:?}",
                 task_id,
-                key
+                e
             );
-            metrics::record_webhook_idempotent_skip("cancel");
-            metrics::record_webhook_idempotent_conflict();
-        } else {
-            let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
-            let actions = Action::belonging_to(&t)
-                .filter(trigger.eq(TriggerKind::Cancel))
-                .load::<Action>(conn)
-                .await?;
-
-            let mut all_succeeded = true;
-            for act in actions.iter() {
-                let res = evaluator.execute(act, &t, Some(&key)).await;
-                match res {
-                    Ok(_) => {
-                        log::debug!("Action {} executed successfully", act.id);
-                    }
-                    Err(e) => {
-                        log::error!("Action {} failed: {}", act.id, e);
-                        all_succeeded = false;
-                    }
-                }
-            }
-
-            if let Err(e) =
-                db_operation::complete_webhook_execution(conn, &key, all_succeeded).await
-            {
-                log::error!(
-                    "Failed to complete webhook execution record for key {}: {}",
-                    key,
-                    e
-                );
-            }
         }
     }
 
-    // Propagate cancellation to dependent children
-    // Canceled is treated like failure for children that require success
-    let cascade_failed = propagate_to_children(&task_id, &StatusKind::Canceled, conn).await?;
-
-    // Fire on_failure webhooks for all cascade-failed children (best-effort)
     for child_id in &cascade_failed {
-        match fire_end_webhooks(evaluator, child_id, StatusKind::Failure, conn).await {
-            Ok(_) => log::debug!(
-                "on_failure webhooks fired for cascade-failed child {} (parent {} canceled)",
-                child_id,
-                task_id
-            ),
-            Err(e) => log::error!(
-                "Failed to fire on_failure webhooks for cascade-failed child {}: {}",
+        if let Err(e) = fire_end_webhooks(evaluator, child_id, StatusKind::Failure, conn).await {
+            log::error!(
+                "Failed to fire on_failure webhooks for cascade-failed child {}: {:?}",
                 child_id,
                 e
-            ),
+            );
         }
     }
 

@@ -9,35 +9,78 @@ use uuid::Uuid;
 
 use super::DbError;
 
-/// Update all tasks with status running and started_at older than timeout to failed and update
-/// the ended_at field to the current time.
-pub(crate) async fn ensure_pending_tasks_timeout<'a>(
+/// Find all Running tasks that have exceeded their timeout (based on `last_updated`).
+/// Returns matching task IDs without modifying them — callers should use
+/// `timeout_task_and_propagate` to atomically mark each as failed and propagate.
+pub(crate) async fn find_timed_out_tasks<'a>(
     conn: &mut Conn<'a>,
-) -> Result<Vec<Task>, DbError> {
+) -> Result<Vec<uuid::Uuid>, DbError> {
     use {
         crate::schema::task::dsl::*,
         diesel::{dsl::now, pg::data_types::PgInterval},
     };
-    const TIMEOUT_REASON: &str = "Timeout";
-    let updated = diesel::update(
-        task.filter(
+    let ids = task
+        .filter(
             status
                 .eq(models::StatusKind::Running)
                 .and(started_at.is_not_null())
                 .and(last_updated.lt(now.into_sql::<sql_types::Timestamptz>()
                     - (PgInterval::from_microseconds(1_000_000).into_sql::<sql_types::Interval>()
                         * timeout))),
-        ),
-    )
-    .set((
-        status.eq(models::StatusKind::Failure),
-        ended_at.eq(now),
-        failure_reason.eq(TIMEOUT_REASON),
-    ))
-    .returning(Task::as_returning())
-    .get_results::<Task>(conn)
-    .await?;
-    Ok(updated)
+        )
+        .select(id)
+        .get_results::<uuid::Uuid>(conn)
+        .await?;
+    Ok(ids)
+}
+
+/// Atomically mark a single task as timed-out (Failed) and propagate to children,
+/// all within one transaction. Returns the failed task and cascade-failed child IDs.
+/// Uses FOR UPDATE SKIP LOCKED to avoid conflicts with concurrent workers.
+pub(crate) async fn timeout_task_and_propagate<'a>(
+    conn: &mut Conn<'a>,
+    task_id: uuid::Uuid,
+) -> Result<Option<(Task, Vec<uuid::Uuid>)>, DbError> {
+    use super::run_in_transaction;
+    use {crate::schema::task::dsl::*, diesel::dsl::now};
+    const TIMEOUT_REASON: &str = "Timeout";
+
+    run_in_transaction(conn, |conn| {
+        Box::pin(async move {
+            // Lock the task; SKIP LOCKED so concurrent timeout workers don't block
+            let t: Option<Task> = task
+                .filter(id.eq(task_id).and(status.eq(models::StatusKind::Running)))
+                .for_update()
+                .skip_locked()
+                .first::<Task>(conn)
+                .await
+                .optional()?;
+
+            let Some(t) = t else {
+                // Already transitioned (e.g. completed or cancelled concurrently)
+                return Ok(None);
+            };
+
+            // Mark as failed (last_updated intentionally NOT updated —
+            // it preserves when the task last showed activity, useful for diagnostics)
+            diesel::update(task.filter(id.eq(task_id)))
+                .set((
+                    status.eq(models::StatusKind::Failure),
+                    ended_at.eq(now),
+                    failure_reason.eq(TIMEOUT_REASON),
+                ))
+                .execute(conn)
+                .await?;
+
+            // Propagate failure to children (inside tx)
+            let cascade_failed =
+                crate::workers::propagate_to_children(&task_id, &models::StatusKind::Failure, conn)
+                    .await?;
+
+            Ok(Some((t, cascade_failed)))
+        })
+    })
+    .await
 }
 
 /// Requeue Claimed tasks that never started within the claim timeout.

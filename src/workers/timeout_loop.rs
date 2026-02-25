@@ -3,11 +3,13 @@ use actix_web::rt;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-use super::propagation::{fire_end_webhooks, propagate_to_children};
+use super::propagation::fire_end_webhooks_with_cascade;
 
-/// This ensures the non responding tasks are set to fail
+/// Background loop that detects timed-out Running tasks and failed stale claims.
 ///
-/// Add the date of failure
+/// For each timed-out task, the mark-failed + child propagation runs inside a
+/// single transaction so a crash between the two cannot leave children stuck in
+/// Waiting. Webhooks are fired best-effort after the transaction commits.
 pub async fn timeout_loop(
     evaluator: Arc<ActionExecutor>,
     pool: DbPool,
@@ -20,6 +22,7 @@ pub async fn timeout_loop(
         let conn = pool.get();
 
         if let Ok(mut conn) = conn.await {
+            // --- Requeue stale Claimed tasks ---
             let requeued =
                 db_operation::requeue_stale_claimed_tasks(&mut conn, claim_timeout).await;
             match requeued {
@@ -42,78 +45,59 @@ pub async fn timeout_loop(
                 }
             }
 
-            let res = db_operation::ensure_pending_tasks_timeout(&mut conn).await;
-            match res {
-                Ok(failed) => {
-                    if !failed.is_empty() {
-                        // Record timeout metrics
-                        for _ in &failed {
-                            metrics::record_task_timeout();
-                        }
-                        log::warn!(
-                            "Timeout worker: {} tasks failed, {:?}",
-                            &failed.len(),
-                            &failed.iter().map(|e| e.id).collect::<Vec<_>>()
-                        );
-                        // Propagate timeout failures to dependent children
-                        for failed_task in &failed {
-                            let cascade_failed = match propagate_to_children(
-                                &failed_task.id,
-                                &StatusKind::Failure,
-                                &mut conn,
-                            )
-                            .await
-                            {
-                                Ok(ids) => ids,
-                                Err(e) => {
-                                    log::error!(
-                                        "Timeout worker: failed to propagate failure for task {}: {:?}",
-                                        failed_task.id,
-                                        e
-                                    );
-                                    vec![]
-                                }
-                            };
-
-                            if let Err(e) = fire_end_webhooks(
-                                evaluator.as_ref(),
-                                &failed_task.id,
-                                StatusKind::Failure,
-                                &mut conn,
-                            )
-                            .await
-                            {
-                                log::error!(
-                                    "Timeout worker: failed to fire on_failure webhooks for task {}: {:?}",
-                                    failed_task.id,
-                                    e
-                                );
-                            }
-
-                            // Fire on_failure webhooks for cascade-failed children
-                            for child_id in &cascade_failed {
-                                if let Err(e) = fire_end_webhooks(
-                                    evaluator.as_ref(),
-                                    child_id,
-                                    StatusKind::Failure,
-                                    &mut conn,
-                                )
-                                .await
-                                {
-                                    log::error!(
-                                        "Timeout worker: failed to fire on_failure webhooks for cascade-failed child {}: {:?}",
-                                        child_id,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        log::debug!("Timeout worker: no tasks failed");
-                    }
-                }
+            // --- Timeout Running tasks ---
+            // Step 1: find timed-out task IDs (read-only, no lock)
+            let timed_out_ids = match db_operation::find_timed_out_tasks(&mut conn).await {
+                Ok(ids) => ids,
                 Err(e) => {
-                    log::error!("Timeout worker: error updating tasks: {:?}", e);
+                    log::error!("Timeout worker: error finding timed-out tasks: {:?}", e);
+                    vec![]
+                }
+            };
+
+            if !timed_out_ids.is_empty() {
+                log::warn!(
+                    "Timeout worker: {} tasks timed out, {:?}",
+                    timed_out_ids.len(),
+                    &timed_out_ids
+                );
+            } else {
+                log::debug!("Timeout worker: no tasks timed out");
+            }
+
+            // Step 2: for each, atomically mark failed + propagate (in tx), then fire webhooks
+            for task_id in timed_out_ids {
+                let result = db_operation::timeout_task_and_propagate(&mut conn, task_id).await;
+
+                match result {
+                    Ok(Some((failed_task, cascade_failed))) => {
+                        metrics::record_task_timeout();
+                        metrics::record_status_transition("Running", "Failure");
+
+                        // Best-effort webhooks (outside transaction)
+                        fire_end_webhooks_with_cascade(
+                            evaluator.as_ref(),
+                            &failed_task.id,
+                            StatusKind::Failure,
+                            &cascade_failed,
+                            &mut conn,
+                        )
+                        .await;
+                    }
+                    Ok(None) => {
+                        // Task already transitioned concurrently, nothing to do
+                        log::debug!(
+                            "Timeout worker: task {} already transitioned, skipping",
+                            task_id
+                        );
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Timeout worker: failed to timeout task {}: {:?}",
+                            task_id,
+                            e
+                        );
+                    }
                 }
             }
         }

@@ -99,31 +99,15 @@ pub async fn update_running_task<'a>(
                 _ => "other",
             };
             metrics::record_status_transition("Running", outcome);
-            match workers::fire_end_webhooks(evaluator, &task_id, *final_status, conn)
-                .instrument(tracing::info_span!("fire_end_webhooks"))
-                .await
-            {
-                Ok(_) => log::debug!("task {} end webhooks fired successfully", &task_id),
-                Err(e) => log::error!("task {} end webhooks failed: {}", &task_id, e),
-            }
-
-            // Fire on_failure webhooks for all cascade-failed children
-            for child_id in &cascade_failed_ids {
-                match workers::fire_end_webhooks(evaluator, child_id, StatusKind::Failure, conn)
-                    .await
-                {
-                    Ok(_) => log::debug!(
-                        "on_failure webhooks fired for cascade-failed child {} (parent {})",
-                        child_id,
-                        task_id
-                    ),
-                    Err(e) => log::error!(
-                        "Failed to fire on_failure webhooks for cascade-failed child {}: {}",
-                        child_id,
-                        e
-                    ),
-                }
-            }
+            workers::fire_end_webhooks_with_cascade(
+                evaluator,
+                &task_id,
+                *final_status,
+                &cascade_failed_ids,
+                conn,
+            )
+            .instrument(tracing::info_span!("fire_end_webhooks_with_cascade"))
+            .await;
         } else {
             log::warn!(
                 "update_running_task: task {} was not in Running state, skipping webhooks/propagation",
@@ -238,29 +222,14 @@ pub(crate) async fn fail_task_and_propagate<'a>(
     }
 
     // After commit: fire on_failure webhooks (best-effort)
-    match workers::fire_end_webhooks(evaluator, task_id, StatusKind::Failure, conn).await {
-        Ok(_) => log::debug!(
-            "task {} on_failure webhooks fired after on_start failure",
-            task_id
-        ),
-        Err(e) => log::error!("task {} on_failure webhooks failed: {}", task_id, e),
-    }
-
-    // Fire on_failure webhooks for all cascade-failed children
-    for child_id in &cascade_failed {
-        match workers::fire_end_webhooks(evaluator, child_id, StatusKind::Failure, conn).await {
-            Ok(_) => log::debug!(
-                "on_failure webhooks fired for cascade-failed child {} (parent {} failed)",
-                child_id,
-                task_id
-            ),
-            Err(e) => log::error!(
-                "Failed to fire on_failure webhooks for cascade-failed child {}: {}",
-                child_id,
-                e
-            ),
-        }
-    }
+    workers::fire_end_webhooks_with_cascade(
+        evaluator,
+        task_id,
+        StatusKind::Failure,
+        &cascade_failed,
+        conn,
+    )
+    .await;
 
     Ok(())
 }

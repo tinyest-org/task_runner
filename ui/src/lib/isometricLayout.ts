@@ -1,4 +1,5 @@
 import type { BasicTask, Link, TaskStatus } from '../types';
+import { ALL_STATUSES } from '../constants';
 
 export interface GroupLayout {
   key: { kind: string; step: number };
@@ -223,4 +224,63 @@ export function computeGroupLayout(
   }
 
   return { groups, kinds, maxStep, depthMap, maxCols, maxRows, maxLayers };
+}
+
+// --- Status-based layout ---
+
+export interface StatusGroupLayout {
+  status: TaskStatus;
+  tasks: BasicTask[];
+  statusIndex: number;
+  cols: number;
+  rows: number;
+  layers: number;
+}
+
+export interface StatusLayoutResult {
+  groups: StatusGroupLayout[];
+  statuses: TaskStatus[];
+  maxCols: number;
+  maxRows: number;
+  maxLayers: number;
+}
+
+/**
+ * Group tasks by status and return layout information.
+ * Tasks within each group are sorted by ID for stable positioning across updates.
+ */
+export function computeStatusLayout(tasks: BasicTask[]): StatusLayoutResult {
+  const groupMap = new Map<TaskStatus, BasicTask[]>();
+  for (const task of tasks) {
+    let group = groupMap.get(task.status);
+    if (!group) {
+      group = [];
+      groupMap.set(task.status, group);
+    }
+    group.push(task);
+  }
+
+  const statuses = ALL_STATUSES.filter((s) => groupMap.has(s));
+
+  const groups: StatusGroupLayout[] = [];
+  let maxCols = 1;
+  let maxRows = 1;
+  let maxLayers = 1;
+
+  for (let i = 0; i < statuses.length; i++) {
+    const status = statuses[i];
+    const groupTasks = groupMap.get(status)!;
+    groupTasks.sort((a, b) => a.id.localeCompare(b.id));
+    const n = groupTasks.length;
+    const dim = Math.ceil(Math.cbrt(n));
+    const cols = dim;
+    const rows = Math.ceil(Math.sqrt(n / cols));
+    const layers = Math.ceil(n / (cols * rows));
+    if (cols > maxCols) maxCols = cols;
+    if (rows > maxRows) maxRows = rows;
+    if (layers > maxLayers) maxLayers = layers;
+    groups.push({ status, tasks: groupTasks, statusIndex: i, cols, rows, layers });
+  }
+
+  return { groups, statuses, maxCols, maxRows, maxLayers };
 }
