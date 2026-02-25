@@ -145,8 +145,7 @@ async fn handle_batch_with_counts<'a>(
             failures = task.failures + batch.f, \
             last_updated = NOW() \
         FROM UNNEST($1::uuid[], $2::int[], $3::int[]) AS batch(id, s, f) \
-        WHERE task.id = batch.id \
-            AND task.status NOT IN ('success'::status_kind, 'failure'::status_kind, 'canceled'::status_kind)",
+        WHERE task.id = batch.id",
     )
     .bind::<diesel::sql_types::Array<diesel::sql_types::Uuid>, _>(&ids)
     .bind::<diesel::sql_types::Array<diesel::sql_types::Integer>, _>(&successes)

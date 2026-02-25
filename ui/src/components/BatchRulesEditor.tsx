@@ -1,4 +1,4 @@
-import { createSignal, createEffect, createMemo, Show, For } from 'solid-js';
+import { createSignal, createEffect, createMemo, on, Show, For } from 'solid-js';
 import type { Strategy, DagResponse, UpdateBatchRulesResponse } from '../types';
 import { updateBatchRules, fetchTask } from '../api';
 import { Card, Button } from 'glass-ui-solid';
@@ -32,21 +32,26 @@ export default function BatchRulesEditor(props: Props) {
     return [...kindSet].sort();
   });
 
-  // When opening, reset state and auto-select first kind
-  createEffect(() => {
-    if (props.open) {
-      const kinds = availableKinds();
-      const first = kinds[0] ?? '';
-      setSelectedKind(first);
-      setParseError(null);
-      setSubmitError(null);
-      if (first) {
-        loadRulesForKind(first);
-      } else {
-        setRulesJson('[]');
-      }
-    }
-  });
+  // Reset state only on open transition (false -> true), not on dagData refresh
+  createEffect(
+    on(
+      () => props.open,
+      (open, prevOpen) => {
+        if (open && !prevOpen) {
+          const kinds = availableKinds();
+          const first = kinds[0] ?? '';
+          setSelectedKind(first);
+          setParseError(null);
+          setSubmitError(null);
+          if (first) {
+            loadRulesForKind(first);
+          } else {
+            setRulesJson('[]');
+          }
+        }
+      },
+    ),
+  );
 
   // When kind changes (user picks a different one), reload rules
   function handleKindChange(kind: string) {

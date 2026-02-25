@@ -94,13 +94,18 @@ async fn test_batch_update_rejects_zero_counters() {
     );
 }
 
+/// Batch updates must persist counters even on terminal tasks.
+/// Previously, the batch updater SQL filtered out terminal statuses, which caused
+/// a race condition: if PUT (batch counter) was in-flight when PATCH (status=Success)
+/// landed, the buffered counts were silently dropped — resulting in tasks at "Success"
+/// with incomplete counters.
 #[tokio::test]
-async fn test_batch_update_ignores_terminal_tasks() {
+async fn test_batch_update_persists_counters_on_terminal_tasks() {
     let (_g, test_state) = setup_test_app_with_batch_updater().await;
     let state = test_state.state;
     let app = test_service!(state);
 
-    // Success case
+    // Success case: counters must still be applied
     let tasks = vec![task_json(
         "terminal-success",
         "Terminal Success",
@@ -124,10 +129,16 @@ async fn test_batch_update_ignores_terminal_tasks() {
 
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     let updated: TaskDto = get_task_ok(&app, task_id).await;
-    assert_eq!(updated.success, 0, "Success counter should not change");
-    assert_eq!(updated.failures, 0, "Failure counter should not change");
+    assert_eq!(
+        updated.success, 3,
+        "Success counter must be persisted even on terminal task"
+    );
+    assert_eq!(
+        updated.failures, 1,
+        "Failure counter must be persisted even on terminal task"
+    );
 
-    // Canceled case
+    // Canceled case: counters must still be applied
     let tasks = vec![task_json(
         "terminal-canceled",
         "Terminal Canceled",
@@ -155,6 +166,12 @@ async fn test_batch_update_ignores_terminal_tasks() {
 
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     let updated: TaskDto = get_task_ok(&app, cancel_id).await;
-    assert_eq!(updated.success, 0, "Success counter should not change");
-    assert_eq!(updated.failures, 0, "Failure counter should not change");
+    assert_eq!(
+        updated.success, 2,
+        "Success counter must be persisted even on canceled task"
+    );
+    assert_eq!(
+        updated.failures, 2,
+        "Failure counter must be persisted even on canceled task"
+    );
 }
