@@ -4,6 +4,7 @@ use crate::{
     models,
 };
 use chrono::Utc;
+use diesel::prelude::*;
 use diesel::sql_types;
 use diesel_async::RunQueryDsl;
 
@@ -193,4 +194,84 @@ async fn list_batches_execute<'a>(
             "too many timestamp filters".into(),
         )),
     }
+}
+
+/// Get aggregated stats (success, failures, expected_count) for a single batch.
+/// Uses a single GROUP BY query — returns None if no tasks match the batch_id.
+pub(crate) async fn get_batch_stats<'a>(
+    conn: &mut Conn<'a>,
+    bid: uuid::Uuid,
+) -> Result<Option<dtos::BatchStatsDto>, DbError> {
+    #[derive(Debug, diesel::QueryableByName)]
+    struct BatchStatsRow {
+        #[diesel(sql_type = sql_types::BigInt)]
+        total_tasks: i64,
+        #[diesel(sql_type = sql_types::BigInt)]
+        total_success: i64,
+        #[diesel(sql_type = sql_types::BigInt)]
+        total_failures: i64,
+        #[diesel(sql_type = sql_types::Nullable<sql_types::BigInt>)]
+        total_expected: Option<i64>,
+        #[diesel(sql_type = sql_types::BigInt)]
+        waiting: i64,
+        #[diesel(sql_type = sql_types::BigInt)]
+        pending: i64,
+        #[diesel(sql_type = sql_types::BigInt)]
+        claimed: i64,
+        #[diesel(sql_type = sql_types::BigInt)]
+        running: i64,
+        #[diesel(sql_type = sql_types::BigInt)]
+        cnt_success: i64,
+        #[diesel(sql_type = sql_types::BigInt)]
+        cnt_failure: i64,
+        #[diesel(sql_type = sql_types::BigInt)]
+        paused: i64,
+        #[diesel(sql_type = sql_types::BigInt)]
+        canceled: i64,
+    }
+
+    let row = diesel::sql_query(
+        r#"
+        SELECT
+            COUNT(*)::bigint AS total_tasks,
+            COALESCE(SUM(success), 0)::bigint AS total_success,
+            COALESCE(SUM(failures), 0)::bigint AS total_failures,
+            CASE WHEN COUNT(*) FILTER (WHERE expected_count IS NULL) = 0
+                 THEN SUM(expected_count)::bigint
+            END AS total_expected,
+            COUNT(*) FILTER (WHERE status = 'waiting')::bigint AS waiting,
+            COUNT(*) FILTER (WHERE status = 'pending')::bigint AS pending,
+            COUNT(*) FILTER (WHERE status = 'claimed')::bigint AS claimed,
+            COUNT(*) FILTER (WHERE status = 'running')::bigint AS running,
+            COUNT(*) FILTER (WHERE status = 'success')::bigint AS cnt_success,
+            COUNT(*) FILTER (WHERE status = 'failure')::bigint AS cnt_failure,
+            COUNT(*) FILTER (WHERE status = 'paused')::bigint AS paused,
+            COUNT(*) FILTER (WHERE status = 'canceled')::bigint AS canceled
+        FROM task
+        WHERE batch_id = $1
+        GROUP BY batch_id
+        "#,
+    )
+    .bind::<sql_types::Uuid, _>(bid)
+    .get_result::<BatchStatsRow>(conn)
+    .await
+    .optional()?;
+
+    Ok(row.map(|r| dtos::BatchStatsDto {
+        batch_id: bid,
+        total_tasks: r.total_tasks,
+        total_success: r.total_success,
+        total_failures: r.total_failures,
+        total_expected: r.total_expected,
+        status_counts: dtos::BatchStatusCounts {
+            waiting: r.waiting,
+            pending: r.pending,
+            claimed: r.claimed,
+            running: r.running,
+            success: r.cnt_success,
+            failure: r.cnt_failure,
+            paused: r.paused,
+            canceled: r.canceled,
+        },
+    }))
 }

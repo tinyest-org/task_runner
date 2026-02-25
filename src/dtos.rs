@@ -48,6 +48,24 @@ pub struct BatchStatusCounts {
     pub canceled: i64,
 }
 
+/// Aggregated counters for a single batch.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct BatchStatsDto {
+    /// The batch UUID.
+    pub batch_id: uuid::Uuid,
+    /// Total number of tasks in this batch.
+    pub total_tasks: i64,
+    /// Sum of all tasks' success counters.
+    pub total_success: i64,
+    /// Sum of all tasks' failure counters.
+    pub total_failures: i64,
+    /// Sum of all tasks' expected_count values. Null when at least one task has no expected_count set,
+    /// meaning total progress cannot be meaningfully computed.
+    pub total_expected: Option<i64>,
+    /// Breakdown of task counts by status.
+    pub status_counts: BatchStatusCounts,
+}
+
 /// Filter parameters for batch listing. All filters are optional and combined with AND logic.
 /// Filters apply to tasks within each batch — a batch is included if it contains at least one
 /// matching task.

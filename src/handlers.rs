@@ -603,6 +603,41 @@ pub async fn stop_batch(
 }
 
 // =============================================================================
+// Batch Stats Handler
+// =============================================================================
+
+#[utoipa::path(
+    get,
+    path = "/batch/{batch_id}",
+    summary = "Get batch stats",
+    description = "Returns aggregated counters for a batch: total success, total failures, total expected count, and per-status task counts. Use this to track overall progress of a batch.",
+    params(("batch_id" = Uuid, Path, description = "The batch UUID (from the X-Batch-ID response header of POST /task)")),
+    responses(
+        (status = 200, description = "Batch stats with aggregated counters", body = dtos::BatchStatsDto),
+        (status = 404, description = "No tasks found for this batch_id"),
+    ),
+    tag = "batches"
+)]
+/// Get aggregated stats for a batch
+pub async fn get_batch_stats(
+    state: web::Data<AppState>,
+    batch_id: web::Path<Uuid>,
+) -> actix_web::Result<HttpResponse> {
+    let mut conn = state.conn().await?;
+
+    let stats = db_operation::get_batch_stats(&mut conn, *batch_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(match stats {
+        Some(s) => HttpResponse::Ok().json(s),
+        None => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "No tasks found for this batch_id"
+        })),
+    })
+}
+
+// =============================================================================
 // Batch Listing Handlers
 // =============================================================================
 
@@ -695,6 +730,7 @@ pub async fn view_dag_page() -> HttpResponse {
         batch_task_updater,
         cancel_task,
         pause_task,
+        get_batch_stats,
         stop_batch,
         list_batches,
         get_dag,
@@ -713,6 +749,7 @@ pub async fn view_dag_page() -> HttpResponse {
         dtos::DagDto,
         dtos::StopBatchResponseDto,
         dtos::BatchSummaryDto,
+        dtos::BatchStatsDto,
         dtos::BatchStatusCounts,
         crate::models::StatusKind,
         crate::models::ActionKindEnum,
@@ -755,6 +792,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/task/{task_id}", web::put().to(batch_task_updater))
         .route("/task/{task_id}", web::delete().to(cancel_task))
         .route("/task/pause/{task_id}", web::patch().to(pause_task))
+        .route("/batch/{batch_id}", web::get().to(get_batch_stats))
         .route("/batch/{batch_id}", web::delete().to(stop_batch))
         .route("/batches", web::get().to(list_batches))
         .route("/dag/{batch_id}", web::get().to(get_dag))
