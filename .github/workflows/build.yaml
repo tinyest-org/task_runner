@@ -68,7 +68,7 @@ jobs:
         run: cargo test --lib --bins
 
       - name: Run integration tests
-        run: cargo test --test 'test_*' -- --test-threads=1
+        run: cargo test --test integration -- --test-threads=1
 
   # Build AMD64 image natively on x86 runner
   docker-amd64:
