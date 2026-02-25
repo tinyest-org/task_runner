@@ -16,6 +16,14 @@ export default function Legend() {
           </div>
         )}
       </For>
+      <div class="mt-1 border-t border-white/10 pt-1">
+        <div class="flex items-center gap-2">
+          <div
+            class="h-3.5 w-3.5 rounded-sm border-2 border-dashed border-amber-400 bg-transparent"
+          />
+          <span class="text-white/80">Dead-end barrier</span>
+        </div>
+      </div>
     </Card>
   );
 }

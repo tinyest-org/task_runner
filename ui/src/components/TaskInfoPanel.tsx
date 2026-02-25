@@ -123,6 +123,14 @@ export default function TaskInfoPanel(props: Props) {
       <InfoRow label="ID" value={task().id} mono />
       <InfoRow label="Name" value={task().name} />
       <InfoRow label="Kind" value={task().kind} />
+      <Show when={task().dead_end_barrier}>
+        <div class="flex items-center justify-between border-b border-white/10 py-1.5">
+          <span class="text-white/50">Dead-end barrier</span>
+          <span class="rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-400">
+            Enabled
+          </span>
+        </div>
+      </Show>
       <div class="flex items-center justify-between border-b border-white/10 py-1.5">
         <span class="text-white/50">Status</span>
         <StatusBadge status={task().status} />
