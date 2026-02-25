@@ -524,6 +524,146 @@ pub async fn pause_task(
 }
 
 // =============================================================================
+// Batch Operations
+// =============================================================================
+
+#[utoipa::path(
+    delete,
+    path = "/batch/{batch_id}",
+    summary = "Stop a batch",
+    description = "Cancel all non-terminal tasks in a batch. Waiting, Pending, Paused, and Running tasks are set to `Canceled` with failure_reason `\"Batch stopped\"`. Running tasks with registered cancel webhooks will have those webhooks fired.
+
+Tasks already in a terminal state (Success, Failure, Canceled) are not modified.
+
+Returns a summary of how many tasks were affected per status category.",
+    params(("batch_id" = Uuid, Path, description = "The batch UUID (from the X-Batch-ID response header of POST /task)")),
+    responses(
+        (status = 200, description = "Batch stopped. Returns counts per status category.", body = dtos::StopBatchResponseDto),
+        (status = 404, description = "No tasks found for this batch_id"),
+    ),
+    tag = "batches"
+)]
+/// Stop all non-terminal tasks in a batch
+pub async fn stop_batch(
+    state: web::Data<AppState>,
+    batch_id: web::Path<Uuid>,
+) -> actix_web::Result<HttpResponse> {
+    let mut conn = state.conn().await?;
+    let batch_id = *batch_id;
+
+    let result = db_operation::stop_batch(&mut conn, batch_id)
+        .await
+        .map_err(ApiError::from)?;
+
+    // Fire cancel webhooks for formerly-Running tasks (best-effort)
+    for task_id in &result.canceled_running_ids {
+        if let Err(e) =
+            fire_cancel_webhooks_for_task(&state.action_executor, task_id, &mut conn).await
+        {
+            log::error!(
+                "stop_batch: failed to fire cancel webhooks for task {}: {:?}",
+                task_id,
+                e
+            );
+        }
+    }
+
+    let canceled_running = result.canceled_running_ids.len() as i64;
+
+    // Record metrics for each canceled task
+    let total_canceled = result.canceled_waiting
+        + result.canceled_pending
+        + result.canceled_claimed
+        + canceled_running
+        + result.canceled_paused;
+    for _ in 0..total_canceled {
+        metrics::record_task_cancelled();
+    }
+
+    log::info!(
+        "Batch {} stopped: waiting={}, pending={}, claimed={}, running={}, paused={}, already_terminal={}",
+        batch_id,
+        result.canceled_waiting,
+        result.canceled_pending,
+        result.canceled_claimed,
+        canceled_running,
+        result.canceled_paused,
+        result.already_terminal,
+    );
+
+    Ok(HttpResponse::Ok().json(dtos::StopBatchResponseDto {
+        batch_id,
+        canceled_waiting: result.canceled_waiting,
+        canceled_pending: result.canceled_pending,
+        canceled_claimed: result.canceled_claimed,
+        canceled_running,
+        canceled_paused: result.canceled_paused,
+        already_terminal: result.already_terminal,
+    }))
+}
+
+/// Fire cancel webhooks for a single task (extracted from workers::cancel_task pattern).
+async fn fire_cancel_webhooks_for_task<'a>(
+    evaluator: &ActionExecutor,
+    task_id: &Uuid,
+    conn: &mut crate::Conn<'a>,
+) -> Result<(), crate::error::TaskRunnerError> {
+    use crate::action::idempotency_key;
+    use crate::models::{Action, Task, TriggerCondition, TriggerKind};
+    use crate::schema::action::dsl::trigger;
+    use crate::schema::task::dsl::*;
+    use diesel::BelongingToDsl;
+    use diesel::prelude::*;
+    use diesel_async::RunQueryDsl;
+
+    let key = idempotency_key(*task_id, &TriggerKind::Cancel, &TriggerCondition::Success);
+    let claimed = db_operation::try_claim_webhook_execution(
+        conn,
+        *task_id,
+        TriggerKind::Cancel,
+        TriggerCondition::Success,
+        &key,
+        Some(evaluator.ctx.webhook_idempotency_timeout),
+    )
+    .await?;
+
+    if !claimed {
+        log::info!(
+            "stop_batch: skipping cancel webhooks for task {} — already executed",
+            task_id
+        );
+        return Ok(());
+    }
+
+    let t = task.filter(id.eq(task_id)).first::<Task>(conn).await?;
+    let actions = Action::belonging_to(&t)
+        .filter(trigger.eq(TriggerKind::Cancel))
+        .load::<Action>(conn)
+        .await?;
+
+    let mut all_succeeded = true;
+    for act in actions.iter() {
+        match evaluator.execute(act, &t, Some(&key)).await {
+            Ok(_) => log::debug!("Cancel action {} executed successfully", act.id),
+            Err(e) => {
+                log::error!("Cancel action {} failed: {}", act.id, e);
+                all_succeeded = false;
+            }
+        }
+    }
+
+    if let Err(e) = db_operation::complete_webhook_execution(conn, &key, all_succeeded).await {
+        log::error!(
+            "Failed to complete webhook execution record for key {}: {}",
+            key,
+            e
+        );
+    }
+
+    Ok(())
+}
+
+// =============================================================================
 // Batch Listing Handlers
 // =============================================================================
 
@@ -616,6 +756,7 @@ pub async fn view_dag_page() -> HttpResponse {
         batch_task_updater,
         cancel_task,
         pause_task,
+        stop_batch,
         list_batches,
         get_dag,
         view_dag_page,
@@ -631,6 +772,7 @@ pub async fn view_dag_page() -> HttpResponse {
         dtos::Dependency,
         dtos::LinkDto,
         dtos::DagDto,
+        dtos::StopBatchResponseDto,
         dtos::BatchSummaryDto,
         dtos::BatchStatusCounts,
         crate::models::StatusKind,
@@ -674,6 +816,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/task/{task_id}", web::put().to(batch_task_updater))
         .route("/task/{task_id}", web::delete().to(cancel_task))
         .route("/task/pause/{task_id}", web::patch().to(pause_task))
+        .route("/batch/{batch_id}", web::delete().to(stop_batch))
         .route("/batches", web::get().to(list_batches))
         .route("/dag/{batch_id}", web::get().to(get_dag))
         .route("/view", web::get().to(view_dag_page))

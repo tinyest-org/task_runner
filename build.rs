@@ -6,8 +6,32 @@ fn main() {
     println!("cargo:rerun-if-changed=.githooks");
     println!("cargo:rerun-if-changed=static/dag.html");
 
+    // Ensure static/dag.html exists so include_str! compiles.
+    // The real file is built from ui/ (cd ui && bun install && bun run build)
+    // but is gitignored, so CI/fresh clones need a placeholder.
+    ensure_dag_html();
+
     // Setup git hooks if we're in a git repository
     setup_git_hooks();
+}
+
+fn ensure_dag_html() {
+    let dag_path = std::path::Path::new("static/dag.html");
+    if !dag_path.exists() {
+        std::fs::create_dir_all("static").expect("Failed to create static directory");
+        std::fs::write(
+            dag_path,
+            concat!(
+                "<!DOCTYPE html><html><body style=\"font-family:sans-serif;padding:2em\">",
+                "<p>DAG viewer not built. Run <code>cd ui &amp;&amp; bun install &amp;&amp; bun run build</code></p>",
+                "</body></html>",
+            ),
+        )
+        .expect("Failed to write placeholder dag.html");
+        println!(
+            "cargo:warning=static/dag.html not found, created placeholder. Build UI with: cd ui && bun install && bun run build"
+        );
+    }
 }
 
 fn setup_git_hooks() {

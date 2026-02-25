@@ -18,7 +18,9 @@ pub(crate) use task_crud::{concurrency_lock_key, find_detailed_task_by_id, inser
 
 // Re-exports from task_lifecycle
 pub use task_lifecycle::{UpdateTaskResult, update_running_task};
-pub(crate) use task_lifecycle::{fail_task_and_propagate, pause_task, save_cancel_actions};
+pub(crate) use task_lifecycle::{
+    fail_task_and_propagate, pause_task, save_cancel_actions, stop_batch,
+};
 
 // Re-exports from task_query
 pub(crate) use task_query::{

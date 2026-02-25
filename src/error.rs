@@ -21,6 +21,10 @@ pub enum TaskRunnerError {
     #[error("Task not found: {0}")]
     TaskNotFound(uuid::Uuid),
 
+    /// Generic not found
+    #[error("Not found: {message}")]
+    NotFound { message: String },
+
     /// Invalid task state for operation
     #[error("Invalid task state: {message}")]
     InvalidState { message: String },
@@ -95,6 +99,7 @@ impl From<TaskRunnerError> for ApiError {
             TaskRunnerError::TaskNotFound(id) => {
                 ApiError::NotFound(format!("Task {} not found", id))
             }
+            TaskRunnerError::NotFound { message } => ApiError::NotFound(message),
             TaskRunnerError::InvalidState { message } => ApiError::BadRequest(message),
             TaskRunnerError::Validation(e) => ApiError::BadRequest(e),
             TaskRunnerError::ConcurrencyLimit { kind } => {

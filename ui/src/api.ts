@@ -1,4 +1,4 @@
-import type { DagResponse, TaskDetail, BasicTask, BatchSummary } from './types';
+import type { DagResponse, TaskDetail, BasicTask, BatchSummary, StopBatchResponse } from './types';
 
 export async function fetchDag(batchId: string): Promise<DagResponse> {
   const resp = await fetch(`/dag/${encodeURIComponent(batchId)}`);
@@ -23,6 +23,17 @@ export async function listTasks(
   const resp = await fetch(`/task?page=${page}&page_size=${pageSize}`);
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+  }
+  return resp.json();
+}
+
+export async function stopBatch(batchId: string): Promise<StopBatchResponse> {
+  const resp = await fetch(`/batch/${encodeURIComponent(batchId)}`, {
+    method: 'DELETE',
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`HTTP ${resp.status}: ${body || resp.statusText}`);
   }
   return resp.json();
 }

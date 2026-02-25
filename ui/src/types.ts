@@ -58,6 +58,16 @@ export interface BatchStatusCounts {
   canceled: number;
 }
 
+export interface StopBatchResponse {
+  batch_id: string;
+  canceled_waiting: number;
+  canceled_pending: number;
+  canceled_claimed: number;
+  canceled_running: number;
+  canceled_paused: number;
+  already_terminal: number;
+}
+
 export interface BatchSummary {
   batch_id: string;
   total_tasks: number;

@@ -14,6 +14,7 @@ export default defineConfig({
     proxy: {
       '/dag': 'http://localhost:8085',
       '/task': 'http://localhost:8085',
+      '/batch': 'http://localhost:8085',
       '/batches': 'http://localhost:8085',
     },
   },

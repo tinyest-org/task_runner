@@ -34,9 +34,13 @@ pub async fn update_running_task<'a>(
 
     let has_status_change = dto.status.is_some();
 
+    // Collect cascade-failed task IDs from propagation (inside transaction)
+    // so we can fire their on_failure webhooks after commit.
+    let mut cascade_failed_ids: Vec<uuid::Uuid> = Vec::new();
+
     let res = if has_status_change {
         // Status change: transaction needed for atomic UPDATE + propagation
-        run_in_transaction(conn, |conn| {
+        let (rows, cascade_failed) = run_in_transaction(conn, |conn| {
             Box::pin(async move {
                 let res = diesel::update(
                     task.filter(id.eq(task_id).and(status.eq(models::StatusKind::Running))),
@@ -57,17 +61,21 @@ pub async fn update_running_task<'a>(
                 .execute(conn)
                 .await?;
 
+                let mut cascade = Vec::new();
                 if res == 1 {
                     if let Some(ref final_status) = dto.status {
-                        workers::propagate_to_children(&task_id, final_status, conn).await?;
+                        cascade =
+                            workers::propagate_to_children(&task_id, final_status, conn).await?;
                     }
                 }
 
-                Ok(res)
+                Ok((res, cascade))
             })
         })
         .instrument(tracing::info_span!("tx_update_and_propagate"))
-        .await?
+        .await?;
+        cascade_failed_ids = cascade_failed;
+        rows
     } else {
         // Counter-only update: no transaction needed, autocommit for minimal row lock
         diesel::update(task.filter(id.eq(task_id).and(status.eq(models::StatusKind::Running))))
@@ -97,6 +105,24 @@ pub async fn update_running_task<'a>(
             {
                 Ok(_) => log::debug!("task {} end webhooks fired successfully", &task_id),
                 Err(e) => log::error!("task {} end webhooks failed: {}", &task_id, e),
+            }
+
+            // Fire on_failure webhooks for all cascade-failed children
+            for child_id in &cascade_failed_ids {
+                match workers::fire_end_webhooks(evaluator, child_id, StatusKind::Failure, conn)
+                    .await
+                {
+                    Ok(_) => log::debug!(
+                        "on_failure webhooks fired for cascade-failed child {} (parent {})",
+                        child_id,
+                        task_id
+                    ),
+                    Err(e) => log::error!(
+                        "Failed to fire on_failure webhooks for cascade-failed child {}: {}",
+                        child_id,
+                        e
+                    ),
+                }
             }
         } else {
             log::warn!(
@@ -191,13 +217,14 @@ pub(crate) async fn fail_task_and_propagate<'a>(
     // Wrap status update + propagation in a transaction
     let tid = *task_id;
     let reason_owned = reason.to_string();
-    let updated = run_in_transaction(conn, |conn| {
+    let (updated, cascade_failed) = run_in_transaction(conn, |conn| {
         Box::pin(async move {
             let updated = mark_task_failed(conn, &tid, &reason_owned).await?;
+            let mut cascade = Vec::new();
             if updated {
-                workers::propagate_to_children(&tid, &StatusKind::Failure, conn).await?;
+                cascade = workers::propagate_to_children(&tid, &StatusKind::Failure, conn).await?;
             }
-            Ok(updated)
+            Ok((updated, cascade))
         })
     })
     .await?;
@@ -219,7 +246,160 @@ pub(crate) async fn fail_task_and_propagate<'a>(
         Err(e) => log::error!("task {} on_failure webhooks failed: {}", task_id, e),
     }
 
+    // Fire on_failure webhooks for all cascade-failed children
+    for child_id in &cascade_failed {
+        match workers::fire_end_webhooks(evaluator, child_id, StatusKind::Failure, conn).await {
+            Ok(_) => log::debug!(
+                "on_failure webhooks fired for cascade-failed child {} (parent {} failed)",
+                child_id,
+                task_id
+            ),
+            Err(e) => log::error!(
+                "Failed to fire on_failure webhooks for cascade-failed child {}: {}",
+                child_id,
+                e
+            ),
+        }
+    }
+
     Ok(())
+}
+
+/// Result of stopping a batch. Contains counts per status category
+/// and the list of Running task IDs that need cancel webhooks fired.
+pub struct StopBatchResult {
+    pub canceled_waiting: i64,
+    pub canceled_pending: i64,
+    pub canceled_claimed: i64,
+    /// IDs of formerly-Running tasks (need cancel webhooks fired).
+    pub canceled_running_ids: Vec<uuid::Uuid>,
+    pub canceled_paused: i64,
+    pub already_terminal: i64,
+}
+
+/// Stop all non-terminal tasks in a batch by setting them to Canceled.
+/// Runs in a transaction for atomicity. Returns per-status counts and the
+/// IDs of formerly-Running tasks (for cancel webhook firing).
+#[tracing::instrument(name = "stop_batch", skip(conn), fields(batch_id = %batch_id))]
+pub(crate) async fn stop_batch<'a>(
+    conn: &mut Conn<'a>,
+    batch_id: Uuid,
+) -> Result<StopBatchResult, DbError> {
+    use crate::schema::task::dsl;
+
+    // Check that the batch exists before starting the transaction
+    let total: i64 = dsl::task
+        .filter(dsl::batch_id.eq(batch_id))
+        .count()
+        .get_result(conn)
+        .await?;
+
+    if total == 0 {
+        return Err(crate::error::TaskRunnerError::NotFound {
+            message: format!("No tasks found for batch {}", batch_id),
+        });
+    }
+
+    // Macro to build the cancel changeset inline (Diesel types are not Copy)
+    macro_rules! cancel_set {
+        () => {
+            (
+                dsl::status.eq(StatusKind::Canceled),
+                dsl::failure_reason.eq("Batch stopped"),
+                dsl::ended_at.eq(diesel::dsl::now),
+                dsl::last_updated.eq(diesel::dsl::now),
+            )
+        };
+    }
+
+    run_in_transaction(conn, |conn| {
+        Box::pin(async move {
+            // Count already-terminal tasks
+            let already_terminal: i64 = dsl::task
+                .filter(
+                    dsl::batch_id.eq(batch_id).and(
+                        dsl::status
+                            .eq(StatusKind::Success)
+                            .or(dsl::status.eq(StatusKind::Failure))
+                            .or(dsl::status.eq(StatusKind::Canceled)),
+                    ),
+                )
+                .count()
+                .get_result(conn)
+                .await?;
+
+            // Cancel Waiting tasks
+            let canceled_waiting = diesel::update(
+                dsl::task.filter(
+                    dsl::batch_id
+                        .eq(batch_id)
+                        .and(dsl::status.eq(StatusKind::Waiting)),
+                ),
+            )
+            .set(cancel_set!())
+            .execute(conn)
+            .await? as i64;
+
+            // Cancel Pending tasks
+            let canceled_pending = diesel::update(
+                dsl::task.filter(
+                    dsl::batch_id
+                        .eq(batch_id)
+                        .and(dsl::status.eq(StatusKind::Pending)),
+                ),
+            )
+            .set(cancel_set!())
+            .execute(conn)
+            .await? as i64;
+
+            // Cancel Paused tasks
+            let canceled_paused = diesel::update(
+                dsl::task.filter(
+                    dsl::batch_id
+                        .eq(batch_id)
+                        .and(dsl::status.eq(StatusKind::Paused)),
+                ),
+            )
+            .set(cancel_set!())
+            .execute(conn)
+            .await? as i64;
+
+            // Cancel Claimed tasks (no cancel webhooks needed — on_start not yet called)
+            let canceled_claimed = diesel::update(
+                dsl::task.filter(
+                    dsl::batch_id
+                        .eq(batch_id)
+                        .and(dsl::status.eq(StatusKind::Claimed)),
+                ),
+            )
+            .set(cancel_set!())
+            .execute(conn)
+            .await? as i64;
+
+            // Cancel Running tasks (return their IDs for cancel webhook firing)
+            let canceled_running_ids: Vec<uuid::Uuid> = diesel::update(
+                dsl::task.filter(
+                    dsl::batch_id
+                        .eq(batch_id)
+                        .and(dsl::status.eq(StatusKind::Running)),
+                ),
+            )
+            .set(cancel_set!())
+            .returning(dsl::id)
+            .get_results(conn)
+            .await?;
+
+            Ok(StopBatchResult {
+                canceled_waiting,
+                canceled_pending,
+                canceled_claimed,
+                canceled_running_ids,
+                canceled_paused,
+                already_terminal,
+            })
+        })
+    })
+    .await
 }
 
 pub(crate) async fn pause_task<'a>(

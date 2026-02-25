@@ -389,6 +389,29 @@ pub struct DagDto {
 }
 
 // =============================================================================
+// Batch Stop DTOs
+// =============================================================================
+
+/// Response from stopping an entire batch. Reports how many tasks were affected per status.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct StopBatchResponseDto {
+    /// The batch UUID that was stopped.
+    pub batch_id: uuid::Uuid,
+    /// Number of Waiting tasks that were canceled.
+    pub canceled_waiting: i64,
+    /// Number of Pending tasks that were canceled.
+    pub canceled_pending: i64,
+    /// Number of Claimed tasks that were canceled (on_start not yet called).
+    pub canceled_claimed: i64,
+    /// Number of Running tasks that were canceled (cancel webhooks fired if registered).
+    pub canceled_running: i64,
+    /// Number of Paused tasks that were canceled.
+    pub canceled_paused: i64,
+    /// Number of tasks already in a terminal state (Success, Failure, Canceled) — not modified.
+    pub already_terminal: i64,
+}
+
+// =============================================================================
 // Conversions
 // =============================================================================
 

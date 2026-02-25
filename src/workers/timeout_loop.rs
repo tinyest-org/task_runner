@@ -57,19 +57,23 @@ pub async fn timeout_loop(
                         );
                         // Propagate timeout failures to dependent children
                         for failed_task in &failed {
-                            if let Err(e) = propagate_to_children(
+                            let cascade_failed = match propagate_to_children(
                                 &failed_task.id,
                                 &StatusKind::Failure,
                                 &mut conn,
                             )
                             .await
                             {
-                                log::error!(
-                                    "Timeout worker: failed to propagate failure for task {}: {:?}",
-                                    failed_task.id,
-                                    e
-                                );
-                            }
+                                Ok(ids) => ids,
+                                Err(e) => {
+                                    log::error!(
+                                        "Timeout worker: failed to propagate failure for task {}: {:?}",
+                                        failed_task.id,
+                                        e
+                                    );
+                                    vec![]
+                                }
+                            };
 
                             if let Err(e) = fire_end_webhooks(
                                 evaluator.as_ref(),
@@ -84,6 +88,24 @@ pub async fn timeout_loop(
                                     failed_task.id,
                                     e
                                 );
+                            }
+
+                            // Fire on_failure webhooks for cascade-failed children
+                            for child_id in &cascade_failed {
+                                if let Err(e) = fire_end_webhooks(
+                                    evaluator.as_ref(),
+                                    child_id,
+                                    StatusKind::Failure,
+                                    &mut conn,
+                                )
+                                .await
+                                {
+                                    log::error!(
+                                        "Timeout worker: failed to fire on_failure webhooks for cascade-failed child {}: {:?}",
+                                        child_id,
+                                        e
+                                    );
+                                }
                             }
                         }
                     } else {

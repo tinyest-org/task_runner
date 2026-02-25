@@ -2,8 +2,8 @@ import "glass-ui-solid/styles.css";
 import "glass-ui-solid/theme.css";
 import { createSignal, onCleanup, Show, For } from 'solid-js';
 import { useSearchParams } from '@solidjs/router';
-import type { DagResponse, BasicTask } from './types';
-import { fetchDag } from './api';
+import type { DagResponse, BasicTask, StopBatchResponse } from './types';
+import { fetchDag, stopBatch } from './api';
 import { addRecentBatch } from './storage';
 import { AUTO_REFRESH_INTERVAL } from './constants';
 import { Input, Button, Card, useWindowManager } from 'glass-ui-solid';
@@ -27,6 +27,8 @@ export default function App() {
   const [message, setMessage] = createSignal<string | null>(
     'Enter a batch ID to visualize the task DAG',
   );
+  const [showCancelConfirm, setShowCancelConfirm] = createSignal(false);
+  const [canceling, setCanceling] = createSignal(false);
 
   const windowManager = useWindowManager();
   const windowHandles = new Map<string, ReturnType<typeof windowManager.register>>();
@@ -128,6 +130,40 @@ export default function App() {
     loadDag(bid);
   }
 
+  function hasActiveTasks(): boolean {
+    const data = dagData();
+    if (!data) return false;
+    return data.tasks.some(
+      (t) => !['Success', 'Failure', 'Canceled'].includes(t.status),
+    );
+  }
+
+  async function handleCancelBatch() {
+    const bid = batchId().trim();
+    if (!bid) return;
+
+    setCanceling(true);
+    try {
+      const result: StopBatchResponse = await stopBatch(bid);
+      const total =
+        result.canceled_waiting +
+        result.canceled_pending +
+        result.canceled_claimed +
+        result.canceled_running +
+        result.canceled_paused;
+      setError(null);
+      setMessage(`Batch stopped: ${total} task${total !== 1 ? 's' : ''} canceled`);
+      // Refresh the DAG to show updated statuses
+      await loadDag(bid);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to cancel batch';
+      setError(msg);
+    } finally {
+      setCanceling(false);
+      setShowCancelConfirm(false);
+    }
+  }
+
   onCleanup(() => {
     if (refreshTimer) clearInterval(refreshTimer);
   });
@@ -193,6 +229,16 @@ export default function App() {
               onClick={clearAllWindows}
             >
               Close All ({openTaskIds().length})
+            </Button>
+          </Show>
+          <Show when={dagData() && hasActiveTasks()}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setShowCancelConfirm(true)}
+              class="!border-red-500/40 !text-red-400 hover:!bg-red-500/20"
+            >
+              Cancel Batch
             </Button>
           </Show>
 
@@ -263,6 +309,46 @@ export default function App() {
             &times;
           </button>
         </Card>
+      </Show>
+
+      {/* Cancel batch confirmation modal */}
+      <Show when={showCancelConfirm()}>
+        <div
+          class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowCancelConfirm(false); }}
+        >
+          <Card class="w-full max-w-md border-red-500/30 p-6">
+            <h2 class="mb-3 text-lg font-semibold text-white">Cancel Batch</h2>
+            <p class="mb-2 text-sm text-white/70">
+              This will cancel all active tasks in batch:
+            </p>
+            <p class="mb-4 rounded bg-white/5 px-3 py-2 font-mono text-xs text-white/90">
+              {batchId()}
+            </p>
+            <p class="mb-6 text-sm text-red-400/80">
+              Running tasks will receive cancel webhooks. This action cannot be undone.
+            </p>
+            <div class="flex justify-end gap-3">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setShowCancelConfirm(false)}
+                disabled={canceling()}
+              >
+                Keep Running
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleCancelBatch}
+                disabled={canceling()}
+                class="!bg-red-600 hover:!bg-red-700"
+              >
+                {canceling() ? 'Canceling...' : 'Confirm Cancel'}
+              </Button>
+            </div>
+          </Card>
+        </div>
       </Show>
     </div>
   );

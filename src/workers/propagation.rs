@@ -93,13 +93,16 @@ pub(crate) async fn fire_end_webhooks<'a>(
 /// 3. Batch-decrement wait_success for children where parent succeeded AND requires_success
 /// 4. Batch-transition children to Pending where both counters reach 0
 ///
+/// Returns the list of all task IDs that were cascade-failed (recursively),
+/// so callers can fire on_failure webhooks for them after the transaction commits.
+///
 /// This uses O(1) queries per propagation level instead of O(N) per child.
 #[tracing::instrument(name = "propagate_to_children", skip(conn), fields(parent_id = %parent_id, status = ?result_status))]
 pub(crate) async fn propagate_to_children<'a>(
     parent_id: &uuid::Uuid,
     result_status: &StatusKind,
     conn: &mut Conn<'a>,
-) -> Result<(), DbError> {
+) -> Result<Vec<uuid::Uuid>, DbError> {
     use crate::schema::link::dsl as link_dsl;
     use crate::schema::task::dsl as task_dsl;
 
@@ -123,7 +126,7 @@ pub(crate) async fn propagate_to_children<'a>(
         .await?;
 
     if children_links.is_empty() {
-        return Ok(());
+        return Ok(vec![]);
     }
 
     // Split children into groups for batched operations
@@ -141,6 +144,9 @@ pub(crate) async fn propagate_to_children<'a>(
             }
         }
     }
+
+    // Collect all cascade-failed task IDs (direct + recursive)
+    let mut all_cascade_failed: Vec<uuid::Uuid> = Vec::new();
 
     // 1. Batch-mark failed children (parent failed + requires_success)
     if !fail_child_ids.is_empty() {
@@ -170,9 +176,14 @@ pub(crate) async fn propagate_to_children<'a>(
             );
         }
 
+        // Track direct failures
+        all_cascade_failed.extend_from_slice(&failed_ids);
+
         // Recursively propagate failure to each actually-failed child's dependents
         for fid in &failed_ids {
-            Box::pin(propagate_to_children(fid, &StatusKind::Failure, conn)).await?;
+            let recursive_failures =
+                Box::pin(propagate_to_children(fid, &StatusKind::Failure, conn)).await?;
+            all_cascade_failed.extend(recursive_failures);
         }
     }
 
@@ -226,7 +237,7 @@ pub(crate) async fn propagate_to_children<'a>(
         }
     }
 
-    Ok(())
+    Ok(all_cascade_failed)
 }
 
 pub async fn cancel_task<'a>(
@@ -328,7 +339,23 @@ pub async fn cancel_task<'a>(
 
     // Propagate cancellation to dependent children
     // Canceled is treated like failure for children that require success
-    propagate_to_children(&task_id, &StatusKind::Canceled, conn).await?;
+    let cascade_failed = propagate_to_children(&task_id, &StatusKind::Canceled, conn).await?;
+
+    // Fire on_failure webhooks for all cascade-failed children (best-effort)
+    for child_id in &cascade_failed {
+        match fire_end_webhooks(evaluator, child_id, StatusKind::Failure, conn).await {
+            Ok(_) => log::debug!(
+                "on_failure webhooks fired for cascade-failed child {} (parent {} canceled)",
+                child_id,
+                task_id
+            ),
+            Err(e) => log::error!(
+                "Failed to fire on_failure webhooks for cascade-failed child {}: {}",
+                child_id,
+                e
+            ),
+        }
+    }
 
     metrics::record_task_cancelled();
     Ok(())
