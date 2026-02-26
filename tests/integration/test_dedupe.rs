@@ -92,6 +92,118 @@ async fn test_bug7_dedupe_not_over_aggressive_when_metadata_is_none() {
     );
 }
 
+/// Dedup against non-Pending tasks.
+/// When a matcher specifies status=Running, the dedup check should match against Running tasks.
+#[tokio::test]
+async fn test_dedupe_against_running_task() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    // Create a task and move it to Running
+    let task1 = json!({
+        "id": "dedupe-running-1",
+        "name": "Running Dedupe Task",
+        "kind": "dedupe-run-kind",
+        "timeout": 60,
+        "metadata": {"project": "alpha"},
+        "on_start": webhook_action()
+    });
+    let created = create_tasks_ok(&app, &[task1]).await;
+    let task_id = created[0].id;
+
+    // Move to Running
+    let mut conn = state.pool.get().await.unwrap();
+    task_runner::db_operation::claim_task(&mut conn, &task_id)
+        .await
+        .unwrap();
+    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+        .await
+        .unwrap();
+    drop(conn);
+
+    // Try to create a duplicate with dedupe_strategy matching Running status
+    let task2 = json!({
+        "id": "dedupe-running-2",
+        "name": "Duplicate of Running",
+        "kind": "dedupe-run-kind",
+        "timeout": 60,
+        "metadata": {"project": "alpha"},
+        "on_start": webhook_action(),
+        "dedupe_strategy": [{
+            "kind": "dedupe-run-kind",
+            "status": "Running",
+            "fields": ["project"]
+        }]
+    });
+
+    let req = actix_web::test::TestRequest::post()
+        .uri("/task")
+        .insert_header(("requester", "test"))
+        .set_json(&vec![task2])
+        .to_request();
+    let resp = actix_web::test::call_service(&app, req).await;
+    assert_eq!(
+        resp.status(),
+        actix_web::http::StatusCode::NO_CONTENT,
+        "Task should be deduplicated against the Running task"
+    );
+}
+
+/// Dedup with status=Pending should NOT match a Running task.
+#[tokio::test]
+async fn test_dedupe_pending_does_not_match_running() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    // Create a task and move it to Running
+    let task1 = json!({
+        "id": "dedupe-nomatch-1",
+        "name": "Running No Match",
+        "kind": "dedupe-nm-kind",
+        "timeout": 60,
+        "metadata": {"project": "beta"},
+        "on_start": webhook_action()
+    });
+    let created = create_tasks_ok(&app, &[task1]).await;
+    let task_id = created[0].id;
+
+    let mut conn = state.pool.get().await.unwrap();
+    task_runner::db_operation::claim_task(&mut conn, &task_id)
+        .await
+        .unwrap();
+    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+        .await
+        .unwrap();
+    drop(conn);
+
+    // Try to create with dedupe matching Pending — should NOT match the Running task
+    let task2 = json!({
+        "id": "dedupe-nomatch-2",
+        "name": "No Match Pending",
+        "kind": "dedupe-nm-kind",
+        "timeout": 60,
+        "metadata": {"project": "beta"},
+        "on_start": webhook_action(),
+        "dedupe_strategy": [{
+            "kind": "dedupe-nm-kind",
+            "status": "Pending",
+            "fields": ["project"]
+        }]
+    });
+
+    let req = actix_web::test::TestRequest::post()
+        .uri("/task")
+        .insert_header(("requester", "test"))
+        .set_json(&vec![task2])
+        .to_request();
+    let resp = actix_web::test::call_service(&app, req).await;
+    assert_eq!(
+        resp.status(),
+        actix_web::http::StatusCode::CREATED,
+        "Pending matcher should NOT match Running task — new task should be created"
+    );
+}
+
 /// Bug #7 (variant): Two tasks with None metadata should not dedupe each other.
 #[tokio::test]
 async fn test_bug7_dedupe_two_tasks_both_no_metadata() {

@@ -20,7 +20,7 @@ pub enum UpdateTaskResult {
     NotFound,
 }
 
-#[tracing::instrument(name = "update_running_task", skip(evaluator, conn, dto), fields(task_id = %task_id))]
+#[tracing::instrument(name = "update_running_task", level = "debug", skip(evaluator, conn, dto), fields(task_id = %task_id))]
 pub async fn update_running_task<'a>(
     evaluator: &ActionExecutor,
     conn: &mut Conn<'a>,

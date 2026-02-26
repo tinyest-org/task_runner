@@ -187,16 +187,26 @@ fn run_migrations(database_url: &str) {
                             if up_sql_path.exists() {
                                 let content = fs::read_to_string(&up_sql_path).ok()?;
 
-                                let statements: Vec<String> = content
-                                    .lines()
-                                    .filter(|line| {
-                                        let upper = line.to_uppercase();
-                                        upper.contains("ALTER TYPE") && upper.contains("ADD VALUE")
-                                    })
-                                    .map(|s| make_alter_type_idempotent(s.trim()))
+                                let raw_statements: Vec<String> = content
+                                    .split(';')
+                                    .map(|s| s.trim())
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| s.to_string())
                                     .collect();
 
-                                if !statements.is_empty() {
+                                let mut has_alter_type = false;
+                                let mut statements = Vec::with_capacity(raw_statements.len());
+                                for stmt in raw_statements {
+                                    let upper = stmt.to_uppercase();
+                                    if upper.contains("ALTER TYPE") && upper.contains("ADD VALUE") {
+                                        has_alter_type = true;
+                                        statements.push(make_alter_type_idempotent(&stmt));
+                                    } else {
+                                        statements.push(stmt);
+                                    }
+                                }
+
+                                if has_alter_type {
                                     return Some((dir_name, statements));
                                 }
                             }
@@ -224,8 +234,7 @@ fn run_migrations(database_url: &str) {
                 diesel::sql_query(stmt.clone())
                     .execute(&mut conn)
                     .unwrap_or_else(|e| {
-                        eprintln!("Warning: ALTER TYPE statement may have failed (possibly already exists): {}", e);
-                        0
+                        panic!("Failed to run migration statement: {}\n{}", e, stmt);
                     });
             }
 

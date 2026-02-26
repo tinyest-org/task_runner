@@ -72,11 +72,7 @@ pub fn init_tracing(config: &TracingConfig) -> Option<TracerProvider> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_file(true)
-        .with_line_number(true);
+    let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
 
     if !config.enabled {
         // Just logging, no OTLP export

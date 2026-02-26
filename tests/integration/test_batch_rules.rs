@@ -1,6 +1,8 @@
 use crate::common::*;
 use serde_json::json;
+use task_runner::db_operation::{ClaimResult, claim_task_with_rules};
 use task_runner::dtos::UpdateBatchRulesResponseDto;
+use task_runner::models::{StatusKind, Task};
 
 /// PATCH /batch/{batch_id}/rules updates only tasks of the specified kind.
 #[tokio::test]
@@ -225,6 +227,130 @@ async fn test_update_batch_rules_not_found() {
         .to_request();
     let resp = actix_web::test::call_service(&app, req).await;
     assert_eq!(resp.status(), actix_web::http::StatusCode::NOT_FOUND);
+}
+
+/// #29: Capacity rule applied to tasks without expected_count.
+/// The candidate task MUST have expected_count set to be claimable with a capacity rule.
+/// When expected_count is None, claim_task_with_rules blocks the task.
+/// This test verifies that behavior when batch rules are updated after creation.
+#[tokio::test]
+async fn test_capacity_rule_with_no_expected_count() {
+    let (_g, state) = setup_test_app().await;
+    let app = test_service!(state);
+
+    // Create tasks WITHOUT expected_count
+    let tasks = vec![
+        json!({
+            "id": "cap-no-ec-1",
+            "name": "No Expected Count 1",
+            "kind": "cap-no-ec",
+            "timeout": 60,
+            "metadata": {"project": "test"},
+            "on_start": webhook_action()
+        }),
+        // Second task WITH expected_count for comparison
+        json!({
+            "id": "cap-with-ec",
+            "name": "With Expected Count",
+            "kind": "cap-no-ec",
+            "timeout": 60,
+            "metadata": {"project": "test"},
+            "expected_count": 50,
+            "on_start": webhook_action()
+        }),
+    ];
+
+    let created = create_tasks_ok(&app, &tasks).await;
+    let batch_id = created[0].batch_id.unwrap();
+    let task_no_ec = created[0].id;
+    let task_with_ec = created[1].id;
+
+    // Apply a capacity rule via batch rules update
+    let new_rules = json!({
+        "kind": "cap-no-ec",
+        "rules": [{
+            "type": "Capacity",
+            "max_capacity": 100,
+            "matcher": {
+                "kind": "cap-no-ec",
+                "status": "Running",
+                "fields": ["project"]
+            }
+        }]
+    });
+
+    let req = actix_web::test::TestRequest::patch()
+        .uri(&format!("/batch/{}/rules", batch_id))
+        .set_json(&new_rules)
+        .to_request();
+    let resp = actix_web::test::call_service(&app, req).await;
+    assert_eq!(resp.status(), actix_web::http::StatusCode::OK);
+
+    let body: UpdateBatchRulesResponseDto = actix_web::test::read_body_json(resp).await;
+    assert_eq!(body.updated_count, 2, "both tasks should have been updated");
+
+    // Verify the rules were applied
+    let t_no_ec = get_task_ok(&app, task_no_ec).await;
+    assert_eq!(t_no_ec.rules.0.len(), 1);
+    assert!(
+        t_no_ec.expected_count.is_none(),
+        "task should have no expected_count"
+    );
+
+    let t_with_ec = get_task_ok(&app, task_with_ec).await;
+    assert_eq!(t_with_ec.rules.0.len(), 1);
+    assert_eq!(t_with_ec.expected_count, Some(50));
+
+    let rules_for_claim = t_no_ec.rules.clone();
+
+    // Task WITHOUT expected_count should be blocked by the capacity rule
+    let task_model_no_ec = Task {
+        id: task_no_ec,
+        name: String::new(),
+        kind: "cap-no-ec".to_string(),
+        status: StatusKind::Pending,
+        timeout: 60,
+        created_at: chrono::Utc::now(),
+        started_at: None,
+        last_updated: chrono::Utc::now(),
+        metadata: json!({"project": "test"}),
+        ended_at: None,
+        start_condition: rules_for_claim.clone(),
+        wait_success: 0,
+        wait_finished: 0,
+        success: 0,
+        failures: 0,
+        failure_reason: None,
+        batch_id: Some(batch_id),
+        expected_count: None,
+        dead_end_barrier: false,
+    };
+
+    let mut conn = state.pool.get().await.unwrap();
+    let claim_result = claim_task_with_rules(&mut conn, &task_model_no_ec)
+        .await
+        .unwrap();
+    assert_eq!(
+        claim_result,
+        ClaimResult::RuleBlocked,
+        "task without expected_count should be BLOCKED by capacity rule"
+    );
+
+    // Task WITH expected_count should be claimable
+    let task_model_with_ec = Task {
+        id: task_with_ec,
+        expected_count: Some(50),
+        ..task_model_no_ec
+    };
+
+    let claim_result2 = claim_task_with_rules(&mut conn, &task_model_with_ec)
+        .await
+        .unwrap();
+    assert_eq!(
+        claim_result2,
+        ClaimResult::Claimed,
+        "task with expected_count should be claimable with capacity rule"
+    );
 }
 
 /// Returns 400 for invalid rules or empty kind.

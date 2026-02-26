@@ -3,9 +3,13 @@
 //! A service for orchestrating task execution with DAG dependencies,
 //! concurrency control, and webhook-based actions.
 
+use mimalloc::MiMalloc;
 use std::sync::Arc;
 
-use actix_web::{App, HttpServer, middleware, web};
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+use actix_web::{App, HttpServer, web};
 use actix_web_prometheus::PrometheusMetricsBuilder;
 use diesel::{Connection, PgConnection};
 use task_runner::{
@@ -83,7 +87,6 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(web::Data::new(app_data.clone()))
             .wrap(prometheus.clone())
-            .wrap(middleware::Logger::default())
             .configure(handlers::configure_routes)
     })
     .bind(("0.0.0.0", port))?

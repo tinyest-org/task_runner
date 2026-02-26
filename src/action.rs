@@ -113,7 +113,7 @@ impl ActionExecutor {
         Self { ctx, client }
     }
 
-    #[tracing::instrument(name = "webhook_execute", skip(self, action, task), fields(task_id = %task.id, action_id = %action.id))]
+    #[tracing::instrument(name = "webhook_execute", level = "debug", skip(self, action, task), fields(task_id = %task.id, action_id = %action.id))]
     pub async fn execute(
         &self,
         action: &Action,

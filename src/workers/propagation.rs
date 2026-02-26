@@ -12,7 +12,7 @@ use diesel_async::RunQueryDsl;
 /// Fire webhooks for a specific trigger kind on a task.
 /// Handles idempotency (claim/complete), action loading, and execution.
 /// Used after a transaction commits — errors are intentionally non-fatal.
-#[tracing::instrument(name = "fire_webhooks", skip(evaluator, conn), fields(task_id = %task_id, trigger_kind = ?trigger_kind))]
+#[tracing::instrument(name = "fire_webhooks", level = "debug", skip(evaluator, conn), fields(task_id = %task_id, trigger_kind = ?trigger_kind))]
 pub(crate) async fn fire_webhooks<'a>(
     evaluator: &ActionExecutor,
     task_id: &uuid::Uuid,
@@ -150,7 +150,7 @@ pub(crate) async fn fire_end_webhooks_with_cascade<'a>(
 /// so callers can fire on_failure webhooks for them after the transaction commits.
 ///
 /// This uses O(1) queries per propagation level instead of O(N) per child.
-#[tracing::instrument(name = "propagate_to_children", skip(conn), fields(parent_id = %parent_id, status = ?result_status))]
+#[tracing::instrument(name = "propagate_to_children", level = "debug", skip(conn), fields(parent_id = %parent_id, status = ?result_status))]
 pub(crate) async fn propagate_to_children<'a>(
     parent_id: &uuid::Uuid,
     result_status: &StatusKind,
