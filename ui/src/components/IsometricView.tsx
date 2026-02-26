@@ -5,12 +5,15 @@ import type { DagResponse, BasicTask } from '../types';
 import { STATUS_COLORS } from '../constants';
 import { computeGroupLayout, computeStatusLayout } from '../lib/isometricLayout';
 import type { GroupLayout } from '../lib/isometricLayout';
+import type { CriticalPath } from '../lib/criticalPath';
 
 interface Props {
   data: DagResponse | null;
+  criticalPath?: CriticalPath | null;
   onNodeClick: (task: BasicTask) => void;
   onBackgroundClick: () => void;
   groupBy?: 'dag' | 'status';
+  onResetCamera?: (fn: () => void) => void;
 }
 
 // Layout constants
@@ -18,8 +21,21 @@ const TASK_BOX_SIZE = 0.8;
 const TASK_SPACING = 1.1;
 const GROUP_PADDING = 0.5;
 
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 60) return `${m}m ${rs}s`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `${h}h ${rm}m`;
+}
+
 // Reusable materials / geometries
 const taskGeometry = new THREE.BoxGeometry(TASK_BOX_SIZE, TASK_BOX_SIZE, TASK_BOX_SIZE);
+const arrowGeometry = new THREE.ConeGeometry(0.12, 0.3, 6);
 
 function colorToHex(color: string): number {
   return parseInt(color.replace('#', ''), 16);
@@ -113,7 +129,7 @@ export default function IsometricView(props: Props) {
     // Tooltip
     tooltipEl = document.createElement('div');
     tooltipEl.style.cssText =
-      'position:fixed;pointer-events:none;background:rgba(0,0,0,0.85);color:#fff;padding:6px 10px;border-radius:4px;font-size:12px;font-family:monospace;display:none;z-index:1000;white-space:nowrap;';
+      'position:fixed;pointer-events:none;background:rgba(0,0,0,0.9);color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;font-family:monospace;display:none;z-index:1000;white-space:pre;line-height:1.5;border:1px solid rgba(255,255,255,0.1);';
     containerEl.appendChild(tooltipEl);
 
     // Event listeners
@@ -148,6 +164,15 @@ export default function IsometricView(props: Props) {
       renderer!.render(scene!, camera!);
     }
     animate();
+
+    // Expose camera reset via prop
+    props.onResetCamera?.(() => {
+      if (!camera || !controls) return;
+      camera.position.set(-95, 30, 40);
+      camera.lookAt(0, 0, 0);
+      controls.target.set(0, 0, 0);
+      controls.update();
+    });
   }
 
   function onResize() {
@@ -172,9 +197,13 @@ export default function IsometricView(props: Props) {
     const taskMeshes = Array.from(meshToTask.keys()) as THREE.Mesh[];
     const intersects = raycaster.intersectObjects(taskMeshes);
 
-    // Reset previous hover
+    // Reset previous hover (restore critical-path emissive if applicable)
     if (hoveredMesh) {
-      (hoveredMesh.material as THREE.MeshLambertMaterial).emissive.setHex(0x000000);
+      const prevTask = meshToTask.get(hoveredMesh);
+      const isCritical = prevTask && props.criticalPath?.nodeIds.has(prevTask.id);
+      (hoveredMesh.material as THREE.MeshLambertMaterial).emissive.setHex(
+        isCritical ? 0x665500 : 0x000000,
+      );
       hoveredMesh = null;
     }
     if (tooltipEl) tooltipEl.style.display = 'none';
@@ -188,7 +217,24 @@ export default function IsometricView(props: Props) {
         renderer.domElement.style.cursor = 'pointer';
 
         if (tooltipEl) {
-          tooltipEl.textContent = `${task.name} [${task.status}] (${task.kind})`;
+          const lines = [`${task.name}`, `${task.status} | ${task.kind}`];
+          if (task.success || task.failures) {
+            let counters = `\u2713 ${task.success}  \u2717 ${task.failures}`;
+            if (task.expected_count) {
+              const pct = Math.min(
+                100,
+                Math.round(((task.success + task.failures) / task.expected_count) * 100),
+              );
+              counters += `  (${pct}%)`;
+            }
+            lines.push(counters);
+          }
+          if (task.started_at) {
+            const start = new Date(task.started_at).getTime();
+            const end = task.ended_at ? new Date(task.ended_at).getTime() : Date.now();
+            lines.push(`\u23f1 ${formatDuration(end - start)}`);
+          }
+          tooltipEl.textContent = lines.join('\n');
           tooltipEl.style.display = 'block';
           tooltipEl.style.left = `${event.clientX + 12}px`;
           tooltipEl.style.top = `${event.clientY + 12}px`;
@@ -219,8 +265,8 @@ export default function IsometricView(props: Props) {
 
   function disposeObject(obj: THREE.Object3D) {
     if (obj instanceof THREE.Mesh) {
-      // Don't dispose the shared taskGeometry — it's reused across rebuilds
-      if (obj.geometry !== taskGeometry) {
+      // Don't dispose shared geometries — they're reused across rebuilds
+      if (obj.geometry !== taskGeometry && obj.geometry !== arrowGeometry) {
         obj.geometry.dispose();
       }
       if (Array.isArray(obj.material)) {
@@ -377,15 +423,18 @@ export default function IsometricView(props: Props) {
       }
     }
 
-    // Dependency links
+    // Dependency links with arrow tips
     for (const link of data.links) {
       const from = taskPositions.get(link.parent_id);
       const to = taskPositions.get(link.child_id);
       if (!from || !to) continue;
 
+      const edgeId = `${link.parent_id}-${link.child_id}`;
+      const color = link.requires_success ? 0x27ae60 : 0x666666;
+
+      // Line
       const points = [from, to];
       const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      const color = link.requires_success ? 0x27ae60 : 0x666666;
       const material = new THREE.LineBasicMaterial({
         color,
         transparent: true,
@@ -393,7 +442,28 @@ export default function IsometricView(props: Props) {
       });
       const line = new THREE.Line(geometry, material);
       line.userData.isLink = true;
+      line.userData.edgeId = edgeId;
+      line.userData.originalColor = color;
       scene.add(line);
+
+      // Arrow cone at target end
+      const dir = new THREE.Vector3().subVectors(to, from).normalize();
+      const arrowPos = new THREE.Vector3().lerpVectors(from, to, 0.85);
+      const arrowMat = new THREE.MeshLambertMaterial({ color, transparent: true, opacity: 0.8 });
+      const cone = new THREE.Mesh(arrowGeometry, arrowMat);
+      cone.position.copy(arrowPos);
+      // Orient cone along the direction (guard anti-parallel case)
+      const up = new THREE.Vector3(0, 1, 0);
+      if (dir.y < -0.999) {
+        cone.rotation.set(Math.PI, 0, 0);
+      } else {
+        const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
+        cone.setRotationFromQuaternion(quat);
+      }
+      cone.userData.isLink = true;
+      cone.userData.edgeId = edgeId;
+      cone.userData.originalColor = color;
+      scene.add(cone);
     }
 
     // Kind labels placed at each group's position
@@ -427,7 +497,6 @@ export default function IsometricView(props: Props) {
     if (tasks.length !== currentNodeIds.size) return true;
     for (const t of tasks) {
       if (!currentNodeIds.has(t.id)) return true;
-      if (currentStatuses.get(t.id) !== t.status) return true;
     }
     const newEdgeIds = new Set(links.map((l) => `${l.parent_id}-${l.child_id}`));
     if (newEdgeIds.size !== currentEdgeIds.size) return true;
@@ -604,6 +673,54 @@ export default function IsometricView(props: Props) {
 
     currentStatuses = new Map(data.tasks.map((t) => [t.id, t.status]));
   }
+
+  // ── Critical path highlighting ──
+
+  function applyCriticalPath(cp: CriticalPath | null | undefined) {
+    // Highlight critical path nodes
+    for (const [taskId, mesh] of taskToMesh) {
+      const mat = mesh.material as THREE.MeshLambertMaterial;
+      if (cp && cp.nodeIds.has(taskId)) {
+        mat.emissive.setHex(0x665500);
+      } else {
+        mat.emissive.setHex(0x000000);
+      }
+    }
+    // Highlight critical path links
+    if (!scene) return;
+    scene.traverse((obj) => {
+      if (!obj.userData.isLink || !obj.userData.edgeId) return;
+      const edgeId = obj.userData.edgeId as string;
+      const isCritical = cp && cp.edgeIds.has(edgeId);
+      const origColor = (obj.userData.originalColor as number) ?? 0x666666;
+      if (obj instanceof THREE.Line) {
+        const mat = obj.material as THREE.LineBasicMaterial;
+        if (isCritical) {
+          mat.color.setHex(0xffd700);
+          mat.opacity = 1.0;
+        } else {
+          mat.color.setHex(origColor);
+          mat.opacity = 0.6;
+        }
+      } else if (obj instanceof THREE.Mesh && obj.geometry === arrowGeometry) {
+        const mat = obj.material as THREE.MeshLambertMaterial;
+        if (isCritical) {
+          mat.color.setHex(0xffd700);
+          mat.opacity = 1.0;
+        } else {
+          mat.color.setHex(origColor);
+          mat.opacity = 0.8;
+        }
+      }
+    });
+  }
+
+  createEffect(
+    on(
+      () => props.criticalPath,
+      (cp) => applyCriticalPath(cp),
+    ),
+  );
 
   // ── Effect ──
 

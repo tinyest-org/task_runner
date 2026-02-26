@@ -18,3 +18,16 @@ export function addRecentBatch(id: string): void {
   if (recents.length > MAX_RECENT) recents.length = MAX_RECENT;
   localStorage.setItem(RECENT_BATCHES_KEY, JSON.stringify(recents));
 }
+
+// Theme
+const THEME_KEY = 'task-runner-theme';
+export type Theme = 'dark' | 'light';
+
+export function getTheme(): Theme {
+  const v = localStorage.getItem(THEME_KEY);
+  return v === 'light' ? 'light' : 'dark';
+}
+
+export function setTheme(theme: Theme): void {
+  localStorage.setItem(THEME_KEY, theme);
+}

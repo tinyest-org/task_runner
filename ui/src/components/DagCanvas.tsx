@@ -1,6 +1,7 @@
 import { onMount, onCleanup, createEffect, on } from 'solid-js';
 import type { DagResponse, BasicTask } from '../types';
 import { STATUS_COLORS } from '../constants';
+import type { CriticalPath } from '../lib/criticalPath';
 import cytoscape from 'cytoscape';
 import cytoscapeDagre from 'cytoscape-dagre';
 
@@ -8,6 +9,7 @@ cytoscapeDagre(cytoscape);
 
 interface Props {
   data: DagResponse | null;
+  criticalPath?: CriticalPath | null;
   onNodeClick: (task: BasicTask) => void;
   onBackgroundClick: () => void;
   ref?: (api: DagCanvasAPI) => void;
@@ -45,6 +47,7 @@ export default function DagCanvas(props: Props) {
   let cy: cytoscape.Core | null = null;
   let currentNodeIds = new Set<string>();
   let currentEdgeIds = new Set<string>();
+  let currentStatuses = new Map<string, string>();
 
   function initCytoscape(elements: cytoscape.ElementDefinition[]) {
     if (cy) cy.destroy();
@@ -91,6 +94,23 @@ export default function DagCanvas(props: Props) {
             'border-color': '#fff',
           },
         },
+        {
+          selector: 'node.critical-path',
+          style: {
+            'border-width': 3,
+            'border-color': '#ffd700',
+            'overlay-opacity': 0.08,
+            'overlay-color': '#ffd700',
+          },
+        },
+        {
+          selector: 'edge.critical-path',
+          style: {
+            width: 4,
+            'line-color': '#ffd700',
+            'target-arrow-color': '#ffd700',
+          },
+        },
       ],
       layout: {
         name: 'dagre',
@@ -132,8 +152,21 @@ export default function DagCanvas(props: Props) {
     for (const task of tasks) {
       const node = cy.getElementById(task.id);
       if (node.length === 0) continue;
-      node.data(buildNodeData(task));
+      const oldStatus = currentStatuses.get(task.id);
+      const newData = buildNodeData(task);
+      node.data(newData);
+
+      // Flash border on status change
+      if (oldStatus && oldStatus !== task.status) {
+        node.stop();
+        node.style({ 'border-width': 5, 'border-color': '#ffffff' });
+        node.animate(
+          { style: { 'border-width': 2, 'border-color': newData.borderColor } },
+          { duration: 600 },
+        );
+      }
     }
+    currentStatuses = new Map(tasks.map((t) => [t.id, t.status]));
   }
 
   function structureChanged(tasks: BasicTask[], links: DagResponse['links']): boolean {
@@ -185,6 +218,25 @@ export default function DagCanvas(props: Props) {
           initCytoscape(elements);
           currentNodeIds = new Set(data.tasks.map((t) => t.id));
           currentEdgeIds = new Set(data.links.map((l) => `${l.parent_id}-${l.child_id}`));
+          currentStatuses = new Map(data.tasks.map((t) => [t.id, t.status]));
+        }
+      },
+    ),
+  );
+
+  // Apply critical path highlighting
+  createEffect(
+    on(
+      () => props.criticalPath,
+      (cp) => {
+        if (!cy) return;
+        cy.elements().removeClass('critical-path');
+        if (!cp) return;
+        for (const nodeId of cp.nodeIds) {
+          cy.getElementById(nodeId).addClass('critical-path');
+        }
+        for (const edgeId of cp.edgeIds) {
+          cy.getElementById(edgeId).addClass('critical-path');
         }
       },
     ),
