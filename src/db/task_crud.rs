@@ -365,6 +365,14 @@ pub(crate) fn capacity_lock_key(rule: &CapacityRule, task_metadata: &serde_json:
 ///
 /// This prevents the TOCTOU race where two workers both see count < max and both claim,
 /// exceeding the concurrency limit.
+///
+/// Uses a two-query approach within the transaction:
+/// 1. Acquire all advisory locks in one round-trip (via unnest)
+/// 2. Check all concurrency + capacity rules and conditionally claim in a single CTE
+///
+/// This reduces the number of SQL round-trips from N+M+K+1 (N locks + M concurrency
+/// checks + K capacity checks + 1 claim) to exactly 2, minimizing time spent holding
+/// advisory locks and reducing contention between workers.
 pub async fn claim_task_with_rules<'a>(
     conn: &mut Conn<'a>,
     t: &Task,
@@ -380,12 +388,21 @@ pub async fn claim_task_with_rules<'a>(
     }
 
     // Pre-compute everything we need before entering the transaction closure.
-    // Build lock keys and rule checks from &t references to avoid cloning task_metadata.
     let task_id = t.id;
 
-    let mut lock_keys = Vec::new();
-    let mut rule_checks: Vec<(crate::rule::ConcurencyRule, serde_json::Value, bool)> = Vec::new();
-    let mut capacity_checks: Vec<(CapacityRule, serde_json::Value)> = Vec::new();
+    let mut lock_keys: Vec<i64> = Vec::new();
+
+    // Concurrency rule arrays (parallel arrays, one entry per rule)
+    let mut conc_kinds: Vec<String> = Vec::new();
+    let mut conc_meta_texts: Vec<String> = Vec::new();
+    let mut conc_statuses: Vec<StatusKind> = Vec::new();
+    let mut conc_include_claimed: Vec<bool> = Vec::new();
+    let mut conc_thresholds: Vec<i64> = Vec::new();
+
+    // Capacity rule arrays (parallel arrays, one entry per rule)
+    let mut cap_kinds: Vec<String> = Vec::new();
+    let mut cap_meta_texts: Vec<String> = Vec::new();
+    let mut cap_max_capacities: Vec<i64> = Vec::new();
 
     for strategy in rules {
         match strategy {
@@ -414,8 +431,23 @@ pub async fn claim_task_with_rules<'a>(
 
                 let lock_key = concurrency_lock_key(concurrency_rule, &t.metadata);
                 let is_same_kind = concurrency_rule.matcher.kind == t.kind;
+                let include_claimed = concurrency_rule.matcher.status == StatusKind::Running;
+
+                // Pre-compute threshold for the SQL check (`count >= threshold` means blocked):
+                // is_same_kind  → count < max  → blocked when count >= max
+                // !is_same_kind → count <= max → blocked when count >= max + 1
+                let threshold = if is_same_kind {
+                    concurrency_rule.max_concurency as i64
+                } else {
+                    (concurrency_rule.max_concurency + 1) as i64
+                };
+
                 lock_keys.push(lock_key);
-                rule_checks.push((concurrency_rule.clone(), m, is_same_kind));
+                conc_kinds.push(concurrency_rule.matcher.kind.clone());
+                conc_meta_texts.push(m.to_string());
+                conc_statuses.push(concurrency_rule.matcher.status);
+                conc_include_claimed.push(include_claimed);
+                conc_thresholds.push(threshold);
             }
             Strategy::Capacity(capacity_rule) => {
                 let mut m = json!({});
@@ -451,7 +483,9 @@ pub async fn claim_task_with_rules<'a>(
 
                 let lock_key = capacity_lock_key(capacity_rule, &t.metadata);
                 lock_keys.push(lock_key);
-                capacity_checks.push((capacity_rule.clone(), m));
+                cap_kinds.push(capacity_rule.matcher.kind.clone());
+                cap_meta_texts.push(m.to_string());
+                cap_max_capacities.push(capacity_rule.max_capacity as i64);
             }
         }
     }
@@ -462,87 +496,110 @@ pub async fn claim_task_with_rules<'a>(
 
     run_in_transaction(conn, |conn| {
         Box::pin(async move {
-            // Acquire all advisory locks (released automatically on COMMIT/ROLLBACK)
-            for key in &lock_keys {
-                diesel::sql_query(format!("SELECT pg_advisory_xact_lock({})", key))
-                    .execute(&mut *conn)
-                    .await?;
-            }
-
-            // Check all concurrency rules
-            for (concurrency_rule, metadata_filter, is_same_kind) in &rule_checks {
-                use crate::schema::task::dsl;
-                use diesel::PgJsonbExpressionMethods;
-
-                let mut query = dsl::task
-                    .into_boxed()
-                    .filter(dsl::kind.eq(&concurrency_rule.matcher.kind))
-                    .filter(dsl::metadata.contains(metadata_filter.clone()));
-
-                if concurrency_rule.matcher.status == StatusKind::Running {
-                    query = query.filter(
-                        dsl::status
-                            .eq(StatusKind::Running)
-                            .or(dsl::status.eq(StatusKind::Claimed)),
-                    );
-                } else {
-                    query = query.filter(dsl::status.eq(&concurrency_rule.matcher.status));
-                }
-
-                let count = query.count().get_result::<i64>(&mut *conn).await?;
-
-                let allowed = if *is_same_kind {
-                    count < concurrency_rule.max_concurency.into()
-                } else {
-                    count <= concurrency_rule.max_concurency.into()
-                };
-
-                if !allowed {
-                    return Ok(ClaimResult::RuleBlocked);
-                }
-            }
-
-            // Check all capacity rules
-            #[derive(diesel::QueryableByName)]
-            struct CapacitySum {
-                #[diesel(sql_type = diesel::sql_types::BigInt)]
-                total: i64,
-            }
-
-            for (capacity_rule, metadata_filter) in &capacity_checks {
-                let sum: CapacitySum = diesel::sql_query(
-                    "SELECT COALESCE(SUM(GREATEST(COALESCE(expected_count, 0) - success - failures, 0)), 0) as total \
-                     FROM task \
-                     WHERE kind = $1 \
-                     AND (status = 'running' OR status = 'claimed') \
-                     AND metadata @> $2"
-                )
-                .bind::<diesel::sql_types::Text, _>(&capacity_rule.matcher.kind)
-                .bind::<diesel::sql_types::Jsonb, _>(metadata_filter)
-                .get_result(&mut *conn)
-                .await?;
-
-                if sum.total >= capacity_rule.max_capacity as i64 {
-                    return Ok(ClaimResult::RuleBlocked);
-                }
-            }
-
-            // All rules passed — claim the task
-            use crate::schema::task::dsl;
-            use diesel::dsl::now;
-
-            let updated_count = diesel::update(
-                dsl::task.filter(dsl::id.eq(task_id).and(dsl::status.eq(StatusKind::Pending))),
+            // Query 1: Acquire all advisory locks in one round-trip.
+            // Locks are released automatically on COMMIT/ROLLBACK.
+            diesel::sql_query(
+                "SELECT pg_advisory_xact_lock(k) FROM unnest($1::bigint[]) AS k",
             )
-            .set((
-                dsl::status.eq(StatusKind::Claimed),
-                dsl::last_updated.eq(now),
-            ))
+            .bind::<diesel::sql_types::Array<diesel::sql_types::BigInt>, _>(&lock_keys)
             .execute(&mut *conn)
             .await?;
 
-            if updated_count == 1 {
+            // Query 2: Check all concurrency + capacity rules and conditionally claim
+            // the task, all in a single CTE. Rule parameters are passed as parallel
+            // arrays and unpacked via unnest.
+            //
+            // - conc_rules: one row per concurrency rule
+            // - conc_blocked: rows where the concurrency count >= threshold
+            // - cap_rules: one row per capacity rule
+            // - cap_blocked: rows where the capacity sum >= max
+            // - rules_check: single boolean — true iff no rule is blocked
+            // - claim_result: conditional UPDATE, only executes if rules_check.ok is true
+            #[derive(diesel::QueryableByName)]
+            struct ClaimCheckRow {
+                #[diesel(sql_type = diesel::sql_types::Bool)]
+                rules_passed: bool,
+                #[diesel(sql_type = diesel::sql_types::Bool)]
+                claimed: bool,
+            }
+
+            // Note: meta_text values are produced by serde_json::Value::to_string(), which
+            // always emits valid JSON. The SQL casts them back via `::jsonb`. This is safe but
+            // less type-safe than the old code which passed metadata as Diesel's Jsonb type
+            // directly — Diesel's sql_query bind API does not support binding Jsonb arrays, so
+            // we pass them as text and cast in SQL.
+            let row: ClaimCheckRow = diesel::sql_query(
+                r#"
+                WITH conc_rules AS (
+                    SELECT ord, kind, meta_text, status_val, include_claimed, threshold
+                    FROM unnest($1::text[], $2::text[], $3::status_kind[], $4::bool[], $5::bigint[])
+                    WITH ORDINALITY AS r(kind, meta_text, status_val, include_claimed, threshold, ord)
+                ),
+                conc_blocked AS (
+                    SELECT r.ord
+                    FROM conc_rules r
+                    WHERE (
+                        SELECT COUNT(*)
+                        FROM task t
+                        WHERE t.kind = r.kind
+                          AND t.metadata @> r.meta_text::jsonb
+                          AND (
+                              t.status = r.status_val
+                              OR (r.include_claimed AND t.status = 'claimed')
+                          )
+                    ) >= r.threshold
+                ),
+                cap_rules AS (
+                    SELECT ord, kind, meta_text, max_cap
+                    FROM unnest($6::text[], $7::text[], $8::bigint[])
+                    WITH ORDINALITY AS r(kind, meta_text, max_cap, ord)
+                ),
+                cap_blocked AS (
+                    SELECT r.ord
+                    FROM cap_rules r
+                    WHERE (
+                        SELECT COALESCE(SUM(GREATEST(COALESCE(t.expected_count, 0) - t.success - t.failures, 0)), 0)
+                        FROM task t
+                        WHERE t.kind = r.kind
+                          AND (t.status = 'running' OR t.status = 'claimed')
+                          AND t.metadata @> r.meta_text::jsonb
+                    ) >= r.max_cap
+                ),
+                rules_check AS (
+                    SELECT
+                        NOT EXISTS (SELECT 1 FROM conc_blocked)
+                        AND NOT EXISTS (SELECT 1 FROM cap_blocked) AS ok
+                ),
+                claim_result AS (
+                    UPDATE task SET status = 'claimed', last_updated = now()
+                    WHERE id = $9 AND status = 'pending'
+                      AND (SELECT ok FROM rules_check)
+                    RETURNING id
+                )
+                SELECT
+                    (SELECT ok FROM rules_check) AS rules_passed,
+                    EXISTS (SELECT 1 FROM claim_result) AS claimed
+                "#,
+            )
+            .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(&conc_kinds)
+            .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(&conc_meta_texts)
+            .bind::<diesel::sql_types::Array<crate::schema::sql_types::StatusKind>, _>(&conc_statuses)
+            .bind::<diesel::sql_types::Array<diesel::sql_types::Bool>, _>(&conc_include_claimed)
+            .bind::<diesel::sql_types::Array<diesel::sql_types::BigInt>, _>(&conc_thresholds)
+            .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(&cap_kinds)
+            .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(&cap_meta_texts)
+            .bind::<diesel::sql_types::Array<diesel::sql_types::BigInt>, _>(&cap_max_capacities)
+            .bind::<diesel::sql_types::Uuid, _>(task_id)
+            // INVARIANT: The final SELECT (no FROM/WHERE) always produces exactly 1 row,
+            // so get_result is safe. If this query is ever modified to add filtering on the
+            // outer SELECT, it must switch to get_results + handle the empty case.
+            .get_result(&mut *conn)
+            .await?;
+
+            if row.claimed {
                 Ok(ClaimResult::Claimed)
+            } else if !row.rules_passed {
+                Ok(ClaimResult::RuleBlocked)
             } else {
                 Ok(ClaimResult::AlreadyClaimed)
             }
