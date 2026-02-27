@@ -3,6 +3,8 @@ import type { BasicTask, TaskDetail, ActionDto, Strategy } from '../types';
 import { fetchTask, cancelTask } from '../api';
 import StatusBadge from './StatusBadge';
 import { JsonViewer, urlRenderer, Window, Collapsible, Button } from 'glass-ui-solid';
+import { formatDurationFromDates, formatDate } from '../lib/format';
+import ConfirmModal from './ConfirmModal';
 
 const WINDOW_OFFSET = 30;
 
@@ -13,27 +15,6 @@ interface Props {
   onCanceled?: () => void;
   zIndex: () => number;
   onFocus: () => void;
-}
-
-function formatDuration(startStr: string | null, endStr: string | null): string {
-  if (!startStr) return '-';
-  const start = new Date(startStr).getTime();
-  const end = endStr ? new Date(endStr).getTime() : Date.now();
-  const ms = end - start;
-  if (ms < 0) return '-';
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const remSecs = secs % 60;
-  if (mins < 60) return `${mins}m ${remSecs}s`;
-  const hrs = Math.floor(mins / 60);
-  const remMins = mins % 60;
-  return `${hrs}h ${remMins}m ${remSecs}s`;
-}
-
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return '-';
-  return new Date(dateStr).toLocaleString();
 }
 
 function triggerLabel(action: ActionDto): string {
@@ -62,7 +43,10 @@ export default function TaskInfoPanel(props: Props) {
   setLoading(true);
   fetchTask(props.task.id)
     .then((d) => setDetail(d))
-    .catch(() => setDetail(null))
+    .catch((e) => {
+      console.warn('Failed to fetch task detail:', props.task.id, e);
+      setDetail(null);
+    })
     .finally(() => setLoading(false));
 
   // Refresh detail when task data updates (e.g. auto-refresh)
@@ -72,7 +56,7 @@ export default function TaskInfoPanel(props: Props) {
       () => {
         fetchTask(props.task.id)
           .then((d) => setDetail(d))
-          .catch(() => {});
+          .catch((e) => console.warn('Failed to refresh task detail:', props.task.id, e));
       },
       { defer: true },
     ),
@@ -148,7 +132,7 @@ export default function TaskInfoPanel(props: Props) {
         <span
           class={`font-mono text-xs ${isRunning() ? 'text-blue-400' : 'text-white/90'}`}
         >
-          {formatDuration(task().started_at, task().ended_at)}
+          {formatDurationFromDates(task().started_at, task().ended_at)}
         </span>
       </div>
       <InfoRow label="Success" value={String(task().success)} />
@@ -300,7 +284,7 @@ export default function TaskInfoPanel(props: Props) {
               <Button
                 variant="secondary"
                 size="sm"
-                class="!border-red-500/40 !text-red-400 hover:!bg-red-500/20 w-full"
+                class="border-red-500/40! text-red-400! hover:bg-red-500/20! w-full"
                 onClick={() => setShowCancelConfirm(true)}
               >
                 Cancel Task
@@ -328,7 +312,7 @@ export default function TaskInfoPanel(props: Props) {
               <Button
                 variant="primary"
                 size="sm"
-                class="!bg-red-600 hover:!bg-red-700 flex-1"
+                class="bg-red-600! hover:bg-red-700! flex-1"
                 onClick={handleCancel}
                 disabled={canceling()}
               >

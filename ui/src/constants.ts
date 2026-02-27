@@ -33,4 +33,16 @@ export const ALL_STATUSES: TaskStatus[] = [
   'Canceled',
 ];
 
+/** Status ordering for display (active statuses first). */
+export const STATUS_ORDER: TaskStatus[] = [
+  'Running',
+  'Claimed',
+  'Pending',
+  'Waiting',
+  'Success',
+  'Failure',
+  'Paused',
+  'Canceled',
+];
+
 export const AUTO_REFRESH_INTERVAL = 5000;

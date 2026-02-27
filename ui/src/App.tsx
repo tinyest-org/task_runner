@@ -3,6 +3,7 @@ import "glass-ui-solid/theme.css";
 import { createSignal, createContext, useContext, onMount } from 'solid-js';
 import type { JSX } from 'solid-js';
 import ToastContainer from './components/ToastContainer';
+import ErrorBoundary from './components/ErrorBoundary';
 import { getTheme, setTheme as persistTheme, type Theme } from './storage';
 
 interface ThemeCtx {
@@ -41,7 +42,9 @@ export default function App(props: { children?: JSX.Element }) {
         class="flex h-screen flex-col transition-colors duration-300"
         style={{ background: 'var(--bg-app)' }}
       >
-        {props.children}
+        <ErrorBoundary>
+          {props.children}
+        </ErrorBoundary>
         <ToastContainer />
       </div>
     </ThemeContext.Provider>

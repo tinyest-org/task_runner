@@ -4,23 +4,22 @@ import type { DagResponse, BasicTask, StopBatchResponse, TaskStatus, UpdateBatch
 import { fetchDag, stopBatch, cancelTask } from '../api';
 import { addRecentBatch } from '../storage';
 import { AUTO_REFRESH_INTERVAL } from '../constants';
-import { Button, Card, useWindowManager } from 'glass-ui-solid';
+import { Card, useWindowManager } from 'glass-ui-solid';
 import DagCanvas, { type DagCanvasAPI } from '../components/DagCanvas';
 import IsometricView from '../components/IsometricView';
 import TaskInfoPanel from '../components/TaskInfoPanel';
 import Legend from '../components/Legend';
-import StatsBar from '../components/StatsBar';
-import StatusFilter from '../components/StatusFilter';
-import KindFilter from '../components/KindFilter';
 import TaskTable from '../components/TaskTable';
 import TimelineView from '../components/TimelineView';
 import BatchRulesEditor from '../components/BatchRulesEditor';
-import BatchProgress from '../components/BatchProgress';
 import KeyboardHelp from '../components/KeyboardHelp';
+import DagToolbar from '../components/DagToolbar';
+import ConfirmModal from '../components/ConfirmModal';
 import { notifyStatusChanges } from '../components/ToastContainer';
 import { computeCriticalPath, type CriticalPath } from '../lib/criticalPath';
 import { exportTasksCsv } from '../lib/exportCsv';
 import { useTheme } from '../App';
+import ErrorBoundary from '../components/ErrorBoundary';
 
 export default function DagPage() {
   const params = useParams<{ batchId: string }>();
@@ -133,8 +132,8 @@ export default function DagPage() {
 
     if (isNewBatch) {
       clearAllWindows();
-      setActiveFilters(new Set());
-      setActiveKinds(new Set());
+      setActiveFilters(new Set<TaskStatus>());
+      setActiveKinds(new Set<string>());
     }
 
     setLoading(true);
@@ -321,213 +320,38 @@ export default function DagPage() {
 
   return (
     <div class="flex flex-1 flex-col overflow-hidden">
-      {/* Toolbar */}
-      <header class="glass-navbar relative z-10 flex flex-wrap items-center gap-3 px-5 py-3">
-        {/* Breadcrumb */}
-        <div class="flex items-center gap-2 text-sm">
-          <button
-            class="text-white/50 transition-colors hover:text-white"
-            onClick={() => navigate('/')}
-          >
-            Batches
-          </button>
-          <span class="text-white/30">/</span>
-          <span class="font-mono text-rose-400" title={params.batchId}>
-            {batchIdShort()}
-          </span>
-        </div>
-
-        <div class="flex flex-wrap items-center gap-2">
-          <div class="flex overflow-hidden rounded-md border border-white/20">
-            <button
-              title="2D DAG view (1)"
-              class="px-2.5 py-1 text-xs font-medium transition-colors"
-              classList={{
-                'bg-white/15 text-white': viewMode() === 'dag',
-                'text-white/50 hover:bg-white/5 hover:text-white/80': viewMode() !== 'dag',
-              }}
-              disabled={!dagData()}
-              onClick={() => setViewMode('dag')}
-            >
-              2D
-            </button>
-            <button
-              title="3D isometric view (2)"
-              class="border-x border-white/20 px-2.5 py-1 text-xs font-medium transition-colors"
-              classList={{
-                'bg-white/15 text-white': viewMode() === 'iso',
-                'text-white/50 hover:bg-white/5 hover:text-white/80': viewMode() !== 'iso',
-              }}
-              disabled={!dagData()}
-              onClick={() => setViewMode('iso')}
-            >
-              3D
-            </button>
-            <button
-              title="Table view (3)"
-              class="border-r border-white/20 px-2.5 py-1 text-xs font-medium transition-colors"
-              classList={{
-                'bg-white/15 text-white': viewMode() === 'table',
-                'text-white/50 hover:bg-white/5 hover:text-white/80': viewMode() !== 'table',
-              }}
-              disabled={!dagData()}
-              onClick={() => setViewMode('table')}
-            >
-              Table
-            </button>
-            <button
-              title="Timeline / Gantt view (4)"
-              class="px-2.5 py-1 text-xs font-medium transition-colors"
-              classList={{
-                'bg-white/15 text-white': viewMode() === 'timeline',
-                'text-white/50 hover:bg-white/5 hover:text-white/80': viewMode() !== 'timeline',
-              }}
-              disabled={!dagData()}
-              onClick={() => setViewMode('timeline')}
-            >
-              Timeline
-            </button>
-          </div>
-          <Show when={viewMode() === 'dag' || viewMode() === 'iso'}>
-            <Button
-              variant="secondary"
-              size="sm"
-              title="Fit to viewport (F)"
-              onClick={() => {
-                if (viewMode() === 'dag') canvasApi?.fit();
-                else resetIsoCamera?.();
-              }}
-              disabled={!dagData()}
-            >
-              Fit View
-            </Button>
-          </Show>
-          <Show when={viewMode() === 'iso' && dagData()}>
-            <div class="flex items-center gap-1">
-              <span class="text-xs text-white/40">Group:</span>
-              <div class="flex overflow-hidden rounded-md border border-white/20">
-                <button
-                  class="px-2 py-0.5 text-xs font-medium transition-colors"
-                  classList={{
-                    'bg-white/15 text-white': isoGroupBy() === 'dag',
-                    'text-white/50 hover:bg-white/5 hover:text-white/80': isoGroupBy() !== 'dag',
-                  }}
-                  onClick={() => setIsoGroupBy('dag')}
-                >
-                  DAG
-                </button>
-                <button
-                  class="border-l border-white/20 px-2 py-0.5 text-xs font-medium transition-colors"
-                  classList={{
-                    'bg-white/15 text-white': isoGroupBy() === 'status',
-                    'text-white/50 hover:bg-white/5 hover:text-white/80':
-                      isoGroupBy() !== 'status',
-                  }}
-                  onClick={() => setIsoGroupBy('status')}
-                >
-                  Status
-                </button>
-              </div>
-            </div>
-          </Show>
-
-          {/* Critical path toggle */}
-          <Show when={dagData()}>
-            <button
-              title="Toggle critical path (C)"
-              class="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors"
-              classList={{
-                'border-amber-400/40 bg-amber-400/15 text-amber-300': showCriticalPath(),
-                'border-white/20 text-white/50 hover:bg-white/5 hover:text-white/80':
-                  !showCriticalPath(),
-              }}
-              onClick={() => setShowCriticalPath((v) => !v)}
-            >
-              Critical Path
-            </button>
-          </Show>
-
-          <Show when={openTaskIds().length > 0}>
-            <Button variant="secondary" size="sm" onClick={clearAllWindows}>
-              Close All ({openTaskIds().length})
-            </Button>
-          </Show>
-          <Show when={dagData() && hasActiveTasks()}>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setShowRulesEditor(true)}
-              class="!border-cyan-500/40 !text-cyan-400 hover:!bg-cyan-500/20"
-            >
-              Edit Rules
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setShowCancelConfirm(true)}
-              class="!border-red-500/40 !text-red-400 hover:!bg-red-500/20"
-            >
-              Cancel Batch
-            </Button>
-          </Show>
-
-          {/* Export CSV */}
-          <Show when={dagData()}>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                const data = filteredData();
-                if (data) exportTasksCsv(data.tasks);
-              }}
-            >
-              Export CSV
-            </Button>
-          </Show>
-
-          {/* Theme toggle */}
-          <button
-            title={`Switch to ${theme() === 'dark' ? 'light' : 'dark'} mode`}
-            class="theme-btn rounded-md border px-2 py-1 text-xs"
-            onClick={toggleTheme}
-          >
-            {theme() === 'dark' ? 'Light' : 'Dark'}
-          </button>
-
-          {/* Help */}
-          <button
-            title="Keyboard shortcuts (?)"
-            class="theme-btn rounded-md border px-2 py-1 text-xs"
-            onClick={() => setShowKeyboardHelp(true)}
-          >
-            ?
-          </button>
-
-          <span class="hide-mobile">
-            <StatsBar tasks={dagData()?.tasks ?? []} linkCount={dagData()?.links.length ?? 0} />
-          </span>
-          <BatchProgress tasks={dagData()?.tasks ?? []} />
-        </div>
-
-        {/* Filters row */}
-        <Show when={dagData()}>
-          <div class="flex w-full flex-wrap items-center gap-3">
-            <StatusFilter
-              tasks={dagData()!.tasks}
-              activeFilters={activeFilters()}
-              onToggle={toggleStatusFilter}
-            />
-            <Show when={new Set(dagData()!.tasks.map((t) => t.kind)).size > 1}>
-              <div class="h-4 w-px bg-white/15" />
-              <KindFilter
-                tasks={dagData()!.tasks}
-                activeKinds={activeKinds()}
-                onToggle={toggleKindFilter}
-              />
-            </Show>
-          </div>
-        </Show>
-      </header>
+      <DagToolbar
+        batchId={params.batchId}
+        batchIdShort={batchIdShort()}
+        dagData={dagData()}
+        viewMode={viewMode()}
+        isoGroupBy={isoGroupBy()}
+        showCriticalPath={showCriticalPath()}
+        openTaskCount={openTaskIds().length}
+        hasActiveTasks={hasActiveTasks()}
+        theme={theme()}
+        activeFilters={activeFilters()}
+        activeKinds={activeKinds()}
+        onNavigateHome={() => navigate('/')}
+        onSetViewMode={setViewMode}
+        onSetIsoGroupBy={setIsoGroupBy}
+        onToggleCriticalPath={() => setShowCriticalPath((v) => !v)}
+        onCloseAllWindows={clearAllWindows}
+        onEditRules={() => setShowRulesEditor(true)}
+        onCancelBatch={() => setShowCancelConfirm(true)}
+        onExportCsv={() => {
+          const data = filteredData();
+          if (data) exportTasksCsv(data.tasks);
+        }}
+        onToggleTheme={toggleTheme}
+        onShowHelp={() => setShowKeyboardHelp(true)}
+        onFitView={() => {
+          if (viewMode() === 'dag') canvasApi?.fit();
+          else resetIsoCamera?.();
+        }}
+        onToggleStatusFilter={toggleStatusFilter}
+        onToggleKindFilter={toggleKindFilter}
+      />
 
       {/* Main content */}
       <div class="relative z-1 flex flex-1 overflow-hidden">
@@ -542,33 +366,35 @@ export default function DagPage() {
           </div>
         </Show>
 
-        <Switch>
-          <Match when={viewMode() === 'dag'}>
-            <DagCanvas
-              data={filteredData()}
-              criticalPath={criticalPath()}
-              onNodeClick={(task) => openTask(task)}
-              onBackgroundClick={() => {}}
-              ref={(api) => (canvasApi = api)}
-            />
-          </Match>
-          <Match when={viewMode() === 'iso'}>
-            <IsometricView
-              data={filteredData()}
-              criticalPath={criticalPath()}
-              onNodeClick={openTask}
-              onBackgroundClick={() => {}}
-              groupBy={isoGroupBy()}
-              onResetCamera={(fn) => (resetIsoCamera = fn)}
-            />
-          </Match>
-          <Match when={viewMode() === 'table'}>
-            <TaskTable data={filteredData()} onTaskClick={openTask} onBulkCancel={handleBulkCancel} />
-          </Match>
-          <Match when={viewMode() === 'timeline'}>
-            <TimelineView data={filteredData()} onTaskClick={openTask} />
-          </Match>
-        </Switch>
+        <ErrorBoundary>
+          <Switch>
+            <Match when={viewMode() === 'dag'}>
+              <DagCanvas
+                data={filteredData()}
+                criticalPath={criticalPath()}
+                onNodeClick={(task) => openTask(task)}
+                onBackgroundClick={() => {}}
+                ref={(api) => (canvasApi = api)}
+              />
+            </Match>
+            <Match when={viewMode() === 'iso'}>
+              <IsometricView
+                data={filteredData()}
+                criticalPath={criticalPath()}
+                onNodeClick={openTask}
+                onBackgroundClick={() => {}}
+                groupBy={isoGroupBy()}
+                onResetCamera={(fn) => (resetIsoCamera = fn)}
+              />
+            </Match>
+            <Match when={viewMode() === 'table'}>
+              <TaskTable data={filteredData()} onTaskClick={openTask} onBulkCancel={handleBulkCancel} />
+            </Match>
+            <Match when={viewMode() === 'timeline'}>
+              <TimelineView data={filteredData()} onTaskClick={openTask} />
+            </Match>
+          </Switch>
+        </ErrorBoundary>
       </div>
 
       <Legend />
@@ -618,47 +444,25 @@ export default function DagPage() {
 
       <KeyboardHelp open={showKeyboardHelp()} onClose={() => setShowKeyboardHelp(false)} />
 
-      {/* Cancel batch confirmation modal */}
-      <Show when={showCancelConfirm()}>
-        <div
-          class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setShowCancelConfirm(false);
-          }}
-        >
-          <Card class="w-full max-w-md border-red-500/30 p-6">
-            <h2 class="mb-3 text-lg font-semibold text-white">Cancel Batch</h2>
-            <p class="mb-2 text-sm text-white/70">
-              This will cancel all active tasks in batch:
-            </p>
-            <p class="mb-4 rounded bg-white/5 px-3 py-2 font-mono text-xs text-white/90">
-              {params.batchId}
-            </p>
-            <p class="mb-6 text-sm text-red-400/80">
-              Running tasks will receive cancel webhooks. This action cannot be undone.
-            </p>
-            <div class="flex justify-end gap-3">
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setShowCancelConfirm(false)}
-                disabled={canceling()}
-              >
-                Keep Running
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleCancelBatch}
-                disabled={canceling()}
-                class="!bg-red-600 hover:!bg-red-700"
-              >
-                {canceling() ? 'Canceling...' : 'Confirm Cancel'}
-              </Button>
-            </div>
-          </Card>
-        </div>
-      </Show>
+      <ConfirmModal
+        open={showCancelConfirm()}
+        title="Cancel Batch"
+        confirmLabel={canceling() ? 'Canceling...' : 'Confirm Cancel'}
+        cancelLabel="Keep Running"
+        onConfirm={handleCancelBatch}
+        onCancel={() => setShowCancelConfirm(false)}
+        loading={canceling()}
+      >
+        <p class="mb-2 text-sm text-white/70">
+          This will cancel all active tasks in batch:
+        </p>
+        <p class="mb-4 rounded bg-white/5 px-3 py-2 font-mono text-xs text-white/90">
+          {params.batchId}
+        </p>
+        <p class="mb-6 text-sm text-red-400/80">
+          Running tasks will receive cancel webhooks. This action cannot be undone.
+        </p>
+      </ConfirmModal>
     </div>
   );
 }

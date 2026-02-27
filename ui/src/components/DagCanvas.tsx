@@ -2,6 +2,7 @@ import { onMount, onCleanup, createEffect, on } from 'solid-js';
 import type { DagResponse, BasicTask } from '../types';
 import { STATUS_COLORS } from '../constants';
 import type { CriticalPath } from '../lib/criticalPath';
+import { structureChanged } from '../lib/dagDiff';
 import cytoscape from 'cytoscape';
 import cytoscapeDagre from 'cytoscape-dagre';
 
@@ -169,19 +170,6 @@ export default function DagCanvas(props: Props) {
     currentStatuses = new Map(tasks.map((t) => [t.id, t.status]));
   }
 
-  function structureChanged(tasks: BasicTask[], links: DagResponse['links']): boolean {
-    if (tasks.length !== currentNodeIds.size) return true;
-    for (const t of tasks) {
-      if (!currentNodeIds.has(t.id)) return true;
-    }
-    const newEdgeIds = new Set(links.map((l) => `${l.parent_id}-${l.child_id}`));
-    if (newEdgeIds.size !== currentEdgeIds.size) return true;
-    for (const eid of newEdgeIds) {
-      if (!currentEdgeIds.has(eid)) return true;
-    }
-    return false;
-  }
-
   createEffect(
     on(
       () => props.data,
@@ -196,7 +184,7 @@ export default function DagCanvas(props: Props) {
           return;
         }
 
-        if (cy && !structureChanged(data.tasks, data.links)) {
+        if (cy && !structureChanged(data.tasks, data.links, currentNodeIds, currentEdgeIds)) {
           updateInPlace(data.tasks);
         } else {
           const elements: cytoscape.ElementDefinition[] = [];

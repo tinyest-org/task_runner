@@ -81,7 +81,8 @@ export default function BatchRulesEditor(props: Props) {
       .then((detail) => {
         setRulesJson(JSON.stringify(detail.rules ?? [], null, 2));
       })
-      .catch(() => {
+      .catch((e) => {
+        console.warn('Failed to load rules for kind:', kind, e);
         setRulesJson('[]');
       })
       .finally(() => setLoadingRules(false));

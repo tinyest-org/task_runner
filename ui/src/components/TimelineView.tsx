@@ -1,6 +1,7 @@
 import { createSignal, createMemo, For, Show } from 'solid-js';
 import type { DagResponse, BasicTask } from '../types';
 import { STATUS_COLORS } from '../constants';
+import { formatDuration } from '../lib/format';
 
 interface Props {
   data: DagResponse | null;
@@ -11,18 +12,6 @@ const ROW_HEIGHT = 28;
 const NAME_COL_WIDTH = 200;
 const MIN_BAR_WIDTH = 4;
 const BASE_WIDTH = 900;
-
-function formatRelTime(ms: number): string {
-  if (ms < 0) ms = 0;
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const remSecs = secs % 60;
-  if (mins < 60) return `${mins}m${remSecs > 0 ? ` ${remSecs}s` : ''}`;
-  const hours = Math.floor(mins / 60);
-  const remMins = mins % 60;
-  return `${hours}h${remMins > 0 ? ` ${remMins}m` : ''}`;
-}
 
 export default function TimelineView(props: Props) {
   const [zoom, setZoom] = createSignal(1);
@@ -93,7 +82,7 @@ export default function TimelineView(props: Props) {
     const markers: { x: number; label: string }[] = [];
     const start = Math.ceil(tl.minTime / chosen) * chosen;
     for (let t = start; t <= tl.maxTime; t += chosen) {
-      markers.push({ x: timeToX(t), label: formatRelTime(t - tl.minTime) });
+      markers.push({ x: timeToX(t), label: formatDuration(t - tl.minTime) });
     }
     return markers;
   });
@@ -140,7 +129,7 @@ export default function TimelineView(props: Props) {
             Fit
           </button>
           <span class="ml-3 text-xs text-white/30">
-            Duration: {formatRelTime(totalDurationMs())}
+            Duration: {formatDuration(totalDurationMs())}
           </span>
           <span class="text-xs text-white/30">
             | {timeline()!.tasks.length} tasks

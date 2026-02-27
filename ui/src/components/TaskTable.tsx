@@ -1,6 +1,7 @@
 import { createSignal, createMemo, createEffect, For, Show } from 'solid-js';
 import type { DagResponse, BasicTask } from '../types';
 import { STATUS_BG_CLASSES } from '../constants';
+import { formatTime } from '../lib/format';
 
 interface Props {
   data: DagResponse | null;
@@ -54,15 +55,6 @@ function compare(a: BasicTask, b: BasicTask, key: SortKey): number {
   return String(av).localeCompare(String(bv));
 }
 
-function formatDate(d: string | null): string {
-  if (!d) return '\u2014';
-  const date = new Date(d);
-  return date.toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-}
 
 export default function TaskTable(props: Props) {
   const [sortKey, setSortKey] = createSignal<SortKey>('name');
@@ -236,9 +228,9 @@ export default function TaskTable(props: Props) {
                       {task.status}
                     </span>
                   </td>
-                  <td class="px-3 py-2 text-white/50">{formatDate(task.created_at)}</td>
-                  <td class="px-3 py-2 text-white/50">{formatDate(task.started_at)}</td>
-                  <td class="px-3 py-2 text-white/50">{formatDate(task.ended_at)}</td>
+                  <td class="px-3 py-2 text-white/50">{formatTime(task.created_at)}</td>
+                  <td class="px-3 py-2 text-white/50">{formatTime(task.started_at)}</td>
+                  <td class="px-3 py-2 text-white/50">{formatTime(task.ended_at)}</td>
                   <td class="px-3 py-2 text-center">{task.success}</td>
                   <td class="px-3 py-2 text-center">{task.failures}</td>
                   <td class="px-3 py-2 text-center">

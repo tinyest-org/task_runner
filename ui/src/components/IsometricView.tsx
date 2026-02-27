@@ -3,9 +3,16 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { DagResponse, BasicTask } from '../types';
 import { STATUS_COLORS } from '../constants';
-import { computeGroupLayout, computeStatusLayout } from '../lib/isometricLayout';
-import type { GroupLayout } from '../lib/isometricLayout';
 import type { CriticalPath } from '../lib/criticalPath';
+import { formatDuration } from '../lib/format';
+import { structureChanged } from '../lib/dagDiff';
+import { colorToHex, disposeObject } from '../lib/threeHelpers';
+import {
+  buildDagSceneObjects,
+  buildStatusSceneObjects,
+  computeStatusAnimationTargets,
+  applyCriticalPathHighlighting,
+} from '../lib/isometricSceneBuilder';
 
 interface Props {
   data: DagResponse | null;
@@ -14,51 +21,6 @@ interface Props {
   onBackgroundClick: () => void;
   groupBy?: 'dag' | 'status';
   onResetCamera?: (fn: () => void) => void;
-}
-
-// Layout constants
-const TASK_BOX_SIZE = 0.8;
-const TASK_SPACING = 1.1;
-const GROUP_PADDING = 0.5;
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const rs = s % 60;
-  if (m < 60) return `${m}m ${rs}s`;
-  const h = Math.floor(m / 60);
-  const rm = m % 60;
-  return `${h}h ${rm}m`;
-}
-
-// Reusable materials / geometries
-const taskGeometry = new THREE.BoxGeometry(TASK_BOX_SIZE, TASK_BOX_SIZE, TASK_BOX_SIZE);
-const arrowGeometry = new THREE.ConeGeometry(0.12, 0.3, 6);
-
-function colorToHex(color: string): number {
-  return parseInt(color.replace('#', ''), 16);
-}
-
-function createTextSprite(text: string, fontSize: number = 48): THREE.Sprite {
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d')!;
-  canvas.width = 512;
-  canvas.height = 128;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-  ctx.font = `${fontSize}px monospace`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, 256, 64);
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.needsUpdate = true;
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
-  const sprite = new THREE.Sprite(material);
-  sprite.scale.set(4, 1, 1);
-  sprite.userData.isLabel = true;
-  return sprite;
 }
 
 export default function IsometricView(props: Props) {
@@ -86,43 +48,35 @@ export default function IsometricView(props: Props) {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
+  const refs = { meshToTask, taskToMesh };
+
   function initScene() {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0a0a1a);
 
-    // Camera
     const aspect = containerEl.clientWidth / containerEl.clientHeight;
     const frustum = 20;
     camera = new THREE.OrthographicCamera(
-      -frustum * aspect,
-      frustum * aspect,
-      frustum,
-      -frustum,
-      0.1,
-      1000,
+      -frustum * aspect, frustum * aspect, frustum, -frustum, 0.1, 1000,
     );
     camera.position.set(-95, 30, 40);
     camera.lookAt(0, 0, 0);
 
-    // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(containerEl.clientWidth, containerEl.clientHeight);
     renderer.setPixelRatio(window.devicePixelRatio);
     containerEl.appendChild(renderer.domElement);
 
-    // Controls
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
 
-    // Lighting
     const ambient = new THREE.AmbientLight(0xffffff, 0.6);
     scene.add(ambient);
     const directional = new THREE.DirectionalLight(0xffffff, 0.8);
     directional.position.set(10, 20, 10);
     scene.add(directional);
 
-    // Grid
     const grid = new THREE.GridHelper(50, 50, 0x333344, 0x222233);
     scene.add(grid);
 
@@ -132,16 +86,13 @@ export default function IsometricView(props: Props) {
       'position:fixed;pointer-events:none;background:rgba(0,0,0,0.9);color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;font-family:monospace;display:none;z-index:1000;white-space:pre;line-height:1.5;border:1px solid rgba(255,255,255,0.1);';
     containerEl.appendChild(tooltipEl);
 
-    // Event listeners
     renderer.domElement.addEventListener('pointermove', onPointerMove);
     renderer.domElement.addEventListener('click', onClick);
     window.addEventListener('resize', onResize);
 
-    // Animation loop
     function animate() {
       animFrameId = requestAnimationFrame(animate);
 
-      // Lerp task meshes toward targets during status-mode transitions
       if (isAnimating) {
         let allDone = true;
         for (const [taskId, target] of animTargets) {
@@ -165,7 +116,6 @@ export default function IsometricView(props: Props) {
     }
     animate();
 
-    // Expose camera reset via prop
     props.onResetCamera?.(() => {
       if (!camera || !controls) return;
       camera.position.set(-95, 30, 40);
@@ -197,7 +147,6 @@ export default function IsometricView(props: Props) {
     const taskMeshes = Array.from(meshToTask.keys()) as THREE.Mesh[];
     const intersects = raycaster.intersectObjects(taskMeshes);
 
-    // Reset previous hover (restore critical-path emissive if applicable)
     if (hoveredMesh) {
       const prevTask = meshToTask.get(hoveredMesh);
       const isCritical = prevTask && props.criticalPath?.nodeIds.has(prevTask.id);
@@ -263,30 +212,6 @@ export default function IsometricView(props: Props) {
     }
   }
 
-  function disposeObject(obj: THREE.Object3D) {
-    if (obj instanceof THREE.Mesh) {
-      // Don't dispose shared geometries — they're reused across rebuilds
-      if (obj.geometry !== taskGeometry && obj.geometry !== arrowGeometry) {
-        obj.geometry.dispose();
-      }
-      if (Array.isArray(obj.material)) {
-        obj.material.forEach((m) => m.dispose());
-      } else {
-        obj.material.dispose();
-      }
-    } else if (obj instanceof THREE.Line || obj instanceof THREE.LineSegments) {
-      obj.geometry.dispose();
-      if (Array.isArray(obj.material)) {
-        obj.material.forEach((m) => m.dispose());
-      } else {
-        (obj.material as THREE.Material).dispose();
-      }
-    } else if (obj instanceof THREE.Sprite) {
-      (obj.material as THREE.SpriteMaterial).map?.dispose();
-      obj.material.dispose();
-    }
-  }
-
   function clearScene() {
     if (!scene) return;
     isAnimating = false;
@@ -305,7 +230,6 @@ export default function IsometricView(props: Props) {
     taskToMesh.clear();
   }
 
-  /** Remove wireframes, links, and labels — but keep task meshes for animation. */
   function clearStructuralElements() {
     if (!scene) return;
     const toRemove: THREE.Object3D[] = [];
@@ -344,139 +268,11 @@ export default function IsometricView(props: Props) {
     camera.updateProjectionMatrix();
   }
 
-  // ── DAG mode ──
-
   function buildScene(data: DagResponse) {
     if (!scene) return;
     clearScene();
-
-    const layout = computeGroupLayout(data.tasks, data.links);
-    const { groups, kinds, maxStep, depthMap, maxCols, maxRows, maxLayers } = layout;
-
-    // Dynamic cell sizes based on largest group 3D grid
-    const cellSizeX = Math.max(maxCols * TASK_SPACING + GROUP_PADDING * 2, 3);
-    const cellSizeZ = Math.max(maxRows * TASK_SPACING + GROUP_PADDING * 2, 3);
-
-    // Group groups by step and assign centered local X indices
-    const groupsByStep = new Map<number, GroupLayout[]>();
-    for (const group of groups) {
-      const list = groupsByStep.get(group.stepIndex) || [];
-      list.push(group);
-      groupsByStep.set(group.stepIndex, list);
-    }
-    const groupCx = new Map<GroupLayout, number>();
-    for (const [, stepGroups] of groupsByStep) {
-      stepGroups.sort((a, b) => a.kindIndex - b.kindIndex);
-      const count = stepGroups.length;
-      for (let i = 0; i < count; i++) {
-        groupCx.set(stepGroups[i], (i - (count - 1) / 2) * cellSizeX);
-      }
-    }
-
-    // Center offset Z
-    const offsetZ = (maxStep * cellSizeZ) / 2;
-
-    // Task position map for links
-    const taskPositions = new Map<string, THREE.Vector3>();
-
-    // Render groups and tasks
-    for (const group of groups) {
-      const cx = groupCx.get(group)!;
-      const cz = group.stepIndex * cellSizeZ - offsetZ;
-      const sliceSize = group.cols * group.rows;
-
-      // Uniform wireframe volume (same size for all groups)
-      const groupWidth = maxCols * TASK_SPACING + GROUP_PADDING;
-      const groupDepth = maxRows * TASK_SPACING + GROUP_PADDING;
-      const groupHeight = maxLayers * TASK_SPACING + GROUP_PADDING;
-      const boxGeo = new THREE.BoxGeometry(groupWidth, groupHeight, groupDepth);
-      const edges = new THREE.EdgesGeometry(boxGeo);
-      const lineMat = new THREE.LineBasicMaterial({ color: 0x444466, transparent: true, opacity: 0.5 });
-      const wireframe = new THREE.LineSegments(edges, lineMat);
-      wireframe.position.set(cx, groupHeight / 2, cz);
-      wireframe.userData.isGroup = true;
-      scene.add(wireframe);
-      boxGeo.dispose();
-
-      // Individual task cubes placed in 3D XYZ grid
-      for (let i = 0; i < group.tasks.length; i++) {
-        const task = group.tasks[i];
-        const layer = Math.floor(i / sliceSize);
-        const inSlice = i % sliceSize;
-        const col = inSlice % group.cols;
-        const row = Math.floor(inSlice / group.cols);
-
-        const color = STATUS_COLORS[task.status] ?? '#666666';
-        const material = new THREE.MeshLambertMaterial({ color: colorToHex(color) });
-        const mesh = new THREE.Mesh(taskGeometry, material);
-
-        const localX = (col - (group.cols - 1) / 2) * TASK_SPACING;
-        const localZ = (row - (group.rows - 1) / 2) * TASK_SPACING;
-        const py = TASK_BOX_SIZE / 2 + layer * TASK_SPACING;
-        mesh.position.set(cx + localX, py, cz + localZ);
-        mesh.userData.isTask = true;
-        scene.add(mesh);
-
-        meshToTask.set(mesh, task);
-        taskToMesh.set(task.id, mesh);
-        taskPositions.set(task.id, mesh.position.clone());
-      }
-    }
-
-    // Dependency links with arrow tips
-    for (const link of data.links) {
-      const from = taskPositions.get(link.parent_id);
-      const to = taskPositions.get(link.child_id);
-      if (!from || !to) continue;
-
-      const edgeId = `${link.parent_id}-${link.child_id}`;
-      const color = link.requires_success ? 0x27ae60 : 0x666666;
-
-      // Line
-      const points = [from, to];
-      const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      const material = new THREE.LineBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 0.6,
-      });
-      const line = new THREE.Line(geometry, material);
-      line.userData.isLink = true;
-      line.userData.edgeId = edgeId;
-      line.userData.originalColor = color;
-      scene.add(line);
-
-      // Arrow cone at target end
-      const dir = new THREE.Vector3().subVectors(to, from).normalize();
-      const arrowPos = new THREE.Vector3().lerpVectors(from, to, 0.85);
-      const arrowMat = new THREE.MeshLambertMaterial({ color, transparent: true, opacity: 0.8 });
-      const cone = new THREE.Mesh(arrowGeometry, arrowMat);
-      cone.position.copy(arrowPos);
-      // Orient cone along the direction (guard anti-parallel case)
-      const up = new THREE.Vector3(0, 1, 0);
-      if (dir.y < -0.999) {
-        cone.rotation.set(Math.PI, 0, 0);
-      } else {
-        const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
-        cone.setRotationFromQuaternion(quat);
-      }
-      cone.userData.isLink = true;
-      cone.userData.edgeId = edgeId;
-      cone.userData.originalColor = color;
-      scene.add(cone);
-    }
-
-    // Kind labels placed at each group's position
-    for (const group of groups) {
-      const cx = groupCx.get(group)!;
-      const cz = group.stepIndex * cellSizeZ - offsetZ;
-      const sprite = createTextSprite(group.key.kind, 40);
-      sprite.position.set(cx, -1.5, cz - cellSizeZ / 2 - 1);
-      scene.add(sprite);
-    }
-
-    fitCamera(kinds.length, maxStep, cellSizeX, cellSizeZ);
-
+    const result = buildDagSceneObjects(scene, data, refs);
+    fitCamera(result.kindCount, result.maxStep, result.cellSizeX, result.cellSizeZ);
     currentNodeIds = new Set(data.tasks.map((t) => t.id));
     currentEdgeIds = new Set(data.links.map((l) => `${l.parent_id}-${l.child_id}`));
     currentStatuses = new Map(data.tasks.map((t) => [t.id, t.status]));
@@ -493,22 +289,6 @@ export default function IsometricView(props: Props) {
     currentStatuses = new Map(tasks.map((t) => [t.id, t.status]));
   }
 
-  function structureChanged(tasks: BasicTask[], links: DagResponse['links']): boolean {
-    if (tasks.length !== currentNodeIds.size) return true;
-    for (const t of tasks) {
-      if (!currentNodeIds.has(t.id)) return true;
-    }
-    const newEdgeIds = new Set(links.map((l) => `${l.parent_id}-${l.child_id}`));
-    if (newEdgeIds.size !== currentEdgeIds.size) return true;
-    for (const eid of newEdgeIds) {
-      if (!currentEdgeIds.has(eid)) return true;
-    }
-    return false;
-  }
-
-  // ── Status mode ──
-
-  /** Check if only the task ID set changed (ignoring status differences). */
   function taskSetChanged(tasks: BasicTask[]): boolean {
     if (tasks.length !== currentNodeIds.size) return true;
     for (const t of tasks) {
@@ -517,133 +297,20 @@ export default function IsometricView(props: Props) {
     return false;
   }
 
-  /** Compute cell spacing for status layout (shared between build & animate). */
-  function statusCellSizeX(maxCols: number): number {
-    return Math.max(maxCols * TASK_SPACING + GROUP_PADDING * 2, 3);
-  }
-  function statusCellSizeZ(maxRows: number): number {
-    return Math.max(maxRows * TASK_SPACING + GROUP_PADDING * 2, 3);
-  }
-
-  /** Build the status scene from scratch (DAG steps × status grid). */
   function buildStatusScene(data: DagResponse) {
     if (!scene) return;
     clearScene();
-
-    const layout = computeStatusLayout(data.tasks, data.links);
-    const { groups, statuses, maxStep, maxCols, maxRows, maxLayers } = layout;
-
-    const cellX = statusCellSizeX(maxCols);
-    const cellZ = statusCellSizeZ(maxRows);
-    const totalWidth = statuses.length * cellX;
-    const offsetX = (totalWidth - cellX) / 2;
-    const offsetZ = (maxStep * cellZ) / 2;
-
-    for (const group of groups) {
-      const cx = group.statusIndex * cellX - offsetX;
-      const cz = group.stepIndex * cellZ - offsetZ;
-      const sliceSize = group.cols * group.rows;
-
-      // Per-group wireframe with status color
-      const gw = group.cols * TASK_SPACING + GROUP_PADDING;
-      const gd = group.rows * TASK_SPACING + GROUP_PADDING;
-      const gh = group.layers * TASK_SPACING + GROUP_PADDING;
-      const boxGeo = new THREE.BoxGeometry(gw, gh, gd);
-      const edges = new THREE.EdgesGeometry(boxGeo);
-      const wireColor = colorToHex(STATUS_COLORS[group.status] ?? '#444466');
-      const lineMat = new THREE.LineBasicMaterial({ color: wireColor, transparent: true, opacity: 0.4 });
-      const wireframe = new THREE.LineSegments(edges, lineMat);
-      wireframe.position.set(cx, gh / 2, cz);
-      wireframe.userData.isGroup = true;
-      scene.add(wireframe);
-      boxGeo.dispose();
-
-      // Task cubes
-      for (let i = 0; i < group.tasks.length; i++) {
-        const task = group.tasks[i];
-        const layer = Math.floor(i / sliceSize);
-        const inSlice = i % sliceSize;
-        const col = inSlice % group.cols;
-        const row = Math.floor(inSlice / group.cols);
-
-        const color = STATUS_COLORS[task.status] ?? '#666666';
-        const material = new THREE.MeshLambertMaterial({ color: colorToHex(color) });
-        const mesh = new THREE.Mesh(taskGeometry, material);
-
-        const localX = (col - (group.cols - 1) / 2) * TASK_SPACING;
-        const localZ = (row - (group.rows - 1) / 2) * TASK_SPACING;
-        const py = TASK_BOX_SIZE / 2 + layer * TASK_SPACING;
-        mesh.position.set(cx + localX, py, cz + localZ);
-        mesh.userData.isTask = true;
-        scene.add(mesh);
-
-        meshToTask.set(mesh, task);
-        taskToMesh.set(task.id, mesh);
-      }
-    }
-
-    // Status column labels (one per status, at top of grid)
-    for (let i = 0; i < statuses.length; i++) {
-      const cx = i * cellX - offsetX;
-      const sprite = createTextSprite(statuses[i], 40);
-      sprite.position.set(cx, -1.5, -offsetZ - cellZ / 2 - 1);
-      scene.add(sprite);
-    }
-
-    // Step row labels (one per step, at left of grid)
-    for (let s = 0; s <= maxStep; s++) {
-      const cz = s * cellZ - offsetZ;
-      const sprite = createTextSprite(`Step ${s}`, 32);
-      sprite.position.set(-offsetX - cellX / 2 - 2, -1.5, cz);
-      scene.add(sprite);
-    }
-
-    fitCameraExtent(totalWidth, (maxStep + 1) * cellZ);
-
+    const result = buildStatusSceneObjects(scene, data, refs);
+    fitCameraExtent(result.extentX, result.extentZ);
     currentNodeIds = new Set(data.tasks.map((t) => t.id));
     currentEdgeIds = new Set(data.links.map((l) => `${l.parent_id}-${l.child_id}`));
     currentStatuses = new Map(data.tasks.map((t) => [t.id, t.status]));
   }
 
-  /**
-   * Animate existing meshes to new status-based positions (DAG steps × status grid).
-   * Called when the task set is unchanged but statuses may have changed.
-   */
   function animateToStatusLayout(data: DagResponse) {
     if (!scene) return;
 
-    const layout = computeStatusLayout(data.tasks, data.links);
-    const { groups, statuses, maxStep, maxCols, maxRows } = layout;
-
-    const cellX = statusCellSizeX(maxCols);
-    const cellZ = statusCellSizeZ(maxRows);
-    const totalWidth = statuses.length * cellX;
-    const offsetX = (totalWidth - cellX) / 2;
-    const offsetZ = (maxStep * cellZ) / 2;
-
-    // Compute new positions
-    const newPositions = new Map<string, THREE.Vector3>();
-    for (const group of groups) {
-      const cx = group.statusIndex * cellX - offsetX;
-      const cz = group.stepIndex * cellZ - offsetZ;
-      const sliceSize = group.cols * group.rows;
-
-      for (let i = 0; i < group.tasks.length; i++) {
-        const task = group.tasks[i];
-        const layer = Math.floor(i / sliceSize);
-        const inSlice = i % sliceSize;
-        const col = inSlice % group.cols;
-        const row = Math.floor(inSlice / group.cols);
-
-        const localX = (col - (group.cols - 1) / 2) * TASK_SPACING;
-        const localZ = (row - (group.rows - 1) / 2) * TASK_SPACING;
-        const py = TASK_BOX_SIZE / 2 + layer * TASK_SPACING;
-
-        newPositions.set(task.id, new THREE.Vector3(cx + localX, py, cz + localZ));
-      }
-    }
-
-    // Update colors and task references on existing meshes
+    // Update colors on existing meshes
     for (const task of data.tasks) {
       const mesh = taskToMesh.get(task.id);
       if (mesh) {
@@ -653,104 +320,27 @@ export default function IsometricView(props: Props) {
       }
     }
 
-    // Set animation targets
+    clearStructuralElements();
+    const result = computeStatusAnimationTargets(scene, data, refs);
+
     animTargets.clear();
-    for (const [taskId, pos] of newPositions) {
+    for (const [taskId, pos] of result.targets) {
       animTargets.set(taskId, pos);
     }
     isAnimating = true;
 
-    // Recreate wireframes and labels for new layout
-    clearStructuralElements();
-
-    for (const group of groups) {
-      const cx = group.statusIndex * cellX - offsetX;
-      const cz = group.stepIndex * cellZ - offsetZ;
-
-      const gw = group.cols * TASK_SPACING + GROUP_PADDING;
-      const gd = group.rows * TASK_SPACING + GROUP_PADDING;
-      const gh = group.layers * TASK_SPACING + GROUP_PADDING;
-      const boxGeo = new THREE.BoxGeometry(gw, gh, gd);
-      const edges = new THREE.EdgesGeometry(boxGeo);
-      const wireColor = colorToHex(STATUS_COLORS[group.status] ?? '#444466');
-      const lineMat = new THREE.LineBasicMaterial({ color: wireColor, transparent: true, opacity: 0.4 });
-      const wireframe = new THREE.LineSegments(edges, lineMat);
-      wireframe.position.set(cx, gh / 2, cz);
-      wireframe.userData.isGroup = true;
-      scene.add(wireframe);
-      boxGeo.dispose();
-    }
-
-    // Status column labels
-    for (let i = 0; i < statuses.length; i++) {
-      const cx = i * cellX - offsetX;
-      const sprite = createTextSprite(statuses[i], 40);
-      sprite.position.set(cx, -1.5, -offsetZ - cellZ / 2 - 1);
-      scene.add(sprite);
-    }
-
-    // Step row labels
-    for (let s = 0; s <= maxStep; s++) {
-      const cz = s * cellZ - offsetZ;
-      const sprite = createTextSprite(`Step ${s}`, 32);
-      sprite.position.set(-offsetX - cellX / 2 - 2, -1.5, cz);
-      scene.add(sprite);
-    }
-
-    fitCameraExtent(totalWidth, (maxStep + 1) * cellZ);
-
+    fitCameraExtent(result.extentX, result.extentZ);
     currentStatuses = new Map(data.tasks.map((t) => [t.id, t.status]));
-  }
-
-  // ── Critical path highlighting ──
-
-  function applyCriticalPath(cp: CriticalPath | null | undefined) {
-    // Highlight critical path nodes
-    for (const [taskId, mesh] of taskToMesh) {
-      const mat = mesh.material as THREE.MeshLambertMaterial;
-      if (cp && cp.nodeIds.has(taskId)) {
-        mat.emissive.setHex(0x665500);
-      } else {
-        mat.emissive.setHex(0x000000);
-      }
-    }
-    // Highlight critical path links
-    if (!scene) return;
-    scene.traverse((obj) => {
-      if (!obj.userData.isLink || !obj.userData.edgeId) return;
-      const edgeId = obj.userData.edgeId as string;
-      const isCritical = cp && cp.edgeIds.has(edgeId);
-      const origColor = (obj.userData.originalColor as number) ?? 0x666666;
-      if (obj instanceof THREE.Line) {
-        const mat = obj.material as THREE.LineBasicMaterial;
-        if (isCritical) {
-          mat.color.setHex(0xffd700);
-          mat.opacity = 1.0;
-        } else {
-          mat.color.setHex(origColor);
-          mat.opacity = 0.6;
-        }
-      } else if (obj instanceof THREE.Mesh && obj.geometry === arrowGeometry) {
-        const mat = obj.material as THREE.MeshLambertMaterial;
-        if (isCritical) {
-          mat.color.setHex(0xffd700);
-          mat.opacity = 1.0;
-        } else {
-          mat.color.setHex(origColor);
-          mat.opacity = 0.8;
-        }
-      }
-    });
   }
 
   createEffect(
     on(
       () => props.criticalPath,
-      (cp) => applyCriticalPath(cp),
+      (cp) => {
+        if (scene) applyCriticalPathHighlighting(scene, taskToMesh, cp);
+      },
     ),
   );
-
-  // ── Effect ──
 
   createEffect(
     on(
@@ -778,7 +368,7 @@ export default function IsometricView(props: Props) {
             animateToStatusLayout(data);
           }
         } else {
-          if (!groupByChanged && currentNodeIds.size > 0 && !structureChanged(data.tasks, data.links)) {
+          if (!groupByChanged && currentNodeIds.size > 0 && !structureChanged(data.tasks, data.links, currentNodeIds, currentEdgeIds)) {
             updateColorsInPlace(data.tasks);
           } else {
             buildScene(data);
