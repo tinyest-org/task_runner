@@ -186,7 +186,16 @@ impl ActionExecutor {
                     Ok(match response.text().await {
                         Ok(body) => {
                             log::info!("query with success: -> {}", &body);
-                            serde_json::from_str(&body).ok()
+                            match serde_json::from_str(&body) {
+                                Ok(dto) => Some(dto),
+                                Err(e) => {
+                                    log::debug!(
+                                        "Response body did not parse as NewActionDto: {}",
+                                        e
+                                    );
+                                    None
+                                }
+                            }
                         }
                         Err(_) => {
                             log::info!("query with success");

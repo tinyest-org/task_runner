@@ -13,8 +13,9 @@ use std::pin::Pin;
 pub(crate) type DbError = crate::error::TaskRunnerError;
 
 // Re-exports from task_crud
+pub use crate::rule::concurrency_lock_key;
 pub use task_crud::{ClaimResult, claim_task, claim_task_with_rules, mark_task_running};
-pub(crate) use task_crud::{concurrency_lock_key, find_detailed_task_by_id, insert_new_task};
+pub(crate) use task_crud::{find_detailed_task_by_id, insert_new_task};
 
 // Re-exports from task_lifecycle
 pub use task_lifecycle::{UpdateTaskResult, update_running_task};

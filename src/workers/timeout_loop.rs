@@ -3,7 +3,7 @@ use actix_web::rt;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-use super::propagation::{fire_end_webhooks_with_cascade, fire_webhooks_for_canceled_ancestors};
+use super::webhooks::{fire_end_webhooks_with_cascade, fire_webhooks_for_canceled_ancestors};
 
 /// Background loop that detects timed-out Running tasks and failed stale claims.
 ///

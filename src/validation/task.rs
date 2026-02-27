@@ -1,8 +1,62 @@
+use std::collections::HashSet;
+
 use crate::dtos::{NewTaskDto, UpdateTaskDto};
 use crate::models::StatusKind;
+use crate::rule::{Rules, Strategy};
 
 use super::action::validate_action_params;
+use super::constants::*;
 use super::{ValidationError, ValidationResult};
+
+/// Validates the strategies (concurrency/capacity rules) within a Rules struct.
+/// `prefix` is prepended to field names in errors (e.g. "rules" or "tasks[0].rules").
+fn validate_rule_strategies(
+    rules: &Rules,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) -> bool {
+    let mut has_capacity_rule = false;
+    for (i, rule) in rules.0.iter().enumerate() {
+        match rule {
+            Strategy::Concurency(concurrency_rule) => {
+                if concurrency_rule.max_concurency <= 0 {
+                    errors.push(ValidationError {
+                        field: format!("{}[{}].max_concurency", prefix, i),
+                        message: "max_concurency must be a positive integer".to_string(),
+                    });
+                }
+                if concurrency_rule.matcher.kind.trim().is_empty() {
+                    errors.push(ValidationError {
+                        field: format!("{}[{}].matcher.kind", prefix, i),
+                        message: "Matcher kind cannot be empty".to_string(),
+                    });
+                }
+            }
+            Strategy::Capacity(capacity_rule) => {
+                has_capacity_rule = true;
+                if capacity_rule.max_capacity <= 0 {
+                    errors.push(ValidationError {
+                        field: format!("{}[{}].max_capacity", prefix, i),
+                        message: "max_capacity must be a positive integer".to_string(),
+                    });
+                }
+                if capacity_rule.matcher.kind.trim().is_empty() {
+                    errors.push(ValidationError {
+                        field: format!("{}[{}].matcher.kind", prefix, i),
+                        message: "Matcher kind cannot be empty".to_string(),
+                    });
+                }
+                if capacity_rule.matcher.status != StatusKind::Running {
+                    errors.push(ValidationError {
+                        field: format!("{}[{}].matcher.status", prefix, i),
+                        message: "Capacity rules only support matcher.status = Running".to_string(),
+                    });
+                }
+            }
+        }
+    }
+    has_capacity_rule
+}
 
 /// Validates a new task DTO before creation.
 pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
@@ -22,10 +76,10 @@ pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
             field: "name".to_string(),
             message: "Task name cannot be empty".to_string(),
         });
-    } else if dto.name.len() > 255 {
+    } else if dto.name.len() > MAX_TASK_NAME_LEN {
         errors.push(ValidationError {
             field: "name".to_string(),
-            message: "Task name cannot exceed 255 characters".to_string(),
+            message: format!("Task name cannot exceed {} characters", MAX_TASK_NAME_LEN),
         });
     }
 
@@ -35,10 +89,10 @@ pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
             field: "kind".to_string(),
             message: "Task kind cannot be empty".to_string(),
         });
-    } else if dto.kind.len() > 100 {
+    } else if dto.kind.len() > MAX_TASK_KIND_LEN {
         errors.push(ValidationError {
             field: "kind".to_string(),
-            message: "Task kind cannot exceed 100 characters".to_string(),
+            message: format!("Task kind cannot exceed {} characters", MAX_TASK_KIND_LEN),
         });
     }
 
@@ -49,11 +103,13 @@ pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
                 field: "timeout".to_string(),
                 message: "Timeout must be a positive integer".to_string(),
             });
-        } else if timeout > 86400 {
-            // Max 24 hours
+        } else if timeout > MAX_TIMEOUT_SECS {
             errors.push(ValidationError {
                 field: "timeout".to_string(),
-                message: "Timeout cannot exceed 86400 seconds (24 hours)".to_string(),
+                message: format!(
+                    "Timeout cannot exceed {} seconds (24 hours)",
+                    MAX_TIMEOUT_SECS
+                ),
             });
         }
     }
@@ -71,8 +127,7 @@ pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
     // Validate metadata size (prevent extremely large payloads)
     if let Some(ref metadata) = dto.metadata {
         let metadata_str = serde_json::to_string(metadata).unwrap_or_default();
-        if metadata_str.len() > 65536 {
-            // 64KB limit
+        if metadata_str.len() > MAX_METADATA_BYTES {
             errors.push(ValidationError {
                 field: "metadata".to_string(),
                 message: "Metadata cannot exceed 64KB".to_string(),
@@ -131,65 +186,21 @@ pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
             });
         }
 
-        // Check for duplicate dependencies
-        let mut seen_ids: Vec<&str> = Vec::new();
+        // Check for duplicate dependencies using HashSet
+        let mut seen_ids: HashSet<&str> = HashSet::new();
         for dep in deps {
-            if seen_ids.contains(&dep.id.as_str()) {
+            if !seen_ids.insert(dep.id.as_str()) {
                 errors.push(ValidationError {
                     field: "dependencies".to_string(),
                     message: format!("Duplicate dependency: {}", dep.id),
                 });
-            } else {
-                seen_ids.push(&dep.id);
             }
         }
     }
 
     // Validate rules (concurrency conditions)
     if let Some(ref rules) = dto.rules {
-        let mut has_capacity_rule = false;
-        for (i, rule) in rules.0.iter().enumerate() {
-            match rule {
-                crate::rule::Strategy::Concurency(concurrency_rule) => {
-                    if concurrency_rule.max_concurency <= 0 {
-                        errors.push(ValidationError {
-                            field: format!("rules[{}].max_concurency", i),
-                            message: "max_concurency must be a positive integer".to_string(),
-                        });
-                    }
-                    if concurrency_rule.matcher.kind.trim().is_empty() {
-                        errors.push(ValidationError {
-                            field: format!("rules[{}].matcher.kind", i),
-                            message: "Matcher kind cannot be empty".to_string(),
-                        });
-                    }
-                }
-                crate::rule::Strategy::Capacity(capacity_rule) => {
-                    has_capacity_rule = true;
-                    if capacity_rule.max_capacity <= 0 {
-                        errors.push(ValidationError {
-                            field: format!("rules[{}].max_capacity", i),
-                            message: "max_capacity must be a positive integer".to_string(),
-                        });
-                    }
-                    if capacity_rule.matcher.kind.trim().is_empty() {
-                        errors.push(ValidationError {
-                            field: format!("rules[{}].matcher.kind", i),
-                            message: "Matcher kind cannot be empty".to_string(),
-                        });
-                    }
-                    if capacity_rule.matcher.status != StatusKind::Running {
-                        errors.push(ValidationError {
-                            field: format!("rules[{}].matcher.status", i),
-                            message: "Capacity rules only support matcher.status = Running"
-                                .to_string(),
-                        });
-                    }
-                }
-            }
-        }
-        // A task with a Capacity rule must have expected_count set, otherwise it would
-        // be permanently blocked at runtime (worker blocks every iteration).
+        let has_capacity_rule = validate_rule_strategies(rules, "rules", &mut errors);
         if has_capacity_rule && dto.expected_count.is_none() {
             errors.push(ValidationError {
                 field: "expected_count".to_string(),
@@ -300,47 +311,9 @@ pub fn validate_update_task_counters(dto: &UpdateTaskDto) -> ValidationResult {
 }
 
 /// Validates rules for a batch rules update.
-pub fn validate_rules(rules: &crate::rule::Rules) -> ValidationResult {
+pub fn validate_rules(rules: &Rules) -> ValidationResult {
     let mut errors = Vec::new();
-
-    for (i, rule) in rules.0.iter().enumerate() {
-        match rule {
-            crate::rule::Strategy::Concurency(concurrency_rule) => {
-                if concurrency_rule.max_concurency <= 0 {
-                    errors.push(ValidationError {
-                        field: format!("rules[{}].max_concurency", i),
-                        message: "max_concurency must be a positive integer".to_string(),
-                    });
-                }
-                if concurrency_rule.matcher.kind.trim().is_empty() {
-                    errors.push(ValidationError {
-                        field: format!("rules[{}].matcher.kind", i),
-                        message: "Matcher kind cannot be empty".to_string(),
-                    });
-                }
-            }
-            crate::rule::Strategy::Capacity(capacity_rule) => {
-                if capacity_rule.max_capacity <= 0 {
-                    errors.push(ValidationError {
-                        field: format!("rules[{}].max_capacity", i),
-                        message: "max_capacity must be a positive integer".to_string(),
-                    });
-                }
-                if capacity_rule.matcher.kind.trim().is_empty() {
-                    errors.push(ValidationError {
-                        field: format!("rules[{}].matcher.kind", i),
-                        message: "Matcher kind cannot be empty".to_string(),
-                    });
-                }
-                if capacity_rule.matcher.status != StatusKind::Running {
-                    errors.push(ValidationError {
-                        field: format!("rules[{}].matcher.status", i),
-                        message: "Capacity rules only support matcher.status = Running".to_string(),
-                    });
-                }
-            }
-        }
-    }
+    validate_rule_strategies(rules, "rules", &mut errors);
 
     if errors.is_empty() {
         Ok(())
@@ -352,7 +325,7 @@ pub fn validate_rules(rules: &crate::rule::Rules) -> ValidationResult {
 /// Validates a batch of new tasks, checking for duplicate IDs, unknown/forward
 /// dependency references, and circular dependencies.
 pub fn validate_task_batch(tasks: &[NewTaskDto]) -> ValidationResult {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     let mut errors = Vec::new();
 

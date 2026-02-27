@@ -3,6 +3,8 @@ mod assertions;
 #[allow(unused)]
 mod builders;
 #[allow(unused)]
+mod mock_server;
+#[allow(unused)]
 mod setup;
 #[allow(unused)]
 mod state;
@@ -11,6 +13,8 @@ mod state;
 pub use assertions::*;
 #[allow(unused)]
 pub use builders::*;
+#[allow(unused)]
+pub use mock_server::*;
 #[allow(unused)]
 pub use setup::*;
 #[allow(unused)]

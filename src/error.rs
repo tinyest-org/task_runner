@@ -113,8 +113,24 @@ impl From<TaskRunnerError> for ApiError {
                 log::error!("Pool error: {}", e);
                 ApiError::InternalServerError("Connection pool error".to_string())
             }
-            _ => {
-                log::error!("Internal error: {}", err);
+            TaskRunnerError::ActionExecution(e) => {
+                log::error!("Action execution error: {}", e);
+                ApiError::InternalServerError("Action execution failed".to_string())
+            }
+            TaskRunnerError::Webhook(e) => {
+                log::error!("Webhook error: {}", e);
+                ApiError::InternalServerError("Webhook error".to_string())
+            }
+            TaskRunnerError::Dependency(e) => {
+                log::error!("Dependency error: {}", e);
+                ApiError::InternalServerError("Dependency error".to_string())
+            }
+            TaskRunnerError::Timeout(id) => {
+                log::error!("Task timeout: {}", id);
+                ApiError::InternalServerError("Task timeout".to_string())
+            }
+            TaskRunnerError::Internal(e) => {
+                log::error!("Internal error: {}", e);
                 ApiError::InternalServerError("Internal server error".to_string())
             }
         }

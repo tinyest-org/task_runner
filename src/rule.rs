@@ -5,6 +5,8 @@ use diesel::pg::{Pg, PgValue};
 use diesel::serialize::{self, IsNull, Output};
 use diesel::{deserialize::FromSqlRow, serialize::ToSql, sql_types::Jsonb};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use utoipa::ToSchema;
 
@@ -101,6 +103,66 @@ pub struct Matcher {
     /// for ALL listed keys. Example: `["projectId", "environment"]` means two tasks match only
     /// if both their `projectId` and `environment` metadata values are identical.
     pub fields: Vec<String>,
+}
+
+impl Matcher {
+    /// Extract the metadata field values specified by this matcher from the given metadata.
+    /// Returns `Ok(json_object)` with only the matched fields, or `Err(field_name)` if a
+    /// required field is missing from the metadata.
+    ///
+    /// If `fields` is empty, returns `Ok({})`.
+    /// If `metadata` is null/not-an-object and fields are required, returns `Err`.
+    pub fn extract_metadata_fields(
+        &self,
+        metadata: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let mut result = json!({});
+        for field in &self.fields {
+            match metadata.get(field) {
+                Some(v) => {
+                    result[field] = v.clone();
+                }
+                None => {
+                    return Err(field.clone());
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
+/// Compute a deterministic i64 advisory lock key from a matcher and task metadata.
+/// The key is derived from the matcher's kind, status, and the task's metadata values
+/// for the matcher's fields.
+fn compute_lock_key(
+    prefix: Option<&str>,
+    matcher: &Matcher,
+    task_metadata: &serde_json::Value,
+) -> i64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if let Some(p) = prefix {
+        p.hash(&mut hasher);
+    }
+    matcher.kind.hash(&mut hasher);
+    matcher.status.hash(&mut hasher);
+    for field in &matcher.fields {
+        field.hash(&mut hasher);
+        if let Some(val) = task_metadata.get(field) {
+            val.to_string().hash(&mut hasher);
+        }
+    }
+    hasher.finish() as i64
+}
+
+/// Compute a deterministic i64 advisory lock key from a concurrency rule and task metadata.
+pub fn concurrency_lock_key(rule: &ConcurencyRule, task_metadata: &serde_json::Value) -> i64 {
+    compute_lock_key(None, &rule.matcher, task_metadata)
+}
+
+/// Compute a deterministic i64 advisory lock key for a capacity rule and task metadata.
+/// Uses a "capacity" prefix to avoid collisions with concurrency lock keys.
+pub fn capacity_lock_key(rule: &CapacityRule, task_metadata: &serde_json::Value) -> i64 {
+    compute_lock_key(Some("capacity"), &rule.matcher, task_metadata)
 }
 
 impl ToSql<Jsonb, Pg> for Rules {

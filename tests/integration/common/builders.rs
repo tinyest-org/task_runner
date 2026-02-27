@@ -55,6 +55,41 @@ pub fn task_with_deps(
     })
 }
 
+/// Helper to create a task with custom metadata.
+pub fn task_with_metadata(
+    id: &str,
+    name: &str,
+    kind: &str,
+    metadata: serde_json::Value,
+) -> serde_json::Value {
+    json!({
+        "id": id,
+        "name": name,
+        "kind": kind,
+        "timeout": 60,
+        "metadata": metadata,
+        "on_start": webhook_action()
+    })
+}
+
+/// Helper to create a task with concurrency/capacity rules.
+pub fn task_with_rules(
+    id: &str,
+    name: &str,
+    kind: &str,
+    rules: serde_json::Value,
+) -> serde_json::Value {
+    json!({
+        "id": id,
+        "name": name,
+        "kind": kind,
+        "timeout": 60,
+        "metadata": {"test": true},
+        "on_start": webhook_action(),
+        "rules": rules
+    })
+}
+
 /// Helper to build an UpdateTaskDto that marks a task as Success.
 pub fn success_dto() -> UpdateTaskDto {
     UpdateTaskDto {

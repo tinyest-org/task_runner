@@ -3,13 +3,11 @@ use crate::{
     dtos::{self, TaskDto},
     metrics,
     models::{self, Action, Link, NewAction, StatusKind, Task},
-    rule::{CapacityRule, Matcher, Strategy},
+    rule::{self, Matcher, Strategy},
 };
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use serde_json::json;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 
 use super::{DbError, run_in_transaction};
@@ -20,33 +18,14 @@ async fn handle_dedupe<'a>(
     rules: Vec<Matcher>,
     _metadata: &Option<serde_json::Value>,
 ) -> Result<bool, DbError> {
+    let empty_metadata = serde_json::Value::Null;
     for matcher in rules.iter() {
         use crate::schema::task::dsl::*;
         use diesel::PgJsonbExpressionMethods;
-        let mut m = json!({});
-        if let Some(_m) = _metadata {
-            let mut fields_ok = true;
-            for e in &matcher.fields {
-                let k = _m.get(e);
-                match k {
-                    Some(v) => {
-                        m[e] = v.clone();
-                    }
-                    None => {
-                        log::warn!(
-                            "Metadata missing field '{}' required by dedupe matcher, skipping rule",
-                            e
-                        );
-                        fields_ok = false;
-                        break;
-                    }
-                }
-            }
-            if !fields_ok {
-                // Skip this rule (allow creation) since we can't evaluate it
-                continue;
-            }
-        } else if !matcher.fields.is_empty() {
+
+        let meta_ref = _metadata.as_ref().unwrap_or(&empty_metadata);
+
+        if !matcher.fields.is_empty() && _metadata.is_none() {
             // Metadata is None but the matcher requires field comparisons.
             // We can't evaluate this rule without metadata, so skip it
             // (allow creation). Without this guard, m stays as {} and
@@ -58,6 +37,18 @@ async fn handle_dedupe<'a>(
             );
             continue;
         }
+
+        let m = match matcher.extract_metadata_fields(meta_ref) {
+            Ok(m) => m,
+            Err(field) => {
+                log::warn!(
+                    "Metadata missing field '{}' required by dedupe matcher, skipping rule",
+                    field
+                );
+                continue;
+            }
+        };
+
         let count = task
             .filter(
                 kind.eq(&matcher.kind)
@@ -325,39 +316,126 @@ pub enum ClaimResult {
     AlreadyClaimed,
 }
 
-/// Compute a deterministic i64 advisory lock key from a concurrency rule and task metadata.
-/// The key is derived from the rule's kind, status, and the task's metadata values for the
-/// rule's fields.
-pub(crate) fn concurrency_lock_key(
-    rule: &crate::rule::ConcurencyRule,
-    task_metadata: &serde_json::Value,
-) -> i64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    rule.matcher.kind.hash(&mut hasher);
-    rule.matcher.status.hash(&mut hasher);
-    for field in &rule.matcher.fields {
-        field.hash(&mut hasher);
-        if let Some(val) = task_metadata.get(field) {
-            val.to_string().hash(&mut hasher);
-        }
-    }
-    hasher.finish() as i64
+pub(crate) use rule::capacity_lock_key;
+/// Re-export lock key functions from rule module for use by other crates/modules.
+pub(crate) use rule::concurrency_lock_key;
+
+/// Pre-computed parameters for the rule-check-and-claim SQL query.
+/// Built from a task's rules and metadata before entering the transaction,
+/// so no references to the Task are needed inside the closure.
+struct RuleQueryParams {
+    lock_keys: Vec<i64>,
+    // Concurrency rule arrays (parallel arrays, one entry per rule)
+    conc_kinds: Vec<String>,
+    conc_meta_texts: Vec<String>,
+    conc_statuses: Vec<StatusKind>,
+    conc_include_claimed: Vec<bool>,
+    conc_thresholds: Vec<i64>,
+    // Capacity rule arrays (parallel arrays, one entry per rule)
+    cap_kinds: Vec<String>,
+    cap_meta_texts: Vec<String>,
+    cap_max_capacities: Vec<i64>,
 }
 
-/// Compute a deterministic i64 advisory lock key for a capacity rule and task metadata.
-/// Uses a "capacity" prefix to avoid collisions with concurrency lock keys.
-pub(crate) fn capacity_lock_key(rule: &CapacityRule, task_metadata: &serde_json::Value) -> i64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    "capacity".hash(&mut hasher);
-    rule.matcher.kind.hash(&mut hasher);
-    rule.matcher.status.hash(&mut hasher);
-    for field in &rule.matcher.fields {
-        field.hash(&mut hasher);
-        if let Some(val) = task_metadata.get(field) {
-            val.to_string().hash(&mut hasher);
+impl RuleQueryParams {
+    /// Build query parameters from a task's rules and metadata.
+    /// Returns `Err(ClaimResult::RuleBlocked)` if a rule cannot be evaluated
+    /// (missing metadata field or missing expected_count for capacity).
+    fn from_task(t: &Task) -> Result<Self, ClaimResult> {
+        let rules = &t.start_condition.0;
+        let task_id = t.id;
+
+        let mut params = RuleQueryParams {
+            lock_keys: Vec::new(),
+            conc_kinds: Vec::new(),
+            conc_meta_texts: Vec::new(),
+            conc_statuses: Vec::new(),
+            conc_include_claimed: Vec::new(),
+            conc_thresholds: Vec::new(),
+            cap_kinds: Vec::new(),
+            cap_meta_texts: Vec::new(),
+            cap_max_capacities: Vec::new(),
+        };
+
+        for strategy in rules {
+            match strategy {
+                Strategy::Concurency(concurrency_rule) => {
+                    let m = match concurrency_rule
+                        .matcher
+                        .extract_metadata_fields(&t.metadata)
+                    {
+                        Ok(m) => m,
+                        Err(field) => {
+                            log::warn!(
+                                "Task {} missing metadata field '{}' required by concurrency rule, blocking",
+                                task_id,
+                                field
+                            );
+                            return Err(ClaimResult::RuleBlocked);
+                        }
+                    };
+
+                    let lock_key = concurrency_lock_key(concurrency_rule, &t.metadata);
+                    let is_same_kind = concurrency_rule.matcher.kind == t.kind;
+                    let include_claimed = concurrency_rule.matcher.status == StatusKind::Running;
+
+                    // Pre-compute threshold for the SQL check (`count >= threshold` means blocked):
+                    // is_same_kind  → count < max  → blocked when count >= max
+                    // !is_same_kind → count <= max → blocked when count >= max + 1
+                    let threshold = if is_same_kind {
+                        concurrency_rule.max_concurency as i64
+                    } else {
+                        (concurrency_rule.max_concurency + 1) as i64
+                    };
+
+                    params.lock_keys.push(lock_key);
+                    params
+                        .conc_kinds
+                        .push(concurrency_rule.matcher.kind.clone());
+                    params.conc_meta_texts.push(m.to_string());
+                    params.conc_statuses.push(concurrency_rule.matcher.status);
+                    params.conc_include_claimed.push(include_claimed);
+                    params.conc_thresholds.push(threshold);
+                }
+                Strategy::Capacity(capacity_rule) => {
+                    let m = match capacity_rule.matcher.extract_metadata_fields(&t.metadata) {
+                        Ok(m) => m,
+                        Err(field) => {
+                            log::warn!(
+                                "Task {} missing metadata field '{}' required by capacity rule, blocking",
+                                task_id,
+                                field
+                            );
+                            return Err(ClaimResult::RuleBlocked);
+                        }
+                    };
+
+                    // Candidate must have expected_count set
+                    if t.expected_count.is_none() {
+                        log::warn!(
+                            "Task {} has a Capacity rule but no expected_count, blocking",
+                            task_id,
+                        );
+                        return Err(ClaimResult::RuleBlocked);
+                    }
+
+                    let lock_key = capacity_lock_key(capacity_rule, &t.metadata);
+                    params.lock_keys.push(lock_key);
+                    params.cap_kinds.push(capacity_rule.matcher.kind.clone());
+                    params.cap_meta_texts.push(m.to_string());
+                    params
+                        .cap_max_capacities
+                        .push(capacity_rule.max_capacity as i64);
+                }
+            }
         }
+
+        // Sort and deduplicate lock keys to acquire them in consistent order (prevents deadlocks)
+        params.lock_keys.sort();
+        params.lock_keys.dedup();
+
+        Ok(params)
     }
-    hasher.finish() as i64
 }
 
 /// Atomically check concurrency rules and claim a task within a single transaction,
@@ -377,10 +455,8 @@ pub async fn claim_task_with_rules<'a>(
     conn: &mut Conn<'a>,
     t: &Task,
 ) -> Result<ClaimResult, DbError> {
-    let rules = &t.start_condition.0;
-
     // No rules — just do a plain claim (no advisory lock needed)
-    if rules.is_empty() {
+    if t.start_condition.0.is_empty() {
         return match claim_task(conn, &t.id).await? {
             true => Ok(ClaimResult::Claimed),
             false => Ok(ClaimResult::AlreadyClaimed),
@@ -389,110 +465,22 @@ pub async fn claim_task_with_rules<'a>(
 
     // Pre-compute everything we need before entering the transaction closure.
     let task_id = t.id;
+    let params = match RuleQueryParams::from_task(t) {
+        Ok(p) => p,
+        Err(result) => return Ok(result),
+    };
 
-    let mut lock_keys: Vec<i64> = Vec::new();
-
-    // Concurrency rule arrays (parallel arrays, one entry per rule)
-    let mut conc_kinds: Vec<String> = Vec::new();
-    let mut conc_meta_texts: Vec<String> = Vec::new();
-    let mut conc_statuses: Vec<StatusKind> = Vec::new();
-    let mut conc_include_claimed: Vec<bool> = Vec::new();
-    let mut conc_thresholds: Vec<i64> = Vec::new();
-
-    // Capacity rule arrays (parallel arrays, one entry per rule)
-    let mut cap_kinds: Vec<String> = Vec::new();
-    let mut cap_meta_texts: Vec<String> = Vec::new();
-    let mut cap_max_capacities: Vec<i64> = Vec::new();
-
-    for strategy in rules {
-        match strategy {
-            Strategy::Concurency(concurrency_rule) => {
-                let mut m = json!({});
-                let mut fields_ok = true;
-                for field in &concurrency_rule.matcher.fields {
-                    match t.metadata.get(field) {
-                        Some(v) => {
-                            m[field] = v.clone();
-                        }
-                        None => {
-                            log::warn!(
-                                "Task {} missing metadata field '{}' required by concurrency rule, blocking",
-                                task_id,
-                                field
-                            );
-                            fields_ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !fields_ok {
-                    return Ok(ClaimResult::RuleBlocked);
-                }
-
-                let lock_key = concurrency_lock_key(concurrency_rule, &t.metadata);
-                let is_same_kind = concurrency_rule.matcher.kind == t.kind;
-                let include_claimed = concurrency_rule.matcher.status == StatusKind::Running;
-
-                // Pre-compute threshold for the SQL check (`count >= threshold` means blocked):
-                // is_same_kind  → count < max  → blocked when count >= max
-                // !is_same_kind → count <= max → blocked when count >= max + 1
-                let threshold = if is_same_kind {
-                    concurrency_rule.max_concurency as i64
-                } else {
-                    (concurrency_rule.max_concurency + 1) as i64
-                };
-
-                lock_keys.push(lock_key);
-                conc_kinds.push(concurrency_rule.matcher.kind.clone());
-                conc_meta_texts.push(m.to_string());
-                conc_statuses.push(concurrency_rule.matcher.status);
-                conc_include_claimed.push(include_claimed);
-                conc_thresholds.push(threshold);
-            }
-            Strategy::Capacity(capacity_rule) => {
-                let mut m = json!({});
-                let mut fields_ok = true;
-                for field in &capacity_rule.matcher.fields {
-                    match t.metadata.get(field) {
-                        Some(v) => {
-                            m[field] = v.clone();
-                        }
-                        None => {
-                            log::warn!(
-                                "Task {} missing metadata field '{}' required by capacity rule, blocking",
-                                task_id,
-                                field
-                            );
-                            fields_ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !fields_ok {
-                    return Ok(ClaimResult::RuleBlocked);
-                }
-
-                // Candidate must have expected_count set
-                if t.expected_count.is_none() {
-                    log::warn!(
-                        "Task {} has a Capacity rule but no expected_count, blocking",
-                        task_id,
-                    );
-                    return Ok(ClaimResult::RuleBlocked);
-                }
-
-                let lock_key = capacity_lock_key(capacity_rule, &t.metadata);
-                lock_keys.push(lock_key);
-                cap_kinds.push(capacity_rule.matcher.kind.clone());
-                cap_meta_texts.push(m.to_string());
-                cap_max_capacities.push(capacity_rule.max_capacity as i64);
-            }
-        }
-    }
-
-    // Sort and deduplicate lock keys to acquire them in consistent order (prevents deadlocks)
-    lock_keys.sort();
-    lock_keys.dedup();
+    let RuleQueryParams {
+        lock_keys,
+        conc_kinds,
+        conc_meta_texts,
+        conc_statuses,
+        conc_include_claimed,
+        conc_thresholds,
+        cap_kinds,
+        cap_meta_texts,
+        cap_max_capacities,
+    } = params;
 
     run_in_transaction(conn, |conn| {
         Box::pin(async move {

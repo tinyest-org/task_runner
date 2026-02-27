@@ -7,7 +7,6 @@ use std::sync::{
 };
 use task_runner::dtos::BasicTaskDto;
 use task_runner::models::StatusKind;
-use tokio::io::AsyncWriteExt;
 
 #[tokio::test]
 async fn test_start_loop_marks_task_failed_on_start_webhook_error() {
@@ -321,36 +320,4 @@ async fn test_timeout_propagates_failure_to_children() {
         child.failure_reason.is_some(),
         "Child should have a failure reason"
     );
-}
-
-fn spawn_webhook_server(hits: Arc<AtomicUsize>) -> (String, tokio::sync::oneshot::Sender<()>) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                result = listener.accept() => {
-                    if let Ok((mut stream, _)) = result {
-                        let hits = hits.clone();
-                        tokio::spawn(async move {
-                            // Read request (we don't need to parse it fully)
-                            let mut buf = [0u8; 1024];
-                            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-                            hits.fetch_add(1, Ordering::SeqCst);
-                            let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-                            let _ = stream.write_all(response.as_bytes()).await;
-                        });
-                    }
-                }
-                _ = &mut shutdown_rx => break,
-            }
-        }
-    });
-
-    (format!("http://{}/webhook", addr), shutdown_tx)
 }

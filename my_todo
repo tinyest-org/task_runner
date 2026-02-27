@@ -1,8 +1,4 @@
-- optimisation des perfos
 - optimisation de la propagation des states vers les childrens
 - ajouter une notion de transport autre que http+json
-- fournir un sdk pour faciliter l'integration
-- update le front -> solidjs
-- update la CI
 - audit de perfo
-- gérer le expected count comme champs sur une task pour suivre l'aancement
+- lecture vers les dto directements pour les perfos

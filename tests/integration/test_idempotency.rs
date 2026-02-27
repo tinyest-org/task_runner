@@ -1,13 +1,11 @@
 use crate::common::*;
 
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 use task_runner::models::{TriggerCondition, TriggerKind};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Test that the start webhook idempotency guard prevents duplicate execution.
 ///
@@ -374,7 +372,7 @@ async fn test_requeue_claimed_skips_on_start_when_idempotent() {
     let app = test_service!(state);
 
     let hits = Arc::new(AtomicUsize::new(0));
-    let (webhook_url, shutdown_server) = spawn_counting_webhook_server(hits.clone());
+    let (webhook_url, shutdown_server) = spawn_webhook_server(hits.clone());
 
     let task_payload = json!({
         "id": "idem-requeue",
@@ -473,106 +471,4 @@ async fn test_requeue_claimed_skips_on_start_when_idempotent() {
         1,
         "Requeued task should not re-fire on_start webhook"
     );
-}
-
-fn spawn_counting_webhook_server(
-    hits: Arc<AtomicUsize>,
-) -> (String, tokio::sync::oneshot::Sender<()>) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                result = listener.accept() => {
-                    if let Ok((mut stream, _)) = result {
-                        let hits = hits.clone();
-                        tokio::spawn(async move {
-                            let mut buf = [0u8; 1024];
-                            let _ = stream.read(&mut buf).await;
-                            hits.fetch_add(1, Ordering::SeqCst);
-                            let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-                            let _ = stream.write_all(response.as_bytes()).await;
-                        });
-                    }
-                }
-                _ = &mut shutdown_rx => break,
-            }
-        }
-    });
-
-    (format!("http://{}/webhook", addr), shutdown_tx)
-}
-
-fn spawn_header_capture_server() -> (
-    String,
-    tokio::sync::oneshot::Receiver<HashMap<String, String>>,
-    tokio::sync::oneshot::Sender<()>,
-) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let (headers_tx, headers_rx) = tokio::sync::oneshot::channel::<HashMap<String, String>>();
-    let headers_tx = Arc::new(tokio::sync::Mutex::new(Some(headers_tx)));
-
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                result = listener.accept() => {
-                    if let Ok((mut stream, _)) = result {
-                        let headers_tx = headers_tx.clone();
-                        tokio::spawn(async move {
-                            let mut data = Vec::new();
-                            let mut buf = [0u8; 1024];
-                            loop {
-                                let read = match stream.read(&mut buf).await {
-                                    Ok(n) => n,
-                                    Err(_) => 0,
-                                };
-                                if read == 0 {
-                                    break;
-                                }
-                                data.extend_from_slice(&buf[..read]);
-                                if data.windows(4).any(|w| w == b"\r\n\r\n") {
-                                    break;
-                                }
-                            }
-
-                            let mut headers = HashMap::new();
-                            let text = String::from_utf8_lossy(&data);
-                            for line in text.lines().skip(1) {
-                                let line = line.trim_end();
-                                if line.is_empty() {
-                                    break;
-                                }
-                                if let Some((k, v)) = line.split_once(':') {
-                                    headers.insert(
-                                        k.trim().to_ascii_lowercase(),
-                                        v.trim().to_string(),
-                                    );
-                                }
-                            }
-
-                            if let Some(tx) = headers_tx.lock().await.take() {
-                                let _ = tx.send(headers);
-                            }
-
-                            let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-                            let _ = stream.write_all(response.as_bytes()).await;
-                        });
-                    }
-                }
-                _ = &mut shutdown_rx => break,
-            }
-        }
-    });
-
-    (format!("http://{}/webhook", addr), headers_rx, shutdown_tx)
 }

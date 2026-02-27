@@ -86,7 +86,7 @@ async fn test_cancel_webhook_fires_after_on_start_registers_cancel_action() {
 
     // Set up a webhook server that returns a cancel action in the on_start response
     let cancel_hits = Arc::new(AtomicUsize::new(0));
-    let (cancel_url, cancel_shutdown) = spawn_counting_server(cancel_hits.clone());
+    let (cancel_url, cancel_shutdown) = spawn_webhook_server(cancel_hits.clone());
 
     let (start_url, start_shutdown) = spawn_server_returning_cancel_action(&cancel_url);
 
@@ -163,38 +163,6 @@ async fn test_cancel_webhook_fires_after_on_start_registers_cancel_action() {
 
     let _ = cancel_shutdown.send(());
     let _ = start_shutdown.send(());
-}
-
-/// Spawn a minimal TCP server that counts incoming requests.
-fn spawn_counting_server(hits: Arc<AtomicUsize>) -> (String, tokio::sync::oneshot::Sender<()>) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                result = listener.accept() => {
-                    if let Ok((mut stream, _)) = result {
-                        let hits = hits.clone();
-                        tokio::spawn(async move {
-                            let mut buf = [0u8; 4096];
-                            let _ = stream.read(&mut buf).await;
-                            hits.fetch_add(1, Ordering::SeqCst);
-                            let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
-                            let _ = stream.write_all(response.as_bytes()).await;
-                        });
-                    }
-                }
-                _ = &mut shutdown_rx => break,
-            }
-        }
-    });
-
-    (format!("http://{}/cancel", addr), shutdown_tx)
 }
 
 /// Spawn a webhook server that responds to on_start with a NewActionDto (cancel action).
