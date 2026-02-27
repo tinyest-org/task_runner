@@ -338,6 +338,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcrun"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "actix-http",
+ "actix-rt",
+ "actix-web",
+ "actix-web-prometheus",
+ "chrono",
+ "dashmap",
+ "diesel",
+ "diesel-async",
+ "diesel-derive-enum",
+ "diesel_migrations",
+ "dotenvy",
+ "env_logger",
+ "futures-util",
+ "log",
+ "mimalloc",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "prometheus",
+ "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 2.0.12",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "url",
+ "utoipa",
+ "utoipa-swagger-ui",
+ "uuid",
+]
+
+[[package]]
+name = "arcrun-sdk"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "uuid",
+]
+
+[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3169,62 +3225,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "task-runner"
-version = "0.1.0"
-dependencies = [
- "actix",
- "actix-http",
- "actix-rt",
- "actix-web",
- "actix-web-prometheus",
- "chrono",
- "dashmap",
- "diesel",
- "diesel-async",
- "diesel-derive-enum",
- "diesel_migrations",
- "dotenvy",
- "env_logger",
- "futures-util",
- "log",
- "mimalloc",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "prometheus",
- "reqwest",
- "rustls",
- "rustls-platform-verifier",
- "serde",
- "serde_json",
- "testcontainers",
- "testcontainers-modules",
- "thiserror 2.0.12",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "url",
- "utoipa",
- "utoipa-swagger-ui",
- "uuid",
-]
-
-[[package]]
-name = "task-runner-sdk"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.12",
- "uuid",
 ]
 
 [[package]]

@@ -10,8 +10,8 @@ services:
     ports:
       - 5434:5432
 
-  # task-runner:
-  #   image: task-runner
+  # arcrun:
+  #   image: arcrun
   #   environment:
   #     - DATABASE_URL=postgres://test_user:testing@postgres/testing_db
   #     - HOST_URL=http://localhost:8085

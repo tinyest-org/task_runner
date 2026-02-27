@@ -1,5 +1,5 @@
 {
-  "name": "task-runner-ui",
+  "name": "arcrun-ui",
   "private": true,
   "type": "module",
   "scripts": {

@@ -6,7 +6,7 @@ Garantir que les webhooks (`on_start`, `on_success`, `on_failure`, `on_cancel`) 
 ## Principes
 - La clé d'idempotence doit être **déterministe** et **stable** pour un même événement.
 - Le serveur doit **envoyer** la clé à la cible (header HTTP) et **enregistrer** localement l'exécution pour éviter les doublons.
-- Le consommateur du webhook doit pouvoir **dédupliquer** côté serveur (recommandé), mais le task-runner doit aussi empêcher les doubles envois autant que possible.
+- Le consommateur du webhook doit pouvoir **dédupliquer** côté serveur (recommandé), mais le arcrun doit aussi empêcher les doubles envois autant que possible.
 
 ## Spécification proposée
 ### Clé d'idempotence

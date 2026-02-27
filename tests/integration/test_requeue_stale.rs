@@ -1,7 +1,7 @@
 use crate::common::*;
 
+use arcrun::models::StatusKind;
 use std::sync::Arc;
-use task_runner::models::StatusKind;
 
 /// Priority 1 — Requeue of stale Claimed tasks (timeout loop).
 /// Simulates worker crash leaving tasks stuck in Claimed state.
@@ -18,7 +18,7 @@ async fn test_stale_claimed_task_requeued_to_pending() {
 
     // Claim the task (Pending -> Claimed)
     let mut conn = state.pool.get().await.unwrap();
-    let claimed = task_runner::db_operation::claim_task(&mut conn, &task_id)
+    let claimed = arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
     assert!(claimed);
@@ -45,7 +45,7 @@ async fn test_stale_claimed_task_requeued_to_pending() {
     let evaluator = Arc::new(state.action_executor.clone());
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::timeout_loop(
+        arcrun::workers::timeout_loop(
             evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -85,7 +85,7 @@ async fn test_recently_claimed_task_not_requeued() {
 
     // Claim the task — last_updated is now()
     let mut conn = state.pool.get().await.unwrap();
-    let claimed = task_runner::db_operation::claim_task(&mut conn, &task_id)
+    let claimed = arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
     assert!(claimed);
@@ -96,7 +96,7 @@ async fn test_recently_claimed_task_not_requeued() {
     let evaluator = Arc::new(state.action_executor.clone());
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::timeout_loop(
+        arcrun::workers::timeout_loop(
             evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -132,7 +132,7 @@ async fn test_requeued_task_picked_up_by_start_loop() {
 
     // Claim, then make it stale
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
     {
@@ -155,7 +155,7 @@ async fn test_requeued_task_picked_up_by_start_loop() {
     let evaluator = Arc::new(state.action_executor.clone());
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::timeout_loop(
+        arcrun::workers::timeout_loop(
             evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -182,7 +182,7 @@ async fn test_requeued_task_picked_up_by_start_loop() {
     let evaluator2 = state.action_executor.clone();
     let pool2 = state.pool.clone();
     let handle2 = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator2,
             pool2,
             std::time::Duration::from_millis(50),

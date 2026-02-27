@@ -39,7 +39,7 @@ impl From<HttpVerb> for reqwest::Method {
 /// Parameters for a Webhook action. This is the structure expected in `NewActionDto.params`
 /// when `kind` is `Webhook`.
 ///
-/// When the webhook is called, the task runner appends a `?handle=<host>/task/<task_uuid>`
+/// When the webhook is called, the ArcRun appends a `?handle=<host>/task/<task_uuid>`
 /// query parameter to the URL. Your webhook handler should use this URL to report task
 /// completion via `PATCH` or `PUT`.
 ///

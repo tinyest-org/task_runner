@@ -1,4 +1,4 @@
-//! Types mirroring the Task Runner API DTOs.
+//! Types mirroring the ArcRun API DTOs.
 //!
 //! These are standalone (no diesel/actix dependencies) and can be used
 //! directly with the SDK client.

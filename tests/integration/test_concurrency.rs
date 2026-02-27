@@ -1,9 +1,9 @@
 use crate::common::*;
 
+use arcrun::db_operation::{ClaimResult, claim_task_with_rules};
+use arcrun::models::{StatusKind, Task};
+use arcrun::rule::{CapacityRule, ConcurencyRule, Matcher, Rules, Strategy};
 use serde_json::json;
-use task_runner::db_operation::{ClaimResult, claim_task_with_rules};
-use task_runner::models::{StatusKind, Task};
-use task_runner::rule::{CapacityRule, ConcurencyRule, Matcher, Rules, Strategy};
 
 /// Helper: build a minimal Task struct from a TaskDto and known metadata/rules.
 /// Only the fields used by `claim_task_with_rules` matter (id, kind, metadata, start_condition).
@@ -221,10 +221,10 @@ async fn test_concurrency_blocks_when_limit_reached() {
     assert_task_status(&app, id2, StatusKind::Pending, "second task still Pending").await;
 
     // Mark first task as Running then complete it
-    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+    arcrun::db_operation::mark_task_running(&mut conn, &id1)
         .await
         .unwrap();
-    let update_result = task_runner::db_operation::update_running_task(
+    let update_result = arcrun::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
         id1,
@@ -235,7 +235,7 @@ async fn test_concurrency_blocks_when_limit_reached() {
     .unwrap();
     assert_eq!(
         update_result,
-        task_runner::db_operation::UpdateTaskResult::Updated,
+        arcrun::db_operation::UpdateTaskResult::Updated,
         "First task should be updated to Success"
     );
 
@@ -411,7 +411,7 @@ fn make_task_for_claim_with_expected(
 
 /// Helper: directly set success/failures counters on a task via raw SQL.
 async fn set_task_counters(
-    pool: &task_runner::DbPool,
+    pool: &arcrun::DbPool,
     task_id: uuid::Uuid,
     success: i32,
     failures: i32,
@@ -521,7 +521,7 @@ async fn test_capacity_allows_when_under_limit() {
         make_task_for_claim_with_expected(id1, "cap-enforce", json!({}), rules.clone(), Some(200));
     let result1 = claim_task_with_rules(&mut conn, &t1).await.unwrap();
     assert_eq!(result1, ClaimResult::Claimed);
-    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+    arcrun::db_operation::mark_task_running(&mut conn, &id1)
         .await
         .unwrap();
 
@@ -583,7 +583,7 @@ async fn test_capacity_blocks_when_at_limit() {
         make_task_for_claim_with_expected(id1, "cap-block", json!({}), rules.clone(), Some(500));
     let result1 = claim_task_with_rules(&mut conn, &t1).await.unwrap();
     assert_eq!(result1, ClaimResult::Claimed);
-    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+    arcrun::db_operation::mark_task_running(&mut conn, &id1)
         .await
         .unwrap();
 
@@ -647,7 +647,7 @@ async fn test_capacity_allows_large_candidate_when_room() {
         make_task_for_claim_with_expected(id1, "cap-large", json!({}), rules.clone(), Some(200));
     let result1 = claim_task_with_rules(&mut conn, &t1).await.unwrap();
     assert_eq!(result1, ClaimResult::Claimed);
-    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+    arcrun::db_operation::mark_task_running(&mut conn, &id1)
         .await
         .unwrap();
 
@@ -709,7 +709,7 @@ async fn test_capacity_accounts_for_progress() {
         make_task_for_claim_with_expected(id1, "cap-progress", json!({}), rules.clone(), Some(600));
     let result1 = claim_task_with_rules(&mut conn, &t1).await.unwrap();
     assert_eq!(result1, ClaimResult::Claimed);
-    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+    arcrun::db_operation::mark_task_running(&mut conn, &id1)
         .await
         .unwrap();
 
@@ -891,7 +891,7 @@ async fn test_capacity_zero_or_null_expected_count_contributes_zero() {
     );
     let result_null = claim_task_with_rules(&mut conn, &t_null).await.unwrap();
     assert_eq!(result_null, ClaimResult::Claimed);
-    task_runner::db_operation::mark_task_running(&mut conn, &id_null)
+    arcrun::db_operation::mark_task_running(&mut conn, &id_null)
         .await
         .unwrap();
 
@@ -905,7 +905,7 @@ async fn test_capacity_zero_or_null_expected_count_contributes_zero() {
     );
     let result_zero = claim_task_with_rules(&mut conn, &t_zero).await.unwrap();
     assert_eq!(result_zero, ClaimResult::Claimed);
-    task_runner::db_operation::mark_task_running(&mut conn, &id_zero)
+    arcrun::db_operation::mark_task_running(&mut conn, &id_zero)
         .await
         .unwrap();
 
@@ -990,7 +990,7 @@ async fn test_capacity_respects_metadata_fields() {
     );
     let result1 = claim_task_with_rules(&mut conn, &t1).await.unwrap();
     assert_eq!(result1, ClaimResult::Claimed);
-    task_runner::db_operation::mark_task_running(&mut conn, &id1)
+    arcrun::db_operation::mark_task_running(&mut conn, &id1)
         .await
         .unwrap();
 
@@ -1100,7 +1100,7 @@ async fn test_capacity_combined_with_concurrency() {
             "Task {} should be claimed",
             i + 1
         );
-        task_runner::db_operation::mark_task_running(&mut conn, &ids[i])
+        arcrun::db_operation::mark_task_running(&mut conn, &ids[i])
             .await
             .unwrap();
     }
@@ -1121,7 +1121,7 @@ async fn test_capacity_combined_with_concurrency() {
     );
 
     // Complete task 1 so concurrency has room (count=2)
-    let update_result = task_runner::db_operation::update_running_task(
+    let update_result = arcrun::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
         ids[0],
@@ -1132,7 +1132,7 @@ async fn test_capacity_combined_with_concurrency() {
     .unwrap();
     assert_eq!(
         update_result,
-        task_runner::db_operation::UpdateTaskResult::Updated
+        arcrun::db_operation::UpdateTaskResult::Updated
     );
 
     // Now count=2 < 3 and sum=200 < 500 → both pass

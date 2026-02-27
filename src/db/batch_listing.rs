@@ -221,7 +221,7 @@ pub(crate) async fn update_batch_rules<'a>(
         .await?;
 
     if total == 0 {
-        return Err(crate::error::TaskRunnerError::NotFound {
+        return Err(crate::error::ArcRunError::NotFound {
             message: format!("No tasks found for batch {}", bid),
         });
     }

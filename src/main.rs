@@ -1,4 +1,4 @@
-//! Task Runner HTTP Server
+//! ArcRun HTTP Server
 //!
 //! A service for orchestrating task execution with DAG dependencies,
 //! concurrency control, and webhook-based actions.
@@ -11,8 +11,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use actix_web::{App, HttpServer, web};
 use actix_web_prometheus::PrometheusMetricsBuilder;
-use diesel::{Connection, PgConnection};
-use task_runner::{
+use arcrun::{
     DbPool,
     action::{ActionContext, ActionExecutor},
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
@@ -23,6 +22,7 @@ use task_runner::{
     validation,
     workers::UpdateEvent,
 };
+use diesel::{Connection, PgConnection};
 use tokio::sync::{mpsc, watch};
 
 use diesel_migrations::MigrationHarness;
@@ -209,7 +209,7 @@ fn spawn_workers(
         let dead_end_enabled = config.worker.dead_end_cancel_enabled;
         let shutdown = shutdown_rx.clone();
         actix_web::rt::spawn(async move {
-            task_runner::workers::start_loop(
+            arcrun::workers::start_loop(
                 executor.as_ref(),
                 pool,
                 interval,
@@ -228,7 +228,7 @@ fn spawn_workers(
         let dead_end_enabled = config.worker.dead_end_cancel_enabled;
         let shutdown = shutdown_rx.clone();
         actix_web::rt::spawn(async move {
-            task_runner::workers::timeout_loop(
+            arcrun::workers::timeout_loop(
                 executor,
                 pool,
                 interval,
@@ -245,7 +245,7 @@ fn spawn_workers(
         let interval = config.worker.batch_flush_interval;
         let shutdown = shutdown_rx.clone();
         actix_web::rt::spawn(async move {
-            task_runner::workers::batch_updater(pool, receiver, interval, shutdown).await;
+            arcrun::workers::batch_updater(pool, receiver, interval, shutdown).await;
         })
     };
 
@@ -254,7 +254,7 @@ fn spawn_workers(
         let retention_config = config.retention.clone();
         let shutdown = shutdown_rx.clone();
         actix_web::rt::spawn(async move {
-            task_runner::workers::retention_cleanup_loop(pool, retention_config, shutdown).await;
+            arcrun::workers::retention_cleanup_loop(pool, retention_config, shutdown).await;
         })
     };
 

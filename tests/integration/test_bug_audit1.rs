@@ -1,7 +1,7 @@
 use crate::common::*;
 
+use arcrun::models::StatusKind;
 use serde_json::json;
-use task_runner::models::StatusKind;
 
 /// Bug #1: Duplicate webhook execution across multiple workers (multi-instance race).
 ///
@@ -27,13 +27,13 @@ async fn test_bug1_claim_task_atomic_prevents_duplicate_execution() {
     let (claim1, claim2) = tokio::join!(
         tokio::spawn(async move {
             let mut conn = pool1.get().await.unwrap();
-            task_runner::db_operation::claim_task(&mut conn, &task_id)
+            arcrun::db_operation::claim_task(&mut conn, &task_id)
                 .await
                 .unwrap()
         }),
         tokio::spawn(async move {
             let mut conn = pool2.get().await.unwrap();
-            task_runner::db_operation::claim_task(&mut conn, &task_id)
+            arcrun::db_operation::claim_task(&mut conn, &task_id)
                 .await
                 .unwrap()
         })
@@ -86,15 +86,15 @@ async fn test_bug2_double_update_no_negative_counters() {
     assert_eq!(ws, 1, "Initial wait_success should be 1");
 
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &parent_id)
+    arcrun::db_operation::claim_task(&mut conn, &parent_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &parent_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &parent_id)
         .await
         .unwrap();
 
     // First update: should succeed and propagate
-    let res1 = task_runner::db_operation::update_running_task(
+    let res1 = arcrun::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
         parent_id,
@@ -105,12 +105,12 @@ async fn test_bug2_double_update_no_negative_counters() {
     .unwrap();
     assert_eq!(
         res1,
-        task_runner::db_operation::UpdateTaskResult::Updated,
+        arcrun::db_operation::UpdateTaskResult::Updated,
         "First update should succeed"
     );
 
     // Second update: should be no-op (task is no longer Running)
-    let res2 = task_runner::db_operation::update_running_task(
+    let res2 = arcrun::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
         parent_id,
@@ -121,7 +121,7 @@ async fn test_bug2_double_update_no_negative_counters() {
     .unwrap();
     assert_eq!(
         res2,
-        task_runner::db_operation::UpdateTaskResult::NotFound,
+        arcrun::db_operation::UpdateTaskResult::NotFound,
         "Second update should be NotFound (task no longer Running, prevents double propagation)"
     );
 
@@ -164,14 +164,14 @@ async fn test_bug3_double_success_update_returns_zero_second_time() {
     let task_id = created[0].id;
 
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 
-    let res1 = task_runner::db_operation::update_running_task(
+    let res1 = arcrun::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
         task_id,
@@ -180,9 +180,9 @@ async fn test_bug3_double_success_update_returns_zero_second_time() {
     )
     .await
     .unwrap();
-    assert_eq!(res1, task_runner::db_operation::UpdateTaskResult::Updated);
+    assert_eq!(res1, arcrun::db_operation::UpdateTaskResult::Updated);
 
-    let res2 = task_runner::db_operation::update_running_task(
+    let res2 = arcrun::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
         task_id,
@@ -193,7 +193,7 @@ async fn test_bug3_double_success_update_returns_zero_second_time() {
     .unwrap();
     assert_eq!(
         res2,
-        task_runner::db_operation::UpdateTaskResult::NotFound,
+        arcrun::db_operation::UpdateTaskResult::NotFound,
         "Second update should be NotFound (task no longer Running) — prevents duplicate webhook execution"
     );
 
@@ -221,10 +221,10 @@ async fn test_bug3_double_update_via_api_second_call_not_200() {
     let task_id = created[0].id;
 
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 
@@ -270,10 +270,10 @@ async fn test_bug4_update_rejects_invalid_status_transitions() {
     let task_id = created[0].id;
 
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 
@@ -311,10 +311,10 @@ async fn test_bug4_failure_requires_reason() {
     let task_id = created[0].id;
 
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 
@@ -355,10 +355,10 @@ async fn test_bug4_rejects_negative_counters() {
     let task_id = created[0].id;
 
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 

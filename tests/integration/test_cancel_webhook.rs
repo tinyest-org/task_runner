@@ -1,11 +1,11 @@
 use crate::common::*;
 
+use arcrun::models::StatusKind;
 use serde_json::json;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use task_runner::models::StatusKind;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Priority 1 — Cancel webhook flow end-to-end
@@ -34,10 +34,10 @@ async fn test_cancel_running_task() {
 
     // Move parent to Running
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &parent_id)
+    arcrun::db_operation::claim_task(&mut conn, &parent_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &parent_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &parent_id)
         .await
         .unwrap();
     drop(conn);
@@ -113,7 +113,7 @@ async fn test_cancel_webhook_fires_after_on_start_registers_cancel_action() {
     let evaluator = state.action_executor.clone();
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),

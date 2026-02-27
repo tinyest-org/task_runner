@@ -94,7 +94,7 @@ jobs:
           context: .
           push: true
           file: Dockerfile
-          tags: plawn/task-runner:${{ github.sha }}-amd64
+          tags: plawn/arcrun:${{ github.sha }}-amd64
           cache-from: type=gha,scope=amd64
           cache-to: type=gha,mode=max,scope=amd64
           platforms: linux/amd64
@@ -123,7 +123,7 @@ jobs:
           context: .
           push: true
           file: Dockerfile
-          tags: plawn/task-runner:${{ github.sha }}-arm64
+          tags: plawn/arcrun:${{ github.sha }}-arm64
           cache-from: type=gha,scope=arm64
           cache-to: type=gha,mode=max,scope=arm64
           platforms: linux/arm64
@@ -137,7 +137,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: plawn/task-runner
+          images: plawn/arcrun
           tags: |
             # Git branch (e.g., master, main, feature-branch)
             type=ref,event=branch
@@ -172,8 +172,8 @@ jobs:
             [ -z "$tag" ] && continue
             echo "Creating manifest for: $tag"
             docker buildx imagetools create -t "$tag" \
-              plawn/task-runner:${{ github.sha }}-amd64 \
-              plawn/task-runner:${{ github.sha }}-arm64
+              plawn/arcrun:${{ github.sha }}-amd64 \
+              plawn/arcrun:${{ github.sha }}-arm64
           done
 
       - name: Delete intermediate architecture tags
@@ -192,5 +192,5 @@ jobs:
             echo "Deleting intermediate tag: ${{ github.sha }}-${arch}"
             curl -s -X DELETE \
               -H "Authorization: JWT ${TOKEN}" \
-              "https://hub.docker.com/v2/repositories/plawn/task-runner/tags/${{ github.sha }}-${arch}/" || true
+              "https://hub.docker.com/v2/repositories/plawn/arcrun/tags/${{ github.sha }}-${arch}/" || true
           done

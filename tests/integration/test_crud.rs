@@ -1,6 +1,6 @@
 use crate::common::*;
 
-use task_runner::models::StatusKind;
+use arcrun::models::StatusKind;
 
 #[tokio::test]
 async fn test_create_single_task() {
@@ -91,11 +91,11 @@ async fn test_update_expected_count_via_patch() {
     // Claim and mark running
     {
         let mut conn = state.pool.get().await.unwrap();
-        let claimed = task_runner::db_operation::claim_task(&mut conn, &task_id)
+        let claimed = arcrun::db_operation::claim_task(&mut conn, &task_id)
             .await
             .unwrap();
         assert!(claimed);
-        let marked = task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+        let marked = arcrun::db_operation::mark_task_running(&mut conn, &task_id)
             .await
             .unwrap();
         assert!(marked);

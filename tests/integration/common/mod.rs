@@ -27,7 +27,7 @@ macro_rules! test_service {
         actix_web::test::init_service(
             actix_web::App::new()
                 .app_data(actix_web::web::Data::new($state.clone()))
-                .configure(task_runner::handlers::configure_routes),
+                .configure(arcrun::handlers::configure_routes),
         )
         .await
     };

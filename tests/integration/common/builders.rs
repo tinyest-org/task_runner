@@ -1,6 +1,6 @@
+use arcrun::dtos::UpdateTaskDto;
+use arcrun::models::StatusKind;
 use serde_json::json;
-use task_runner::dtos::UpdateTaskDto;
-use task_runner::models::StatusKind;
 
 /// Helper to create a valid webhook action JSON.
 /// The trigger is determined by context (on_start, on_success, on_failure),

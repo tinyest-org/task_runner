@@ -302,7 +302,7 @@ pub async fn cancel_task<'a>(
                     | StatusKind::Claimed
                     | StatusKind::Running => {}
                     _ => {
-                        return Err(crate::error::TaskRunnerError::InvalidState {
+                        return Err(crate::error::ArcRunError::InvalidState {
                             message: "Invalid operation: cannot cancel task in this state".into(),
                         });
                     }

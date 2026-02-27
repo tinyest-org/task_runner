@@ -1,6 +1,6 @@
 # Integration Tests
 
-This directory contains end-to-end integration tests for the Task Runner service. These tests use **testcontainers** to spin up a real PostgreSQL database in Docker, ensuring tests run against actual database behavior rather than mocks.
+This directory contains end-to-end integration tests for the ArcRun service. These tests use **testcontainers** to spin up a real PostgreSQL database in Docker, ensuring tests run against actual database behavior rather than mocks.
 
 ## Overview
 

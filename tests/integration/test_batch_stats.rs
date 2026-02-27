@@ -1,7 +1,7 @@
 use crate::common::*;
 
+use arcrun::dtos::{BatchStatsDto, BatchSummaryDto};
 use serde_json::json;
-use task_runner::dtos::{BatchStatsDto, BatchSummaryDto};
 
 /// Priority 2 — GET /batch/{batch_id} (batch stats) and GET /batches (batch listing).
 

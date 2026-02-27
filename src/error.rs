@@ -1,4 +1,4 @@
-//! Error types for the task runner application.
+//! Error types for the ArcRun application.
 //!
 //! This module defines strongly-typed errors for better error handling
 //! and more informative error messages.
@@ -6,9 +6,9 @@
 use actix_web::{HttpResponse, ResponseError, http::StatusCode};
 use thiserror::Error;
 
-/// Main error type for task runner operations.
+/// Main error type for ArcRun operations.
 #[derive(Error, Debug)]
-pub enum TaskRunnerError {
+pub enum ArcRunError {
     /// Database-related errors
     #[error("Database error: {0}")]
     Database(#[from] diesel::result::Error),
@@ -93,43 +93,41 @@ impl ResponseError for ApiError {
     }
 }
 
-impl From<TaskRunnerError> for ApiError {
-    fn from(err: TaskRunnerError) -> Self {
+impl From<ArcRunError> for ApiError {
+    fn from(err: ArcRunError) -> Self {
         match err {
-            TaskRunnerError::TaskNotFound(id) => {
-                ApiError::NotFound(format!("Task {} not found", id))
-            }
-            TaskRunnerError::NotFound { message } => ApiError::NotFound(message),
-            TaskRunnerError::InvalidState { message } => ApiError::BadRequest(message),
-            TaskRunnerError::Validation(e) => ApiError::BadRequest(e),
-            TaskRunnerError::ConcurrencyLimit { kind } => {
+            ArcRunError::TaskNotFound(id) => ApiError::NotFound(format!("Task {} not found", id)),
+            ArcRunError::NotFound { message } => ApiError::NotFound(message),
+            ArcRunError::InvalidState { message } => ApiError::BadRequest(message),
+            ArcRunError::Validation(e) => ApiError::BadRequest(e),
+            ArcRunError::ConcurrencyLimit { kind } => {
                 ApiError::Conflict(format!("Concurrency limit reached for kind: {}", kind))
             }
-            TaskRunnerError::Database(e) => {
+            ArcRunError::Database(e) => {
                 log::error!("Database error: {}", e);
                 ApiError::InternalServerError("Database error".to_string())
             }
-            TaskRunnerError::Pool(e) => {
+            ArcRunError::Pool(e) => {
                 log::error!("Pool error: {}", e);
                 ApiError::InternalServerError("Connection pool error".to_string())
             }
-            TaskRunnerError::ActionExecution(e) => {
+            ArcRunError::ActionExecution(e) => {
                 log::error!("Action execution error: {}", e);
                 ApiError::InternalServerError("Action execution failed".to_string())
             }
-            TaskRunnerError::Webhook(e) => {
+            ArcRunError::Webhook(e) => {
                 log::error!("Webhook error: {}", e);
                 ApiError::InternalServerError("Webhook error".to_string())
             }
-            TaskRunnerError::Dependency(e) => {
+            ArcRunError::Dependency(e) => {
                 log::error!("Dependency error: {}", e);
                 ApiError::InternalServerError("Dependency error".to_string())
             }
-            TaskRunnerError::Timeout(id) => {
+            ArcRunError::Timeout(id) => {
                 log::error!("Task timeout: {}", id);
                 ApiError::InternalServerError("Task timeout".to_string())
             }
-            TaskRunnerError::Internal(e) => {
+            ArcRunError::Internal(e) => {
                 log::error!("Internal error: {}", e);
                 ApiError::InternalServerError("Internal server error".to_string())
             }
@@ -137,8 +135,8 @@ impl From<TaskRunnerError> for ApiError {
     }
 }
 
-/// Result type alias for task runner operations.
-pub type TaskResult<T> = Result<T, TaskRunnerError>;
+/// Result type alias for ArcRun operations.
+pub type TaskResult<T> = Result<T, ArcRunError>;
 
 /// Result type alias for API operations.
 pub type ApiResult<T> = Result<T, ApiError>;

@@ -1,7 +1,7 @@
 use crate::common::*;
 
+use arcrun::models::StatusKind;
 use serde_json::json;
-use task_runner::models::StatusKind;
 
 /// Test basic dead-end ancestor cancellation.
 ///

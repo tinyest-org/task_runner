@@ -1,8 +1,8 @@
 use crate::common::*;
 
+use arcrun::dtos::TaskDto;
+use arcrun::models::StatusKind;
 use serde_json::json;
-use task_runner::dtos::TaskDto;
-use task_runner::models::StatusKind;
 
 #[tokio::test]
 async fn test_pause_task() {
@@ -63,10 +63,10 @@ async fn test_update_task_status_via_api() {
 
     // Claim the task (Pending -> Claimed -> Running)
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 
@@ -96,10 +96,10 @@ async fn test_update_task_with_failure_reason() {
 
     // Claim the task (Pending -> Claimed -> Running)
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
 

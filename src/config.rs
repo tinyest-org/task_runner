@@ -217,7 +217,7 @@ impl Default for ObservabilityConfig {
             slow_query_threshold_ms: 100, // 100ms default threshold
             tracing_enabled: false,
             otlp_endpoint: None,
-            service_name: "task-runner".to_string(),
+            service_name: "arcrun".to_string(),
             sampling_ratio: 1.0,
         }
     }
@@ -301,7 +301,7 @@ impl Config {
     /// - `SLOW_QUERY_THRESHOLD_MS`: Threshold for slow query warnings in ms (default: 100)
     /// - `TRACING_ENABLED`: Enable distributed tracing (default: false)
     /// - `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP endpoint URL for trace export
-    /// - `OTEL_SERVICE_NAME`: Service name for traces (default: task-runner)
+    /// - `OTEL_SERVICE_NAME`: Service name for traces (default: arcrun)
     /// - `OTEL_SAMPLING_RATIO`: Sampling ratio 0.0-1.0 (default: 1.0)
     /// - `SKIP_SSRF_VALIDATION`: Skip SSRF validation (default: 1 in debug, 0 in release)
     /// - `BLOCKED_HOSTNAMES`: Comma-separated list of blocked hostnames (default: localhost,127.0.0.1,::1,0.0.0.0,local,internal)
@@ -353,7 +353,7 @@ impl Config {
             tracing_enabled: parse_env_or("TRACING_ENABLED", 0)? != 0,
             otlp_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             service_name: std::env::var("OTEL_SERVICE_NAME")
-                .unwrap_or_else(|_| "task-runner".to_string()),
+                .unwrap_or_else(|_| "arcrun".to_string()),
             sampling_ratio: parse_env_or_f64("OTEL_SAMPLING_RATIO", 1.0)?,
         };
 

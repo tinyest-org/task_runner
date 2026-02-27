@@ -1,3 +1,4 @@
+use arcrun::DbPool;
 use diesel::{Connection, PgConnection, RunQueryDsl};
 use diesel_async::AsyncPgConnection;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
@@ -7,7 +8,6 @@ use std::sync::{
     LazyLock,
     atomic::{AtomicU64, Ordering},
 };
-use task_runner::DbPool;
 use testcontainers::{ImageExt, runners::AsyncRunner};
 use testcontainers_modules::postgres::Postgres;
 

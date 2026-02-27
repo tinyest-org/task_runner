@@ -156,7 +156,7 @@ pub(crate) async fn save_cancel_actions<'a>(
                     t.id,
                     e
                 );
-                return Err(crate::error::TaskRunnerError::Validation(format!(
+                return Err(crate::error::ArcRunError::Validation(format!(
                     "Cancel action validation failed: {}",
                     e
                 )));
@@ -289,7 +289,7 @@ pub(crate) async fn stop_batch<'a>(
         .await?;
 
     if total == 0 {
-        return Err(crate::error::TaskRunnerError::NotFound {
+        return Err(crate::error::ArcRunError::NotFound {
             message: format!("No tasks found for batch {}", batch_id),
         });
     }
@@ -416,7 +416,7 @@ pub(crate) async fn pause_task<'a>(
     .execute(conn)
     .await?;
     if updated == 0 {
-        return Err(crate::error::TaskRunnerError::InvalidState {
+        return Err(crate::error::ArcRunError::InvalidState {
             message: "Invalid operation: cannot pause task in this state".into(),
         });
     }

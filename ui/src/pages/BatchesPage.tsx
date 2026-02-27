@@ -94,7 +94,7 @@ export default function BatchesPage() {
   return (
     <div class="flex flex-1 flex-col overflow-hidden">
       <header class="glass-navbar relative z-10 flex items-center gap-3 px-5 py-3">
-        <h1 class="text-lg font-medium" style={{ color: 'var(--accent)' }}>Task Runner</h1>
+        <h1 class="text-lg font-medium" style={{ color: 'var(--accent)' }}>ArcRun</h1>
         <div class="ml-auto">
           <button
             title={`Switch to ${theme() === 'dark' ? 'light' : 'dark'} mode`}

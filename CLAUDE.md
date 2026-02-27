@@ -1,10 +1,10 @@
-# Claude Code Context for Task Runner
+# Claude Code Context for ArcRun
 
 This file provides context for Claude Code when working on this project.
 
 ## Project Overview
 
-Task Runner is a Rust-based task orchestration service that manages task execution with:
+ArcRun is a Rust-based task orchestration service that manages task execution with:
 - DAG (Directed Acyclic Graph) dependencies between tasks
 - Concurrency control via configurable rules
 - Webhook-based action execution
@@ -309,7 +309,7 @@ All configuration is via environment variables (loaded in `src/config.rs`):
 - `SLOW_QUERY_THRESHOLD_MS` (default: 100) - Slow query warning threshold
 - `TRACING_ENABLED` (default: 0) - Enable distributed tracing
 - `OTEL_EXPORTER_OTLP_ENDPOINT` - OTLP endpoint URL
-- `OTEL_SERVICE_NAME` (default: task-runner) - Service name for traces
+- `OTEL_SERVICE_NAME` (default: arcrun) - Service name for traces
 - `OTEL_SAMPLING_RATIO` (default: 1.0) - Sampling ratio
 - `SKIP_SSRF_VALIDATION` (default: 1 in debug, 0 in release) - Skip SSRF checks
 - `BLOCKED_HOSTNAMES` - Comma-separated blocked hostnames

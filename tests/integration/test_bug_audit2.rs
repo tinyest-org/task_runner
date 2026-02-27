@@ -1,7 +1,7 @@
 use crate::common::*;
 
+use arcrun::dtos::{BasicTaskDto, TaskDto};
 use serde_json::json;
-use task_runner::dtos::{BasicTaskDto, TaskDto};
 
 /// Bug #9: Duplicate local IDs in a batch should be rejected.
 #[tokio::test]

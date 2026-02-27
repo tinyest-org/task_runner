@@ -26,7 +26,7 @@ impl Default for TracingConfig {
         Self {
             enabled: false,
             otlp_endpoint: None,
-            service_name: "task-runner".to_string(),
+            service_name: "arcrun".to_string(),
             sampling_ratio: 1.0,
         }
     }
@@ -38,7 +38,7 @@ impl TracingConfig {
     /// Environment variables:
     /// - `TRACING_ENABLED`: Enable distributed tracing (default: false)
     /// - `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP endpoint URL
-    /// - `OTEL_SERVICE_NAME`: Service name (default: task-runner)
+    /// - `OTEL_SERVICE_NAME`: Service name (default: arcrun)
     /// - `OTEL_SAMPLING_RATIO`: Sampling ratio 0.0-1.0 (default: 1.0)
     pub fn from_env() -> Self {
         let enabled = std::env::var("TRACING_ENABLED")
@@ -48,7 +48,7 @@ impl TracingConfig {
         let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
 
         let service_name =
-            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "task-runner".to_string());
+            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "arcrun".to_string());
 
         let sampling_ratio = std::env::var("OTEL_SAMPLING_RATIO")
             .ok()
@@ -123,7 +123,7 @@ pub fn init_tracing(config: &TracingConfig) -> Option<TracerProvider> {
         .with_resource(resource)
         .build();
 
-    let tracer = tracer_provider.tracer("task-runner");
+    let tracer = tracer_provider.tracer("arcrun");
     let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     tracing_subscriber::registry()

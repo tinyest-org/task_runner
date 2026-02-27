@@ -113,10 +113,10 @@ async fn test_dedupe_against_running_task() {
 
     // Move to Running
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
     drop(conn);
@@ -168,10 +168,10 @@ async fn test_dedupe_pending_does_not_match_running() {
     let task_id = created[0].id;
 
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
     drop(conn);

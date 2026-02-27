@@ -1,11 +1,11 @@
 use crate::common::*;
 
+use arcrun::models::StatusKind;
 use serde_json::json;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use task_runner::models::StatusKind;
 
 /// Priority 2 — Webhook flow integration tests.
 /// Tests on_success, on_failure (via PATCH), and start_loop E2E.
@@ -130,7 +130,7 @@ async fn test_start_loop_e2e_happy_path() {
     let evaluator = state.action_executor.clone();
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -173,10 +173,10 @@ async fn test_metadata_only_update() {
 
     // Move to Running
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
     drop(conn);
@@ -247,7 +247,7 @@ async fn test_webhook_500_triggers_failure() {
     let evaluator = state.action_executor.clone();
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -309,7 +309,7 @@ async fn test_webhook_receives_handle_query_param() {
     let evaluator = state.action_executor.clone();
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -396,7 +396,7 @@ async fn test_webhook_custom_headers_and_body() {
     let evaluator = state.action_executor.clone();
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -479,7 +479,7 @@ async fn test_webhook_redirect_rejected() {
     let evaluator = state.action_executor.clone();
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),

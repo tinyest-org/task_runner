@@ -1,7 +1,7 @@
 use crate::common::*;
 
+use arcrun::dtos::TaskDto;
 use serde_json::json;
-use task_runner::dtos::TaskDto;
 
 #[tokio::test]
 async fn test_task_with_large_metadata() {

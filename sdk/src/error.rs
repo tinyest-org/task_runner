@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-/// Errors returned by the Task Runner SDK.
+/// Errors returned by the ArcRun SDK.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// HTTP transport or connection error.
@@ -20,7 +20,7 @@ pub enum Error {
     Deserialize(String),
 }
 
-/// Structured error body returned by the Task Runner API.
+/// Structured error body returned by the ArcRun API.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ApiErrorBody {
     pub error: Option<String>,

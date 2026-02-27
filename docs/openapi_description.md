@@ -1,4 +1,4 @@
-# Task Runner - Task Orchestration Service
+# ArcRun - Task Orchestration Service
 
 A webhook-based task scheduler that executes DAGs (Directed Acyclic Graphs) of tasks with concurrency control.
 

@@ -1,4 +1,4 @@
-const RECENT_BATCHES_KEY = 'task-runner-recent-batches';
+const RECENT_BATCHES_KEY = 'arcrun-recent-batches';
 const MAX_RECENT = 10;
 
 export function getRecentBatches(): string[] {
@@ -20,7 +20,7 @@ export function addRecentBatch(id: string): void {
 }
 
 // Theme
-const THEME_KEY = 'task-runner-theme';
+const THEME_KEY = 'arcrun-theme';
 export type Theme = 'dark' | 'light';
 
 export function getTheme(): Theme {

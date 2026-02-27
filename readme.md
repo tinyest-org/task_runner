@@ -1,4 +1,4 @@
-# Task Runner
+# ArcRun
 
 A Rust service for orchestrating task execution with DAG (Directed Acyclic Graph) dependencies, concurrency control, and webhook-based actions.
 
@@ -440,7 +440,7 @@ All configuration is via environment variables.
 | `SLOW_QUERY_THRESHOLD_MS` | `100` | Slow query warning threshold in ms |
 | `TRACING_ENABLED` | `0` | Enable OpenTelemetry distributed tracing |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | - | OTLP endpoint URL (e.g., `http://localhost:4317`) |
-| `OTEL_SERVICE_NAME` | `task-runner` | Service name for traces |
+| `OTEL_SERVICE_NAME` | `arcrun` | Service name for traces |
 | `OTEL_SAMPLING_RATIO` | `1.0` | Sampling ratio (0.0 to 1.0) |
 
 ### Security
@@ -580,9 +580,9 @@ This triggers the CI pipeline which builds multi-arch Docker images (amd64 + arm
 
 Pull the image:
 ```bash
-docker pull plawn/task-runner:1.0.0
+docker pull plawn/arcrun:1.0.0
 # or
-docker pull plawn/task-runner:latest
+docker pull plawn/arcrun:latest
 ```
 
 ## Architecture

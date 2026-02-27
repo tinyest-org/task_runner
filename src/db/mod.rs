@@ -10,7 +10,7 @@ use diesel_async::RunQueryDsl;
 use std::future::Future;
 use std::pin::Pin;
 
-pub(crate) type DbError = crate::error::TaskRunnerError;
+pub(crate) type DbError = crate::error::ArcRunError;
 
 // Re-exports from task_crud
 pub use crate::rule::concurrency_lock_key;

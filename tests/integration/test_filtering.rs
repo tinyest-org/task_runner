@@ -1,7 +1,7 @@
 use crate::common::*;
 
-use task_runner::dtos::BasicTaskDto;
-use task_runner::models::StatusKind;
+use arcrun::dtos::BasicTaskDto;
+use arcrun::models::StatusKind;
 
 #[tokio::test]
 async fn test_list_tasks() {

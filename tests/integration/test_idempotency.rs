@@ -1,11 +1,11 @@
 use crate::common::*;
 
+use arcrun::models::{TriggerCondition, TriggerKind};
 use serde_json::json;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use task_runner::models::{TriggerCondition, TriggerKind};
 
 /// Test that the start webhook idempotency guard prevents duplicate execution.
 ///
@@ -22,14 +22,11 @@ async fn test_start_webhook_idempotency() {
 
     let mut conn = state.pool.get().await.unwrap();
 
-    let key = task_runner::action::idempotency_key(
-        task_id,
-        &TriggerKind::Start,
-        &TriggerCondition::Success,
-    );
+    let key =
+        arcrun::action::idempotency_key(task_id, &TriggerKind::Start, &TriggerCondition::Success);
 
     // First claim should succeed
-    let claimed = task_runner::db_operation::try_claim_webhook_execution(
+    let claimed = arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::Start,
@@ -42,12 +39,12 @@ async fn test_start_webhook_idempotency() {
     assert!(claimed, "First claim should succeed");
 
     // Mark as success
-    task_runner::db_operation::complete_webhook_execution(&mut conn, &key, true)
+    arcrun::db_operation::complete_webhook_execution(&mut conn, &key, true)
         .await
         .expect("complete should not error");
 
     // Second claim should be skipped (already succeeded)
-    let claimed_again = task_runner::db_operation::try_claim_webhook_execution(
+    let claimed_again = arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::Start,
@@ -78,14 +75,11 @@ async fn test_end_webhook_idempotency() {
 
     let mut conn = state.pool.get().await.unwrap();
 
-    let key = task_runner::action::idempotency_key(
-        task_id,
-        &TriggerKind::End,
-        &TriggerCondition::Success,
-    );
+    let key =
+        arcrun::action::idempotency_key(task_id, &TriggerKind::End, &TriggerCondition::Success);
 
     // First claim should succeed
-    let claimed = task_runner::db_operation::try_claim_webhook_execution(
+    let claimed = arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::End,
@@ -98,12 +92,12 @@ async fn test_end_webhook_idempotency() {
     assert!(claimed, "First claim should succeed");
 
     // Mark as success
-    task_runner::db_operation::complete_webhook_execution(&mut conn, &key, true)
+    arcrun::db_operation::complete_webhook_execution(&mut conn, &key, true)
         .await
         .expect("complete should not error");
 
     // Second claim should be skipped
-    let claimed_again = task_runner::db_operation::try_claim_webhook_execution(
+    let claimed_again = arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::End,
@@ -134,14 +128,11 @@ async fn test_failed_webhook_allows_retry() {
 
     let mut conn = state.pool.get().await.unwrap();
 
-    let key = task_runner::action::idempotency_key(
-        task_id,
-        &TriggerKind::Start,
-        &TriggerCondition::Success,
-    );
+    let key =
+        arcrun::action::idempotency_key(task_id, &TriggerKind::Start, &TriggerCondition::Success);
 
     // First claim
-    let claimed = task_runner::db_operation::try_claim_webhook_execution(
+    let claimed = arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::Start,
@@ -154,12 +145,12 @@ async fn test_failed_webhook_allows_retry() {
     assert!(claimed);
 
     // Mark as failure
-    task_runner::db_operation::complete_webhook_execution(&mut conn, &key, false)
+    arcrun::db_operation::complete_webhook_execution(&mut conn, &key, false)
         .await
         .unwrap();
 
     // Second claim should succeed (retry allowed for failed executions)
-    let claimed_again = task_runner::db_operation::try_claim_webhook_execution(
+    let claimed_again = arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::Start,
@@ -192,12 +183,9 @@ async fn test_different_triggers_independent() {
     let mut conn = state.pool.get().await.unwrap();
 
     // Claim and succeed the start trigger
-    let start_key = task_runner::action::idempotency_key(
-        task_id,
-        &TriggerKind::Start,
-        &TriggerCondition::Success,
-    );
-    task_runner::db_operation::try_claim_webhook_execution(
+    let start_key =
+        arcrun::action::idempotency_key(task_id, &TriggerKind::Start, &TriggerCondition::Success);
+    arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::Start,
@@ -207,17 +195,14 @@ async fn test_different_triggers_independent() {
     )
     .await
     .unwrap();
-    task_runner::db_operation::complete_webhook_execution(&mut conn, &start_key, true)
+    arcrun::db_operation::complete_webhook_execution(&mut conn, &start_key, true)
         .await
         .unwrap();
 
     // End trigger should be independently claimable
-    let end_key = task_runner::action::idempotency_key(
-        task_id,
-        &TriggerKind::End,
-        &TriggerCondition::Success,
-    );
-    let claimed = task_runner::db_operation::try_claim_webhook_execution(
+    let end_key =
+        arcrun::action::idempotency_key(task_id, &TriggerKind::End, &TriggerCondition::Success);
+    let claimed = arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::End,
@@ -248,13 +233,10 @@ async fn test_pending_webhook_blocks_until_stale() {
     let task_id = created[0].id;
 
     let mut conn = state.pool.get().await.unwrap();
-    let key = task_runner::action::idempotency_key(
-        task_id,
-        &TriggerKind::Start,
-        &TriggerCondition::Success,
-    );
+    let key =
+        arcrun::action::idempotency_key(task_id, &TriggerKind::Start, &TriggerCondition::Success);
 
-    let claimed = task_runner::db_operation::try_claim_webhook_execution(
+    let claimed = arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::Start,
@@ -266,7 +248,7 @@ async fn test_pending_webhook_blocks_until_stale() {
     .unwrap();
     assert!(claimed, "First claim should succeed");
 
-    let claimed_again = task_runner::db_operation::try_claim_webhook_execution(
+    let claimed_again = arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::Start,
@@ -294,7 +276,7 @@ async fn test_pending_webhook_blocks_until_stale() {
     .await
     .unwrap();
 
-    let claimed_stale = task_runner::db_operation::try_claim_webhook_execution(
+    let claimed_stale = arcrun::db_operation::try_claim_webhook_execution(
         &mut conn,
         task_id,
         TriggerKind::Start,
@@ -337,7 +319,7 @@ async fn test_webhook_includes_idempotency_headers() {
     let evaluator = state.action_executor.clone();
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -396,7 +378,7 @@ async fn test_requeue_claimed_skips_on_start_when_idempotent() {
     let evaluator = state.action_executor.clone();
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -451,7 +433,7 @@ async fn test_requeue_claimed_skips_on_start_when_idempotent() {
     let evaluator = state.action_executor.clone();
     let pool = state.pool.clone();
     let handle2 = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),

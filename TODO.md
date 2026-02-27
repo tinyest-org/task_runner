@@ -1,4 +1,4 @@
-# Task Runner - Production Readiness TODO
+# ArcRun - Production Readiness TODO
 
 This file tracks improvements needed for a production-ready codebase.
 
@@ -28,7 +28,7 @@ This file tracks improvements needed for a production-ready codebase.
 
 - [x] **14. Error Types** - Create proper error types with thiserror
   - `src/error.rs`
-  - TaskRunnerError, ValidationError, ApiError enums
+  - ArcRunError, ValidationError, ApiError enums
   - HTTP response mapping
   - Automatic error conversion
 
@@ -183,7 +183,7 @@ This file tracks improvements needed for a production-ready codebase.
   - Or pass kind in update DTO
 
 - [ ] **T3. Consolidate error handling** - Use new error types everywhere
-  - Replace DbError with TaskRunnerError
+  - Replace DbError with ArcRunError
   - Use ApiError in all handlers
   - Remove Box<dyn Error> usages
 

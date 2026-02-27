@@ -1,6 +1,6 @@
 use crate::common::*;
 
-use task_runner::models::StatusKind;
+use arcrun::models::StatusKind;
 
 /// Priority 3 — End-to-end validation tests via HTTP API.
 
@@ -241,10 +241,10 @@ async fn test_pause_running_task() {
 
     // Move to Running
     let mut conn = state.pool.get().await.unwrap();
-    task_runner::db_operation::claim_task(&mut conn, &task_id)
+    arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
-    task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
     drop(conn);

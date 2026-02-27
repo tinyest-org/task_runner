@@ -1,4 +1,4 @@
-//! Prometheus metrics for task runner observability.
+//! Prometheus metrics for ArcRun observability.
 //!
 //! Provides custom metrics for tracking task execution, dependencies, and system health.
 

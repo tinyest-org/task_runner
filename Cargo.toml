@@ -2,7 +2,7 @@
 members = [".", "sdk"]
 
 [package]
-name = "task-runner"
+name = "arcrun"
 version = "0.1.0"
 edition = "2024"
 

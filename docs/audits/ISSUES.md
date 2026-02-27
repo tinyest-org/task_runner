@@ -1,6 +1,6 @@
-# Task Runner - Issues & Improvements
+# ArcRun - Issues & Improvements
 
-This document tracks known issues, missing features, and improvements for the task-runner project.
+This document tracks known issues, missing features, and improvements for the arcrun project.
 
 ---
 

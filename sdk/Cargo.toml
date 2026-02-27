@@ -1,8 +1,8 @@
 [package]
-name = "task-runner-sdk"
+name = "arcrun-sdk"
 version = "0.1.0"
 edition = "2024"
-description = "Rust SDK client for the Task Runner API"
+description = "Rust SDK client for the ArcRun API"
 
 [dependencies]
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

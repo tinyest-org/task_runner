@@ -1,14 +1,14 @@
-//! # Task Runner SDK
+//! # ArcRun SDK
 //!
-//! Rust client library for the Task Runner API.
+//! Rust client library for the ArcRun API.
 //!
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! use task_runner_sdk::{Client, TaskBuilder, webhook, HttpVerb};
+//! use arcrun_sdk::{Client, TaskBuilder, webhook, HttpVerb};
 //!
 //! #[tokio::main]
-//! async fn main() -> task_runner_sdk::Result<()> {
+//! async fn main() -> arcrun_sdk::Result<()> {
 //!     let client = Client::new("http://localhost:8085");
 //!
 //!     // Check health
@@ -44,7 +44,7 @@ pub use types::*;
 
 use uuid::Uuid;
 
-/// Client for the Task Runner API.
+/// Client for the ArcRun API.
 #[derive(Debug, Clone)]
 pub struct Client {
     base_url: String,
@@ -52,10 +52,10 @@ pub struct Client {
 }
 
 impl Client {
-    /// Create a new client pointing to the given Task Runner base URL.
+    /// Create a new client pointing to the given ArcRun base URL.
     ///
     /// ```rust
-    /// let client = task_runner_sdk::Client::new("http://localhost:8085");
+    /// let client = arcrun_sdk::Client::new("http://localhost:8085");
     /// ```
     pub fn new(base_url: impl Into<String>) -> Self {
         let mut base = base_url.into();
@@ -363,9 +363,9 @@ impl Client {
 /// the operations a worker needs: reporting progress and completion.
 ///
 /// ```rust,no_run
-/// use task_runner_sdk::TaskHandle;
+/// use arcrun_sdk::TaskHandle;
 ///
-/// async fn my_webhook(handle_url: &str) -> task_runner_sdk::Result<()> {
+/// async fn my_webhook(handle_url: &str) -> arcrun_sdk::Result<()> {
 ///     let handle = TaskHandle::new(handle_url);
 ///
 ///     // Report progress incrementally

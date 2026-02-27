@@ -1,8 +1,8 @@
 use crate::common::*;
+use arcrun::db_operation::{ClaimResult, claim_task_with_rules};
+use arcrun::dtos::UpdateBatchRulesResponseDto;
+use arcrun::models::{StatusKind, Task};
 use serde_json::json;
-use task_runner::db_operation::{ClaimResult, claim_task_with_rules};
-use task_runner::dtos::UpdateBatchRulesResponseDto;
-use task_runner::models::{StatusKind, Task};
 
 /// PATCH /batch/{batch_id}/rules updates only tasks of the specified kind.
 #[tokio::test]
@@ -79,7 +79,7 @@ async fn test_update_batch_rules_by_kind() {
     let build = get_task_ok(&app, created[0].id).await;
     assert_eq!(build.rules.0.len(), 1, "ci task should have 1 rule");
     match &build.rules.0[0] {
-        task_runner::rule::Strategy::Capacity(rule) => {
+        arcrun::rule::Strategy::Capacity(rule) => {
             assert_eq!(rule.max_capacity, 500);
         }
         other => panic!("Expected Capacity rule, got {:?}", other),

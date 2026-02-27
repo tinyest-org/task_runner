@@ -1,6 +1,6 @@
 use crate::common::*;
 
-use task_runner::models::StatusKind;
+use arcrun::models::StatusKind;
 
 #[tokio::test]
 async fn test_child_transitions_when_parent_succeeds() {

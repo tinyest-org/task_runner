@@ -1,9 +1,9 @@
 use actix_http::Request;
 use actix_web::body::MessageBody;
 use actix_web::dev::{Service, ServiceResponse};
-use task_runner::dtos::TaskDto;
-use task_runner::handlers::AppState;
-use task_runner::models::StatusKind;
+use arcrun::dtos::TaskDto;
+use arcrun::handlers::AppState;
+use arcrun::models::StatusKind;
 
 use super::setup::{TestApp, setup_test_db};
 use super::state::{
@@ -82,15 +82,15 @@ pub async fn claim_and_complete(
     failure_reason: Option<String>,
 ) {
     let mut conn = state.pool.get().await.unwrap();
-    let claimed = task_runner::db_operation::claim_task(&mut conn, &task_id)
+    let claimed = arcrun::db_operation::claim_task(&mut conn, &task_id)
         .await
         .unwrap();
     assert!(claimed, "Failed to claim task {}", task_id);
-    let marked = task_runner::db_operation::mark_task_running(&mut conn, &task_id)
+    let marked = arcrun::db_operation::mark_task_running(&mut conn, &task_id)
         .await
         .unwrap();
     assert!(marked, "Failed to mark task {} as running", task_id);
-    let dto = task_runner::dtos::UpdateTaskDto {
+    let dto = arcrun::dtos::UpdateTaskDto {
         status: Some(status),
         metadata: None,
         new_success: None,
@@ -98,7 +98,7 @@ pub async fn claim_and_complete(
         failure_reason,
         expected_count: None,
     };
-    let result = task_runner::db_operation::update_running_task(
+    let result = arcrun::db_operation::update_running_task(
         &state.action_executor,
         &mut conn,
         task_id,
@@ -109,7 +109,7 @@ pub async fn claim_and_complete(
     .unwrap();
     assert_eq!(
         result,
-        task_runner::db_operation::UpdateTaskResult::Updated,
+        arcrun::db_operation::UpdateTaskResult::Updated,
         "Failed to complete task {}",
         task_id
     );
@@ -141,7 +141,7 @@ pub struct TaskCounters {
 }
 
 /// Read wait_finished and wait_success counters directly from the task table.
-pub async fn read_wait_counters(pool: &task_runner::DbPool, task_id: uuid::Uuid) -> (i32, i32) {
+pub async fn read_wait_counters(pool: &arcrun::DbPool, task_id: uuid::Uuid) -> (i32, i32) {
     let mut conn = pool.get().await.unwrap();
     let c: TaskCounters = diesel_async::RunQueryDsl::get_result(
         diesel::sql_query("SELECT wait_finished, wait_success FROM task WHERE id = $1")

@@ -1,4 +1,4 @@
-//! HTTP handlers for task runner endpoints.
+//! HTTP handlers for ArcRun endpoints.
 //!
 //! This module contains all HTTP handler functions that can be used by both
 //! the main application and integration tests.
@@ -184,7 +184,7 @@ pub async fn get_conn_with_retry<'a>(
         (name = "dag", description = "DAG visualization. Retrieve the full graph (tasks + dependency links) for a batch, or render the built-in HTML viewer."),
     ),
     info(
-        title = "Task Runner API",
+        title = "ArcRun API",
         version = "0.1.0",
         description = include_str!("../../docs/openapi_description.md"),
     )

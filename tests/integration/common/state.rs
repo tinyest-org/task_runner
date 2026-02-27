@@ -1,8 +1,8 @@
+use arcrun::DbPool;
+use arcrun::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+use arcrun::config::{Config, SecurityConfig};
+use arcrun::handlers::AppState;
 use std::sync::Arc;
-use task_runner::DbPool;
-use task_runner::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-use task_runner::config::{Config, SecurityConfig};
-use task_runner::handlers::AppState;
 use tokio::sync::mpsc;
 
 /// Create test configuration
@@ -11,7 +11,7 @@ pub fn test_config() -> Arc<Config> {
         port: 8080,
         host_url: "http://localhost:8080".to_string(),
         database_url: "".to_string(),
-        pool: task_runner::config::PoolConfig {
+        pool: arcrun::config::PoolConfig {
             max_size: 5,
             min_idle: 1,
             max_lifetime: std::time::Duration::from_secs(3600),
@@ -20,11 +20,11 @@ pub fn test_config() -> Arc<Config> {
             acquire_retries: 3,
             retry_delay: std::time::Duration::from_millis(100),
         },
-        pagination: task_runner::config::PaginationConfig {
+        pagination: arcrun::config::PaginationConfig {
             default_per_page: 50,
             max_per_page: 100,
         },
-        worker: task_runner::config::WorkerConfig {
+        worker: arcrun::config::WorkerConfig {
             loop_interval: std::time::Duration::from_secs(1),
             timeout_check_interval: std::time::Duration::from_secs(1),
             claim_timeout: std::time::Duration::from_secs(30),
@@ -32,22 +32,22 @@ pub fn test_config() -> Arc<Config> {
             batch_channel_capacity: 100,
             dead_end_cancel_enabled: true,
         },
-        circuit_breaker: task_runner::config::CircuitBreakerConfig {
+        circuit_breaker: arcrun::config::CircuitBreakerConfig {
             enabled: true,
             failure_threshold: 5,
             failure_window_secs: 10,
             recovery_timeout_secs: 30,
             success_threshold: 2,
         },
-        observability: task_runner::config::ObservabilityConfig {
+        observability: arcrun::config::ObservabilityConfig {
             slow_query_threshold_ms: 100,
             tracing_enabled: false,
             otlp_endpoint: None,
-            service_name: "task-runner-test".to_string(),
+            service_name: "arcrun-test".to_string(),
             sampling_ratio: 1.0,
         },
         security: SecurityConfig::default(),
-        retention: task_runner::config::RetentionConfig::default(),
+        retention: arcrun::config::RetentionConfig::default(),
     })
 }
 
@@ -68,12 +68,10 @@ pub fn create_test_state(pool: DbPool) -> AppState {
     AppState {
         pool,
         sender,
-        action_executor: task_runner::action::ActionExecutor::new(
-            task_runner::action::ActionContext {
-                host_address: "http://localhost:8080".to_string(),
-                webhook_idempotency_timeout: config.worker.claim_timeout,
-            },
-        ),
+        action_executor: arcrun::action::ActionExecutor::new(arcrun::action::ActionContext {
+            host_address: "http://localhost:8080".to_string(),
+            webhook_idempotency_timeout: config.worker.claim_timeout,
+        }),
         config,
         circuit_breaker: test_circuit_breaker(),
     }
@@ -95,20 +93,17 @@ pub fn create_test_state_with_batch_updater(pool: DbPool) -> TestStateWithBatchU
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let flush_interval = std::time::Duration::from_millis(100);
     tokio::spawn(async move {
-        task_runner::workers::batch_updater(pool_clone, receiver, flush_interval, shutdown_rx)
-            .await;
+        arcrun::workers::batch_updater(pool_clone, receiver, flush_interval, shutdown_rx).await;
     });
 
     TestStateWithBatchUpdater {
         state: AppState {
             pool,
             sender,
-            action_executor: task_runner::action::ActionExecutor::new(
-                task_runner::action::ActionContext {
-                    host_address: "http://localhost:8080".to_string(),
-                    webhook_idempotency_timeout: config.worker.claim_timeout,
-                },
-            ),
+            action_executor: arcrun::action::ActionExecutor::new(arcrun::action::ActionContext {
+                host_address: "http://localhost:8080".to_string(),
+                webhook_idempotency_timeout: config.worker.claim_timeout,
+            }),
             config,
             circuit_breaker: test_circuit_breaker(),
         },

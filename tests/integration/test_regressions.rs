@@ -1,12 +1,12 @@
 use crate::common::*;
 
+use arcrun::dtos::BasicTaskDto;
+use arcrun::models::StatusKind;
 use serde_json::json;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use task_runner::dtos::BasicTaskDto;
-use task_runner::models::StatusKind;
 
 #[tokio::test]
 async fn test_start_loop_marks_task_failed_on_start_webhook_error() {
@@ -35,7 +35,7 @@ async fn test_start_loop_marks_task_failed_on_start_webhook_error() {
     let evaluator = state.action_executor.clone();
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::start_loop(
+        arcrun::workers::start_loop(
             &evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -118,7 +118,7 @@ async fn test_timeout_loop_fires_on_failure_webhook() {
     let evaluator = Arc::new(state.action_executor.clone());
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::timeout_loop(
+        arcrun::workers::timeout_loop(
             evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -214,7 +214,7 @@ async fn test_recent_batch_update_prevents_timeout() {
     let evaluator = Arc::new(state.action_executor.clone());
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::timeout_loop(
+        arcrun::workers::timeout_loop(
             evaluator,
             pool,
             std::time::Duration::from_millis(50),
@@ -287,7 +287,7 @@ async fn test_timeout_propagates_failure_to_children() {
     let evaluator = Arc::new(state.action_executor.clone());
     let pool = state.pool.clone();
     let handle = tokio::spawn(async move {
-        task_runner::workers::timeout_loop(
+        arcrun::workers::timeout_loop(
             evaluator,
             pool,
             std::time::Duration::from_millis(50),
