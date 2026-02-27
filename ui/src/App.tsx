@@ -11,7 +11,7 @@ interface ThemeCtx {
 }
 
 const ThemeContext = createContext<ThemeCtx>({
-  theme: () => 'dark',
+  theme: () => 'dark' as Theme,
   toggle: () => {},
 });
 
@@ -24,6 +24,7 @@ export default function App(props: { children?: JSX.Element }) {
 
   onMount(() => {
     document.documentElement.setAttribute('data-theme', theme());
+    document.documentElement.classList.toggle('dark', theme() === 'dark');
   });
 
   function toggle() {
@@ -31,6 +32,7 @@ export default function App(props: { children?: JSX.Element }) {
     setTheme(next);
     persistTheme(next);
     document.documentElement.setAttribute('data-theme', next);
+    document.documentElement.classList.toggle('dark', next === 'dark');
   }
 
   return (

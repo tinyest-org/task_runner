@@ -3,10 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <script>
-    document.documentElement.setAttribute(
-      'data-theme',
-      localStorage.getItem('task-runner-theme') === 'light' ? 'light' : 'dark'
-    );
+    (function() {
+      var t = localStorage.getItem('task-runner-theme') === 'light' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+      if (t === 'dark') document.documentElement.classList.add('dark');
+    })();
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Task DAG Viewer</title>
