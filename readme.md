@@ -1,6 +1,10 @@
-# ArcRun
+<p align="center">
+  <img src="static/icon.png" alt="ArcRun" width="128" />
+</p>
 
-A Rust service for orchestrating task execution with DAG (Directed Acyclic Graph) dependencies, concurrency control, and webhook-based actions.
+<h1 align="center">ArcRun</h1>
+
+<p align="center">A Rust service for orchestrating task execution with DAG (Directed Acyclic Graph) dependencies, concurrency control, and webhook-based actions.</p>
 
 ## Features
 

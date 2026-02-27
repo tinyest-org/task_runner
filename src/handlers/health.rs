@@ -1,6 +1,18 @@
+use actix_web::http::header::{CacheControl, CacheDirective, ContentType};
 use actix_web::{HttpResponse, web};
 
 use super::{AppState, HealthResponse};
+
+/// Serve the application icon
+pub async fn favicon() -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type(ContentType::png())
+        .insert_header(CacheControl(vec![
+            CacheDirective::Public,
+            CacheDirective::MaxAge(86400),
+        ]))
+        .body(&include_bytes!("../../static/icon.png")[..])
+}
 
 #[utoipa::path(
     get,

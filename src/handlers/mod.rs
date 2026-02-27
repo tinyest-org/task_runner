@@ -25,7 +25,7 @@ use crate::{
 // Re-export handlers for route configuration
 pub use batch::{get_batch_stats, list_batches, stop_batch, update_batch_rules};
 pub use dag::{get_dag, view_dag_page};
-pub use health::{health_check, readiness_check};
+pub use health::{favicon, health_check, readiness_check};
 pub use task::{
     add_task, batch_task_updater, cancel_task, get_task, list_task, pause_task, update_task,
 };
@@ -216,6 +216,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         .route("/batches", web::get().to(list_batches))
         .route("/dag/{batch_id}", web::get().to(get_dag))
         .route("/view", web::get().to(view_dag_page))
+        .route("/icon.png", web::get().to(favicon))
+        .route("/favicon.ico", web::get().to(favicon))
         .service(
             SwaggerUi::new("/swagger-ui/{_:.*}").url("/api-docs/openapi.json", ApiDoc::openapi()),
         );
