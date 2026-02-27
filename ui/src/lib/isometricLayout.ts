@@ -226,12 +226,14 @@ export function computeGroupLayout(
   return { groups, kinds, maxStep, depthMap, maxCols, maxRows, maxLayers };
 }
 
-// --- Status-based layout ---
+// --- Status-based layout (DAG steps × status) ---
 
 export interface StatusGroupLayout {
   status: TaskStatus;
+  step: number;
   tasks: BasicTask[];
   statusIndex: number;
+  stepIndex: number;
   cols: number;
   rows: number;
   layers: number;
@@ -240,36 +242,55 @@ export interface StatusGroupLayout {
 export interface StatusLayoutResult {
   groups: StatusGroupLayout[];
   statuses: TaskStatus[];
+  maxStep: number;
   maxCols: number;
   maxRows: number;
   maxLayers: number;
 }
 
 /**
- * Group tasks by status and return layout information.
- * Tasks within each group are sorted by ID for stable positioning across updates.
+ * Group tasks by DAG step first, then by status within each step.
+ * Preserves topological structure while sub-grouping by status.
+ * X axis = status columns (globally aligned), Z axis = DAG step rows.
  */
-export function computeStatusLayout(tasks: BasicTask[]): StatusLayoutResult {
-  const groupMap = new Map<TaskStatus, BasicTask[]>();
+export function computeStatusLayout(tasks: BasicTask[], links: Link[] = []): StatusLayoutResult {
+  const depthMap = computeTopologicalDepth(tasks, links);
+
+  // Find max step
+  let maxStep = 0;
+  for (const d of depthMap.values()) {
+    if (d > maxStep) maxStep = d;
+  }
+
+  // Group tasks by (step, status)
+  const groupMap = new Map<string, BasicTask[]>();
   for (const task of tasks) {
-    let group = groupMap.get(task.status);
+    const step = depthMap.get(task.id) ?? 0;
+    const key = `${step}:${task.status}`;
+    let group = groupMap.get(key);
     if (!group) {
       group = [];
-      groupMap.set(task.status, group);
+      groupMap.set(key, group);
     }
     group.push(task);
   }
 
-  const statuses = ALL_STATUSES.filter((s) => groupMap.has(s));
+  // Collect all present statuses in canonical order
+  const presentStatuses = new Set<TaskStatus>();
+  for (const task of tasks) presentStatuses.add(task.status);
+  const statuses = ALL_STATUSES.filter((s) => presentStatuses.has(s));
+  const statusIndex = new Map<TaskStatus, number>();
+  statuses.forEach((s, i) => statusIndex.set(s, i));
 
   const groups: StatusGroupLayout[] = [];
   let maxCols = 1;
   let maxRows = 1;
   let maxLayers = 1;
 
-  for (let i = 0; i < statuses.length; i++) {
-    const status = statuses[i];
-    const groupTasks = groupMap.get(status)!;
+  for (const [key, groupTasks] of groupMap) {
+    const colonIdx = key.indexOf(':');
+    const step = parseInt(key.substring(0, colonIdx), 10);
+    const status = key.substring(colonIdx + 1) as TaskStatus;
     groupTasks.sort((a, b) => a.id.localeCompare(b.id));
     const n = groupTasks.length;
     const dim = Math.ceil(Math.cbrt(n));
@@ -279,8 +300,17 @@ export function computeStatusLayout(tasks: BasicTask[]): StatusLayoutResult {
     if (cols > maxCols) maxCols = cols;
     if (rows > maxRows) maxRows = rows;
     if (layers > maxLayers) maxLayers = layers;
-    groups.push({ status, tasks: groupTasks, statusIndex: i, cols, rows, layers });
+    groups.push({
+      status,
+      step,
+      tasks: groupTasks,
+      statusIndex: statusIndex.get(status)!,
+      stepIndex: step,
+      cols,
+      rows,
+      layers,
+    });
   }
 
-  return { groups, statuses, maxCols, maxRows, maxLayers };
+  return { groups, statuses, maxStep, maxCols, maxRows, maxLayers };
 }

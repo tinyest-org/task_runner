@@ -525,21 +525,23 @@ export default function IsometricView(props: Props) {
     return Math.max(maxRows * TASK_SPACING + GROUP_PADDING * 2, 3);
   }
 
-  /** Build the status scene from scratch. */
+  /** Build the status scene from scratch (DAG steps × status grid). */
   function buildStatusScene(data: DagResponse) {
     if (!scene) return;
     clearScene();
 
-    const layout = computeStatusLayout(data.tasks);
-    const { groups, statuses, maxCols, maxRows, maxLayers } = layout;
+    const layout = computeStatusLayout(data.tasks, data.links);
+    const { groups, statuses, maxStep, maxCols, maxRows, maxLayers } = layout;
 
     const cellX = statusCellSizeX(maxCols);
     const cellZ = statusCellSizeZ(maxRows);
     const totalWidth = statuses.length * cellX;
     const offsetX = (totalWidth - cellX) / 2;
+    const offsetZ = (maxStep * cellZ) / 2;
 
     for (const group of groups) {
       const cx = group.statusIndex * cellX - offsetX;
+      const cz = group.stepIndex * cellZ - offsetZ;
       const sliceSize = group.cols * group.rows;
 
       // Per-group wireframe with status color
@@ -551,7 +553,7 @@ export default function IsometricView(props: Props) {
       const wireColor = colorToHex(STATUS_COLORS[group.status] ?? '#444466');
       const lineMat = new THREE.LineBasicMaterial({ color: wireColor, transparent: true, opacity: 0.4 });
       const wireframe = new THREE.LineSegments(edges, lineMat);
-      wireframe.position.set(cx, gh / 2, 0);
+      wireframe.position.set(cx, gh / 2, cz);
       wireframe.userData.isGroup = true;
       scene.add(wireframe);
       boxGeo.dispose();
@@ -571,21 +573,32 @@ export default function IsometricView(props: Props) {
         const localX = (col - (group.cols - 1) / 2) * TASK_SPACING;
         const localZ = (row - (group.rows - 1) / 2) * TASK_SPACING;
         const py = TASK_BOX_SIZE / 2 + layer * TASK_SPACING;
-        mesh.position.set(cx + localX, py, localZ);
+        mesh.position.set(cx + localX, py, cz + localZ);
         mesh.userData.isTask = true;
         scene.add(mesh);
 
         meshToTask.set(mesh, task);
         taskToMesh.set(task.id, mesh);
       }
+    }
 
-      // Status label
-      const sprite = createTextSprite(group.status, 40);
-      sprite.position.set(cx, -1.5, -cellZ / 2 - 1);
+    // Status column labels (one per status, at top of grid)
+    for (let i = 0; i < statuses.length; i++) {
+      const cx = i * cellX - offsetX;
+      const sprite = createTextSprite(statuses[i], 40);
+      sprite.position.set(cx, -1.5, -offsetZ - cellZ / 2 - 1);
       scene.add(sprite);
     }
 
-    fitCameraExtent(totalWidth, cellZ);
+    // Step row labels (one per step, at left of grid)
+    for (let s = 0; s <= maxStep; s++) {
+      const cz = s * cellZ - offsetZ;
+      const sprite = createTextSprite(`Step ${s}`, 32);
+      sprite.position.set(-offsetX - cellX / 2 - 2, -1.5, cz);
+      scene.add(sprite);
+    }
+
+    fitCameraExtent(totalWidth, (maxStep + 1) * cellZ);
 
     currentNodeIds = new Set(data.tasks.map((t) => t.id));
     currentEdgeIds = new Set(data.links.map((l) => `${l.parent_id}-${l.child_id}`));
@@ -593,24 +606,26 @@ export default function IsometricView(props: Props) {
   }
 
   /**
-   * Animate existing meshes to new status-based positions.
+   * Animate existing meshes to new status-based positions (DAG steps × status grid).
    * Called when the task set is unchanged but statuses may have changed.
    */
   function animateToStatusLayout(data: DagResponse) {
     if (!scene) return;
 
-    const layout = computeStatusLayout(data.tasks);
-    const { groups, statuses, maxCols, maxRows } = layout;
+    const layout = computeStatusLayout(data.tasks, data.links);
+    const { groups, statuses, maxStep, maxCols, maxRows } = layout;
 
     const cellX = statusCellSizeX(maxCols);
     const cellZ = statusCellSizeZ(maxRows);
     const totalWidth = statuses.length * cellX;
     const offsetX = (totalWidth - cellX) / 2;
+    const offsetZ = (maxStep * cellZ) / 2;
 
     // Compute new positions
     const newPositions = new Map<string, THREE.Vector3>();
     for (const group of groups) {
       const cx = group.statusIndex * cellX - offsetX;
+      const cz = group.stepIndex * cellZ - offsetZ;
       const sliceSize = group.cols * group.rows;
 
       for (let i = 0; i < group.tasks.length; i++) {
@@ -624,7 +639,7 @@ export default function IsometricView(props: Props) {
         const localZ = (row - (group.rows - 1) / 2) * TASK_SPACING;
         const py = TASK_BOX_SIZE / 2 + layer * TASK_SPACING;
 
-        newPositions.set(task.id, new THREE.Vector3(cx + localX, py, localZ));
+        newPositions.set(task.id, new THREE.Vector3(cx + localX, py, cz + localZ));
       }
     }
 
@@ -650,6 +665,7 @@ export default function IsometricView(props: Props) {
 
     for (const group of groups) {
       const cx = group.statusIndex * cellX - offsetX;
+      const cz = group.stepIndex * cellZ - offsetZ;
 
       const gw = group.cols * TASK_SPACING + GROUP_PADDING;
       const gd = group.rows * TASK_SPACING + GROUP_PADDING;
@@ -659,17 +675,29 @@ export default function IsometricView(props: Props) {
       const wireColor = colorToHex(STATUS_COLORS[group.status] ?? '#444466');
       const lineMat = new THREE.LineBasicMaterial({ color: wireColor, transparent: true, opacity: 0.4 });
       const wireframe = new THREE.LineSegments(edges, lineMat);
-      wireframe.position.set(cx, gh / 2, 0);
+      wireframe.position.set(cx, gh / 2, cz);
       wireframe.userData.isGroup = true;
       scene.add(wireframe);
       boxGeo.dispose();
+    }
 
-      const sprite = createTextSprite(group.status, 40);
-      sprite.position.set(cx, -1.5, -cellZ / 2 - 1);
+    // Status column labels
+    for (let i = 0; i < statuses.length; i++) {
+      const cx = i * cellX - offsetX;
+      const sprite = createTextSprite(statuses[i], 40);
+      sprite.position.set(cx, -1.5, -offsetZ - cellZ / 2 - 1);
       scene.add(sprite);
     }
 
-    fitCameraExtent(totalWidth, cellZ);
+    // Step row labels
+    for (let s = 0; s <= maxStep; s++) {
+      const cz = s * cellZ - offsetZ;
+      const sprite = createTextSprite(`Step ${s}`, 32);
+      sprite.position.set(-offsetX - cellX / 2 - 2, -1.5, cz);
+      scene.add(sprite);
+    }
+
+    fitCameraExtent(totalWidth, (maxStep + 1) * cellZ);
 
     currentStatuses = new Map(data.tasks.map((t) => [t.id, t.status]));
   }
