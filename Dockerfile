@@ -28,6 +28,7 @@ COPY ./docs/openapi_description.md /app/docs/openapi_description.md
 COPY ./src /app/src
 # Copy built UI from stage 1
 COPY --from=ui-builder /static/dag.html /app/static/dag.html
+COPY ./static/icon.png /app/static/icon.png
 
 
 # do a release build
