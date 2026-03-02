@@ -44,8 +44,17 @@ pub async fn update_running_task<'a>(
         // Status change: transaction needed for atomic UPDATE + propagation
         let (rows, cascade_failed, ancestors) = run_in_transaction(conn, |conn| {
             Box::pin(async move {
+                // Accept both Running and Claimed states to avoid a race condition
+                // where the on_start webhook target PATCHes the task before the
+                // worker loop transitions it from Claimed to Running.
                 let res = diesel::update(
-                    task.filter(id.eq(task_id).and(status.eq(models::StatusKind::Running))),
+                    task.filter(
+                        id.eq(task_id).and(
+                            status
+                                .eq(models::StatusKind::Running)
+                                .or(status.eq(models::StatusKind::Claimed)),
+                        ),
+                    ),
                 )
                 .set((
                     last_updated.eq(diesel::dsl::now),
@@ -90,16 +99,24 @@ pub async fn update_running_task<'a>(
         rows
     } else {
         // Counter-only update: no transaction needed, autocommit for minimal row lock
-        diesel::update(task.filter(id.eq(task_id).and(status.eq(models::StatusKind::Running))))
-            .set((
-                last_updated.eq(diesel::dsl::now),
-                dto.new_success.map(|e| success.eq(success + e)),
-                dto.new_failures.map(|e| failures.eq(failures + e)),
-                dto.metadata.map(|m| metadata.eq(m)),
-                dto.expected_count.map(|c| expected_count.eq(c)),
-            ))
-            .execute(conn)
-            .await?
+        diesel::update(
+            task.filter(
+                id.eq(task_id).and(
+                    status
+                        .eq(models::StatusKind::Running)
+                        .or(status.eq(models::StatusKind::Claimed)),
+                ),
+            ),
+        )
+        .set((
+            last_updated.eq(diesel::dsl::now),
+            dto.new_success.map(|e| success.eq(success + e)),
+            dto.new_failures.map(|e| failures.eq(failures + e)),
+            dto.metadata.map(|m| metadata.eq(m)),
+            dto.expected_count.map(|c| expected_count.eq(c)),
+        ))
+        .execute(conn)
+        .await?
     };
 
     // After commit: fire webhooks and record metrics (best-effort, outside transaction)
@@ -125,7 +142,7 @@ pub async fn update_running_task<'a>(
                 .await;
         } else {
             log::warn!(
-                "update_running_task: task {} was not in Running state, skipping webhooks/propagation",
+                "update_running_task: task {} was not in Running/Claimed state, skipping webhooks/propagation",
                 task_id
             );
         }
