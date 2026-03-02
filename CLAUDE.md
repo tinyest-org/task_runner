@@ -2,6 +2,10 @@
 
 This file provides context for Claude Code when working on this project.
 
+## Important Rules
+
+- **Never read or write `static/dag.html`** — it is a build artifact generated from the SolidJS UI in `ui/`. Always edit source files in `ui/src/` instead.
+
 ## Project Overview
 
 ArcRun is a Rust-based task orchestration service that manages task execution with:
