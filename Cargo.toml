@@ -36,8 +36,8 @@ futures-util = "0.3.31"
 rustls-platform-verifier = "0.5.0"
 tokio-postgres-rustls = "0.13.0"
 tokio = { version = "1.45.0", features = ["macros"], default-features = false }
-actix-web-prometheus = "0.1.2"
-prometheus = "0.13"
+actix-web-prom = "0.10.0"
+prometheus = "0.14"
 thiserror = "2.0"
 url = "2.5"
 rustls = { version = "0.23.8", features = ["ring"], default-features = false }

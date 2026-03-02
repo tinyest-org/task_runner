@@ -10,7 +10,7 @@ use std::sync::Arc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 use actix_web::{App, HttpServer, web};
-use actix_web_prometheus::PrometheusMetricsBuilder;
+use actix_web_prom::PrometheusMetricsBuilder;
 use arcrun::{
     DbPool,
     action::{ActionContext, ActionExecutor},
