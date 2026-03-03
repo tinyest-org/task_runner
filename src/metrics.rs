@@ -309,6 +309,17 @@ register_histogram!(
 );
 
 // ============================================================================
+// Webhook In-Flight Gauge
+// ============================================================================
+
+register_int_gauge_vec!(
+    WEBHOOKS_IN_FLIGHT,
+    "webhooks_in_flight",
+    "Current number of webhook executions in progress",
+    &["phase"]
+);
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -441,6 +452,33 @@ pub fn record_circuit_breaker_rejection() {
     CIRCUIT_BREAKER_REJECTIONS.inc();
 }
 
+pub fn inc_webhooks_in_flight(phase: &str) {
+    WEBHOOKS_IN_FLIGHT.with_label_values(&[phase]).inc();
+}
+
+pub fn dec_webhooks_in_flight(phase: &str) {
+    WEBHOOKS_IN_FLIGHT.with_label_values(&[phase]).dec();
+}
+
+/// RAII guard that increments the in-flight gauge on creation and decrements
+/// on drop — even if the owning future panics during unwind.
+pub struct WebhooksInFlightGuard {
+    phase: &'static str,
+}
+
+impl WebhooksInFlightGuard {
+    pub fn new(phase: &'static str) -> Self {
+        inc_webhooks_in_flight(phase);
+        Self { phase }
+    }
+}
+
+impl Drop for WebhooksInFlightGuard {
+    fn drop(&mut self) {
+        dec_webhooks_in_flight(self.phase);
+    }
+}
+
 pub fn record_retention_cleanup(outcome: &str, tasks_deleted: usize, duration_secs: f64) {
     RETENTION_CLEANUP_RUNS.with_label_values(&[outcome]).inc();
     RETENTION_CLEANUP_DURATION.observe(duration_secs);
@@ -482,4 +520,5 @@ pub fn init_metrics() {
     let _ = &*RETENTION_TASKS_CLEANED;
     let _ = &*RETENTION_CLEANUP_RUNS;
     let _ = &*RETENTION_CLEANUP_DURATION;
+    let _ = &*WEBHOOKS_IN_FLIGHT;
 }

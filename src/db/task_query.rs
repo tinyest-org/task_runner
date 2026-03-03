@@ -130,11 +130,15 @@ pub(crate) async fn requeue_stale_claimed_tasks<'a>(
     Ok(updated)
 }
 
-pub(crate) async fn list_all_pending<'a>(conn: &mut Conn<'a>) -> Result<Vec<Task>, DbError> {
+pub(crate) async fn list_all_pending<'a>(
+    conn: &mut Conn<'a>,
+    // limit: Option<i64>,
+) -> Result<Vec<Task>, DbError> {
     use crate::schema::task::dsl::*;
     let tasks = task
         .filter(status.eq(models::StatusKind::Pending))
         .order(created_at.asc())
+        // .limit(limit)
         .get_results(conn)
         .await?;
     Ok(tasks)

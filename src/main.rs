@@ -207,6 +207,8 @@ fn spawn_workers(
         let executor = action_executor.clone();
         let interval = config.worker.loop_interval;
         let dead_end_enabled = config.worker.dead_end_cancel_enabled;
+        let start_batch_size = config.worker.start_batch_size;
+        let webhook_concurrency = config.worker.webhook_concurrency;
         let shutdown = shutdown_rx.clone();
         actix_web::rt::spawn(async move {
             arcrun::workers::start_loop(
@@ -214,6 +216,8 @@ fn spawn_workers(
                 pool,
                 interval,
                 dead_end_enabled,
+                start_batch_size,
+                webhook_concurrency,
                 shutdown,
             )
             .await;

@@ -31,6 +31,8 @@ pub fn test_config() -> Arc<Config> {
             batch_flush_interval: std::time::Duration::from_millis(100),
             batch_channel_capacity: 100,
             dead_end_cancel_enabled: true,
+            start_batch_size: 50,
+            webhook_concurrency: 10,
         },
         circuit_breaker: arcrun::config::CircuitBreakerConfig {
             enabled: true,

@@ -93,6 +93,12 @@ pub struct WorkerConfig {
 
     /// Whether dead-end ancestor cancellation is enabled (safety valve)
     pub dead_end_cancel_enabled: bool,
+
+    /// Maximum number of Pending tasks to fetch per start_loop iteration
+    pub start_batch_size: i64,
+
+    /// Maximum number of concurrent webhook executions in start_loop
+    pub webhook_concurrency: usize,
 }
 
 /// Circuit breaker configuration for connection pool resilience.
@@ -195,6 +201,8 @@ impl Default for WorkerConfig {
             batch_flush_interval: Duration::from_millis(100),
             batch_channel_capacity: 100,
             dead_end_cancel_enabled: true,
+            start_batch_size: 50,
+            webhook_concurrency: 10,
         }
     }
 }
@@ -337,6 +345,8 @@ impl Config {
             claim_timeout: Duration::from_secs(parse_env_or("WORKER_CLAIM_TIMEOUT_SECS", 30)?),
             batch_channel_capacity: parse_env_or("BATCH_CHANNEL_CAPACITY", 100)?,
             dead_end_cancel_enabled: parse_env_or("DEAD_END_CANCEL_ENABLED", 1)? != 0,
+            start_batch_size: parse_env_or("WORKER_START_BATCH_SIZE", 50)?,
+            webhook_concurrency: parse_env_or("WORKER_WEBHOOK_CONCURRENCY", 10)?,
             ..Default::default()
         };
 
@@ -460,6 +470,29 @@ impl Config {
                 field: "WORKER_CLAIM_TIMEOUT_SECS".to_string(),
                 message: "Must be greater than 0".to_string(),
             });
+        }
+
+        if self.worker.start_batch_size == 0 {
+            return Err(ConfigError {
+                field: "WORKER_START_BATCH_SIZE".to_string(),
+                message: "Must be greater than 0".to_string(),
+            });
+        }
+
+        if self.worker.webhook_concurrency == 0 {
+            return Err(ConfigError {
+                field: "WORKER_WEBHOOK_CONCURRENCY".to_string(),
+                message: "Must be greater than 0".to_string(),
+            });
+        }
+
+        if self.worker.webhook_concurrency > self.pool.max_size as usize {
+            log::warn!(
+                "WORKER_WEBHOOK_CONCURRENCY ({}) exceeds POOL_MAX_SIZE ({}); \
+                 webhook tasks may stall waiting for connections",
+                self.worker.webhook_concurrency,
+                self.pool.max_size
+            );
         }
 
         Ok(())

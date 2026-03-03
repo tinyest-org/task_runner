@@ -324,6 +324,8 @@ async fn test_webhook_includes_idempotency_headers() {
             pool,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx,
         )
         .await;
@@ -383,6 +385,8 @@ async fn test_requeue_claimed_skips_on_start_when_idempotent() {
             pool,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx,
         )
         .await;
@@ -438,6 +442,8 @@ async fn test_requeue_claimed_skips_on_start_when_idempotent() {
             pool,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx2,
         )
         .await;

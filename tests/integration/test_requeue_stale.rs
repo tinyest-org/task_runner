@@ -187,6 +187,8 @@ async fn test_requeued_task_picked_up_by_start_loop() {
             pool2,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx2,
         )
         .await;

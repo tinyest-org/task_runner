@@ -40,6 +40,8 @@ async fn test_start_loop_marks_task_failed_on_start_webhook_error() {
             pool,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx,
         )
         .await;

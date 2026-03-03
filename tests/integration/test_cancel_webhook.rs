@@ -118,6 +118,8 @@ async fn test_cancel_webhook_fires_after_on_start_registers_cancel_action() {
             pool,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx,
         )
         .await;

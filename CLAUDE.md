@@ -304,6 +304,8 @@ All configuration is via environment variables (loaded in `src/config.rs`):
 - `PAGINATION_DEFAULT` (default: 50) - Default items per page
 - `PAGINATION_MAX` (default: 100) - Max items per page
 - `WORKER_LOOP_INTERVAL_MS` (default: 1000) - Worker loop interval
+- `WORKER_START_BATCH_SIZE` (default: 50) - Max Pending tasks fetched per start_loop iteration
+- `WORKER_WEBHOOK_CONCURRENCY` (default: 10) - Max concurrent on_start webhook executions (should not exceed `POOL_MAX_SIZE`)
 - `BATCH_CHANNEL_CAPACITY` (default: 100) - Batch update channel size
 - `CIRCUIT_BREAKER_ENABLED` (default: 1) - Enable circuit breaker
 - `CIRCUIT_BREAKER_FAILURE_THRESHOLD` (default: 5) - Failures before opening

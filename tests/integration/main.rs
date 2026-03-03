@@ -21,6 +21,7 @@ mod test_edge_cases;
 mod test_filtering;
 mod test_health;
 mod test_idempotency;
+mod test_parallel_webhooks;
 mod test_propagation;
 mod test_propagation_edge;
 mod test_regressions;

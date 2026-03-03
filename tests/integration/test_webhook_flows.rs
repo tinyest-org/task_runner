@@ -135,6 +135,8 @@ async fn test_start_loop_e2e_happy_path() {
             pool,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx,
         )
         .await;
@@ -252,6 +254,8 @@ async fn test_webhook_500_triggers_failure() {
             pool,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx,
         )
         .await;
@@ -314,6 +318,8 @@ async fn test_webhook_receives_handle_query_param() {
             pool,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx,
         )
         .await;
@@ -401,6 +407,8 @@ async fn test_webhook_custom_headers_and_body() {
             pool,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx,
         )
         .await;
@@ -484,6 +492,8 @@ async fn test_webhook_redirect_rejected() {
             pool,
             std::time::Duration::from_millis(50),
             true,
+            50,
+            10,
             shutdown_rx,
         )
         .await;
