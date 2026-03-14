@@ -82,6 +82,10 @@ pub struct NewTaskDto {
     /// If true, this task acts as a dead-end barrier: it can be canceled by dead-end detection,
     /// but the upward cascade stops here — its parents are NOT checked. Defaults to false.
     pub dead_end_barrier: Option<bool>,
+
+    /// Scheduling priority. Higher values are processed first. Range: -1000 to 1000.
+    /// Defaults to 0. Tasks with equal priority are processed in FIFO order.
+    pub priority: Option<i32>,
 }
 
 /// A dependency on another task within the same batch.
@@ -123,6 +127,8 @@ pub struct BasicTaskDto {
     pub batch_id: Option<uuid::Uuid>,
     /// If true, dead-end upward cascade stops at this task.
     pub dead_end_barrier: bool,
+    /// Scheduling priority. Higher values are processed first.
+    pub priority: i32,
 }
 
 /// Payload for updating a task. Used by both `PATCH /task/{id}` (status update) and `PUT /task/{id}` (counter update).
@@ -148,6 +154,8 @@ pub struct UpdateTaskDto {
     pub failure_reason: Option<String>,
     /// Updated expected count for progress tracking. Must be >= 0 if provided.
     pub expected_count: Option<i32>,
+    /// Updated scheduling priority. Range: -1000 to 1000.
+    pub priority: Option<i32>,
 }
 
 /// Input DTO for creating actions. The trigger (Start/End/Cancel) is determined by context:
@@ -227,6 +235,8 @@ pub struct TaskDto {
     pub batch_id: Option<uuid::Uuid>,
     /// If true, dead-end upward cascade stops at this task.
     pub dead_end_barrier: bool,
+    /// Scheduling priority. Higher values are processed first.
+    pub priority: i32,
 }
 
 // =============================================================================
@@ -248,6 +258,7 @@ impl From<Task> for BasicTaskDto {
             ended_at: t.ended_at,
             batch_id: t.batch_id,
             dead_end_barrier: t.dead_end_barrier,
+            priority: t.priority,
         }
     }
 }
@@ -272,6 +283,7 @@ impl TaskDto {
             failure_reason: base_task.failure_reason,
             batch_id: base_task.batch_id,
             dead_end_barrier: base_task.dead_end_barrier,
+            priority: base_task.priority,
             actions: actions
                 .into_iter()
                 .map(|a| ActionDto {

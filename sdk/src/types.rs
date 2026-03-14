@@ -153,6 +153,10 @@ pub struct NewTaskDto {
     pub on_failure: Option<Vec<NewActionDto>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_success: Option<Vec<NewActionDto>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dead_end_barrier: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
 }
 
 /// Lightweight task representation returned by list endpoints.
@@ -169,6 +173,10 @@ pub struct BasicTaskDto {
     pub expected_count: Option<i32>,
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
     pub batch_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub dead_end_barrier: bool,
+    #[serde(default)]
+    pub priority: i32,
 }
 
 /// Full task representation returned by GET /task/{id}.
@@ -191,6 +199,10 @@ pub struct TaskDto {
     pub expected_count: Option<i32>,
     pub failure_reason: Option<String>,
     pub batch_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub dead_end_barrier: bool,
+    #[serde(default)]
+    pub priority: i32,
 }
 
 /// Payload for updating a task.
@@ -208,6 +220,8 @@ pub struct UpdateTaskDto {
     pub failure_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_count: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
 }
 
 // =============================================================================
@@ -354,6 +368,8 @@ pub struct TaskBuilder {
     expected_count: Option<i32>,
     on_failure: Option<Vec<NewActionDto>>,
     on_success: Option<Vec<NewActionDto>>,
+    dead_end_barrier: Option<bool>,
+    priority: Option<i32>,
 }
 
 impl TaskBuilder {
@@ -377,6 +393,8 @@ impl TaskBuilder {
             expected_count: None,
             on_failure: None,
             on_success: None,
+            dead_end_barrier: None,
+            priority: None,
         }
     }
 
@@ -425,6 +443,16 @@ impl TaskBuilder {
         self
     }
 
+    pub fn dead_end_barrier(mut self, val: bool) -> Self {
+        self.dead_end_barrier = Some(val);
+        self
+    }
+
+    pub fn priority(mut self, priority: i32) -> Self {
+        self.priority = Some(priority);
+        self
+    }
+
     /// Build the `NewTaskDto`.
     pub fn build(self) -> NewTaskDto {
         NewTaskDto {
@@ -440,6 +468,8 @@ impl TaskBuilder {
             expected_count: self.expected_count,
             on_failure: self.on_failure,
             on_success: self.on_success,
+            dead_end_barrier: self.dead_end_barrier,
+            priority: self.priority,
         }
     }
 }

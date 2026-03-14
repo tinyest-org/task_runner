@@ -29,6 +29,7 @@ pub struct Task {
     pub batch_id: Option<uuid::Uuid>,
     pub expected_count: Option<i32>,
     pub dead_end_barrier: bool,
+    pub priority: i32,
 }
 
 #[derive(Identifiable, Queryable, Associations, Selectable, PartialEq)]
@@ -62,6 +63,7 @@ pub struct NewTask {
     pub batch_id: Option<uuid::Uuid>,
     pub expected_count: Option<i32>,
     pub dead_end_barrier: bool,
+    pub priority: i32,
 }
 
 /// Link represents a dependency between two tasks (parent -> child).

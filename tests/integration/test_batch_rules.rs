@@ -324,6 +324,7 @@ async fn test_capacity_rule_with_no_expected_count() {
         batch_id: Some(batch_id),
         expected_count: None,
         dead_end_barrier: false,
+        priority: 0,
     };
 
     let mut conn = state.pool.get().await.unwrap();

@@ -2,3 +2,4 @@
 ui/node_modules
 ui/bun.lockb
 static/dag.html
+.DS_Store

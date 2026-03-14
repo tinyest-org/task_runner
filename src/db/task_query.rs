@@ -137,7 +137,7 @@ pub(crate) async fn list_all_pending<'a>(
     use crate::schema::task::dsl::*;
     let tasks = task
         .filter(status.eq(models::StatusKind::Pending))
-        .order(created_at.asc())
+        .order((priority.desc(), created_at.asc()))
         // .limit(limit)
         .get_results(conn)
         .await?;

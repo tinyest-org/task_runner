@@ -33,6 +33,7 @@ fn make_task_for_claim(
         batch_id: None,
         expected_count: None,
         dead_end_barrier: false,
+        priority: 0,
     }
 }
 
@@ -406,6 +407,7 @@ fn make_task_for_claim_with_expected(
         batch_id: None,
         expected_count,
         dead_end_barrier: false,
+        priority: 0,
     }
 }
 

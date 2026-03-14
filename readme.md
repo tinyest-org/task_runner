@@ -26,6 +26,7 @@
 - **Distributed Tracing**: OpenTelemetry support with OTLP export
 - **SSRF Protection**: Webhook URL validation to prevent server-side request forgery
 - **Health Checks**: Liveness and readiness probes for Kubernetes deployments
+- **Task Priority Scheduling**: Integer priority (-1000 to 1000) controls processing order within pending tasks
 
 ## Quick Start
 

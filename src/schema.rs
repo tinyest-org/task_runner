@@ -71,6 +71,7 @@ diesel::table! {
         batch_id -> Nullable<Uuid>,
         expected_count -> Nullable<Int4>,
         dead_end_barrier -> Bool,
+        priority -> Int4,
     }
 }
 

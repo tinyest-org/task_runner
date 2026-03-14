@@ -46,7 +46,7 @@ When a task completes, `propagate_to_children` in `src/workers.rs` handles:
 There are two separate loops in `src/workers.rs`:
 
 **Start Loop** (`start_loop`):
-1. Finds `Pending` tasks
+1. Finds `Pending` tasks (ordered by priority DESC, then created_at ASC)
 2. Checks concurrency rules against running tasks
 3. Claims eligible tasks atomically (Pending → Running)
 4. Executes on_start webhooks
@@ -89,11 +89,11 @@ All HTTP handler functions and route configuration:
 - Enums: `StatusKind`, `ActionKindEnum`, `TriggerKind`, `TriggerCondition`
 
 ### DTOs (`src/dtos.rs`)
-- `NewTaskDto` - Input for creating tasks (includes local `id` for dependency resolution)
-- `TaskDto` - Full task response with actions
-- `BasicTaskDto` - Lightweight task for listings
+- `NewTaskDto` - Input for creating tasks (includes local `id` for dependency resolution, optional priority)
+- `TaskDto` - Full task response with actions and priority
+- `BasicTaskDto` - Lightweight task for listings (includes priority)
 - `DagDto` - Tasks + links for visualization
-- `UpdateTaskDto` - Task update payload
+- `UpdateTaskDto` - Task update payload (includes optional priority)
 - `NewActionDto` - Action input (kind + params, trigger determined by context)
 - `ActionDto` - Action output (includes trigger)
 - `PaginationDto` / `FilterDto` - Query parameters
@@ -194,6 +194,7 @@ Uses testcontainers for PostgreSQL. Split into focused test files with shared he
 - `test_bug_audit1.rs` — Bug regressions: bugs #1-4, #8 (9 tests)
 - `test_bug_audit2.rs` — Bug regressions: bugs #9-11, #16, #18-19 (8 tests)
 - `test_regressions.rs` — Regression tests: on_start failure, timeout+webhook, batch keepalive timeout, pagination overflow (4 tests)
+- `test_priority.rs` — Priority scheduling (6 tests)
 
 ### Manual Testing (`test/test.ts`)
 Bun script for manual API testing:
@@ -252,7 +253,7 @@ Key file: `src/workers.rs`, function `propagate_to_children`
 -- Core tables
 task (id, name, kind, status, metadata, timeout, batch_id, start_condition,
       wait_success, wait_finished, success, failures, failure_reason,
-      created_at, started_at, ended_at, last_updated)
+      created_at, started_at, ended_at, last_updated, priority)
 action (id, task_id, kind, trigger, condition, params, success)
 link (parent_id, child_id, requires_success)
 webhook_execution (id, task_id, trigger, condition, idempotency_key, status,
@@ -271,6 +272,7 @@ link_parent_id_idx ON link(parent_id)
 link_child_id_idx ON link(child_id)
 idx_webhook_execution_task_id ON webhook_execution(task_id)
 idx_webhook_execution_status ON webhook_execution(status)
+idx_task_priority ON task(status, priority DESC, created_at ASC)
 ```
 
 ## Metrics
@@ -370,4 +372,5 @@ tests/
 +-- test_batch_update.rs  # Batch counters (3 tests)
 +-- test_bug_audit1.rs    # Bug regressions #1-4, #8 (9 tests)
 +-- test_bug_audit2.rs    # Bug regressions #9-19 (8 tests)
++-- test_priority.rs      # Priority scheduling (6 tests)
 ```

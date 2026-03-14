@@ -63,6 +63,7 @@ Content-Type: application/json
     "on_failure": [
       {"kind": "Webhook", "params": {"url": "https://example.com/failed", "verb": "Post"}}
     ],
+    "priority": 500,
     "rules": [
       {
         "type": "Concurency",
@@ -79,6 +80,7 @@ Content-Type: application/json
 
 Fields:
 - `timeout` (seconds): Maximum inactivity time. The task is marked as `Failure` if `last_updated` exceeds this duration. Batch counter updates (`PUT /task/{id}`) refresh `last_updated`, resetting the timeout clock.
+- `priority` (integer, optional): Scheduling priority, range -1000 to 1000, default 0. Higher values are processed first when the worker picks up pending tasks.
 
 Response: `201 Created` with array of created tasks, includes `X-Batch-ID` header.
 If all tasks were deduplicated: `204 No Content` with `X-Batch-ID` header.
@@ -106,6 +108,7 @@ Response: Full task details with all actions (fetched via single LEFT JOIN query
   "kind": "data-processing",
   "status": "Running",
   "timeout": 60,
+  "priority": 0,
   "rules": [],
   "metadata": {"key": "value"},
   "actions": [
@@ -148,11 +151,12 @@ Content-Type: application/json
   "new_success": 10,
   "new_failures": 2,
   "metadata": {"updated": true},
+  "priority": 100,
   "failure_reason": "Error message (required if status=Failure)"
 }
 ```
 
-Only `Success` or `Failure` status transitions are allowed. Setting status triggers end actions and dependency propagation. Failed tasks cannot be updated further.
+Only `Success` or `Failure` status transitions are allowed. Setting status triggers end actions and dependency propagation. Failed tasks cannot be updated further. The `priority` field can be updated independently of status (range -1000 to 1000).
 
 ### Cancel Task
 ```http
@@ -247,7 +251,7 @@ Returns tasks and links for a batch in JSON format:
 ```json
 {
   "tasks": [
-    {"id": "uuid", "name": "...", "kind": "...", "status": "Running", ...}
+    {"id": "uuid", "name": "...", "kind": "...", "status": "Running", "priority": 0, ...}
   ],
   "links": [
     {"parent_id": "uuid", "child_id": "uuid", "requires_success": true}

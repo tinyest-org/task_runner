@@ -97,6 +97,7 @@ pub async fn claim_and_complete(
         new_failures: None,
         failure_reason,
         expected_count: None,
+        priority: None,
     };
     let result = arcrun::db_operation::update_running_task(
         &state.action_executor,

@@ -124,6 +124,16 @@ pub fn validate_new_task(dto: &NewTaskDto) -> ValidationResult {
         }
     }
 
+    // Validate priority range
+    if let Some(p) = dto.priority {
+        if p < -1000 || p > 1000 {
+            errors.push(ValidationError {
+                field: "priority".into(),
+                message: "priority must be between -1000 and 1000".into(),
+            });
+        }
+    }
+
     // Validate metadata size (prevent extremely large payloads)
     if let Some(ref metadata) = dto.metadata {
         let metadata_str = serde_json::to_string(metadata).unwrap_or_default();
@@ -258,6 +268,16 @@ pub fn validate_update_task(dto: &UpdateTaskDto) -> ValidationResult {
             errors.push(ValidationError {
                 field: "expected_count".to_string(),
                 message: "expected_count cannot be negative".to_string(),
+            });
+        }
+    }
+
+    // Validate priority range
+    if let Some(p) = dto.priority {
+        if p < -1000 || p > 1000 {
+            errors.push(ValidationError {
+                field: "priority".into(),
+                message: "priority must be between -1000 and 1000".into(),
             });
         }
     }
@@ -488,6 +508,7 @@ mod tests {
             on_failure: None,
             on_success: None,
             dead_end_barrier: None,
+            priority: None,
         }
     }
 
@@ -612,5 +633,39 @@ mod tests {
                 .iter()
                 .any(|e| e.field.contains("on_start"))
         );
+    }
+
+    #[test]
+    fn test_priority_valid_range() {
+        let mut task = make_valid_task("task1");
+        task.priority = Some(500);
+        assert!(validate_new_task(&task).is_ok());
+
+        task.priority = Some(-1000);
+        assert!(validate_new_task(&task).is_ok());
+
+        task.priority = Some(1000);
+        assert!(validate_new_task(&task).is_ok());
+    }
+
+    #[test]
+    fn test_priority_out_of_range() {
+        let mut task = make_valid_task("task1");
+        task.priority = Some(1001);
+        let result = validate_new_task(&task);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().iter().any(|e| e.field == "priority"));
+
+        task.priority = Some(-1001);
+        let result = validate_new_task(&task);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().iter().any(|e| e.field == "priority"));
+    }
+
+    #[test]
+    fn test_priority_default_none_is_valid() {
+        let task = make_valid_task("task1");
+        assert!(task.priority.is_none());
+        assert!(validate_new_task(&task).is_ok());
     }
 }

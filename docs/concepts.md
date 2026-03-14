@@ -89,3 +89,16 @@ Skip creating duplicate tasks based on metadata fields:
 ```
 
 If a task with the same `kind`, `status`, and matching `project_id` exists, the new task is skipped.
+
+## Priority
+
+Tasks support an integer `priority` field ranging from -1000 to 1000 (default `0`). Higher values are processed first. Tasks with the same priority are processed in FIFO order.
+
+```json
+{
+  "name": "Urgent Export",
+  "kind": "data-processing",
+  "priority": 500,
+  ...
+}
+```
